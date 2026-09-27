@@ -1,0 +1,53 @@
+{
+  "_comment": "AI 白模渲染器 · 出图参数基线（服务端读取；改了立即生效，不用重启以外的东西）",
+  "_note": "底模首选 Lightning 版：8GB 上实测 18–20 秒/张，远快于标准版的 60–120 秒估算。fallback 用于没装 Lightning 时的兜底。",
+
+  "checkpoint": "RealVisXL_V5.0_Lightning_fp16.safetensors",
+  "controlnet": "controlnet-union-sdxl-1.0-promax.safetensors",
+  "steps": 8,
+  "cfg": 2.0,
+  "sampler_name": "dpmpp_sde",
+  "scheduler": "karras",
+  "filename_prefix": "ai_render",
+
+  "controlnet_type_depth": "depth",
+  "controlnet_type_normal": "normal",
+  "default_size": { "width": 1232, "height": 752 },
+
+  "_ipadapter_note": "参考图条件注入（v1.10 接入）。Unified Loader 按 preset 自动配对 ipadapter + clip_vision；weight_type 决定「借什么」。",
+  "ipadapter": "ip-adapter-plus_sdxl_vit-h.safetensors",
+  "ipadapter_preset": "PLUS (high strength)",
+  "clip_vision": "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+  "ref_strength_map": {
+    "L1_style":    { "weight": 0.35, "weight_type": "style transfer" },
+    "L2_material": { "weight": 0.55, "weight_type": "linear" },
+    "L3_full":     { "weight": 0.75, "weight_type": "linear" }
+  },
+  "ref_default_strength": "L2_material",
+
+  "fallback": {
+    "_when": "checkpoint 不在 ComfyUI 的底模列表里时自动切换",
+    "checkpoint": "sd_xl_base_1.0.safetensors",
+    "steps": 25,
+    "cfg": 7.0,
+    "sampler_name": "dpmpp_2m",
+    "scheduler": "karras"
+  },
+
+  "_img2img_note": "图片改图（img2img）专参。2026-09-27 实测修正：Lightning 底模只有 8 步，denoise 0.45–0.50 时有效步数仅 4 步，DPM++ SDE 在 4 步内出不了有效渲染 —— 实测与原图平均像素差仅 4.55/255（≈ 原样返回）。同一张图 denoise 0.75 时差值 43.60（9.6 倍）。但单纯提高 denoise 会臆造出完全不同的产品（实测把激光测距仪画成雷达枪），因为 img2img 没有形状约束。最终方案：用原图自身提 Canny 边缘送 ControlNet 锁形状，同时允许高 denoise 彻底换材质。",
+  "img2img": {
+    "steps": 12,
+    "cfg": 3.0,
+    "sampler_name": "dpmpp_sde",
+    "scheduler": "karras",
+    "denoise_default": 0.85,
+    "denoise_min": 0.55,
+    "denoise_max": 0.95,
+    "denoise_step": 0.05,
+    "canny_low": 0.06,
+    "canny_high": 0.18,
+    "canny_w": 0.75,
+    "canny_end_percent": 0.85,
+    "_note": "denoise 下限提到 0.55：低于此值在 8–12 步下不足以改变材质。形状由 Canny ControlNet 守住，故 denoise 可以放到 0.85 而不跑形。"
+  }
+}

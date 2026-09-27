@@ -1,0 +1,9 @@
+tasks columns: ['id', 'sku', 'view', 'variant', 'positive', 'negative', 'payload', 'status', 'prompt_id', 'output', 'retry', 'err', 'created_at', 'updated_at']
+
+total tasks = 22
+
+  'LS-360G'      n=16   status=pending
+  'GF'           n=6    status=done
+
+underscore-prefixed (test) rows remaining = 0  []
+RESULT: PASS (no test SKUs left)

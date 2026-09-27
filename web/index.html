@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#eef1f2">
+  <title>形照 · 产品渲染工作台</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#mainContent">跳到主要内容</a>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand" aria-label="形照，产品渲染工作台">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>形照</strong><small>产品渲染工作台</small></span>
+      </div>
+      <div class="top-actions">
+        <span id="serviceStatus" class="service-status"><span class="status-dot"></span>正在检查服务</span>
+        <button type="button" class="quiet-button" id="refreshButton">刷新状态</button>
+        <button type="button" class="quiet-button" id="openQueueButton">任务 <span id="queueCount" class="count">0</span></button>
+      </div>
+    </header>
+
+    <main class="workspace" id="mainContent">
+      <section class="controls" aria-label="出图设置">
+        <div class="section-intro">
+          <p class="eyebrow">让产品先成形，再成像</p>
+          <h1>把产品变成好图片</h1>
+          <p>从白模精细控制结构，或直接上传图片调整材质、灯光与场景。</p>
+        </div>
+
+        <div class="step" id="sourceStep">
+          <div class="step-head"><span class="step-number">1</span><h2>选择产品</h2></div>
+          <div class="source-switch" role="group" aria-label="产品来源"><button type="button" data-source="model" class="is-active" aria-pressed="true">3D 白模</button><button type="button" data-source="image" aria-pressed="false">产品图片</button></div>
+          <label for="productSelect" class="field-label">已有产品</label>
+          <select id="productSelect" name="product" autocomplete="off"><option value="">选择产品或导入素材</option></select>
+          <div id="modelSourcePanel">
+            <div id="modelSummary" class="model-summary">还没有选择产品。</div>
+            <button type="button" class="line-button" id="chooseModelButton">导入白模文件</button>
+            <input id="modelFile" type="file" accept=".blend,.glb,.gltf,.obj,.stl,.fbx,.ksp,.stp,.step,.3dm,.c4d,.max,.rhi" hidden>
+            <p class="field-help">GLB、OBJ、STL、FBX、BLEND 可直接出结构图；其他格式需先转换。</p>
+          </div>
+          <div id="imageSourcePanel" hidden>
+            <div id="imageSummary" class="model-summary">上传一张产品照片或已有渲染图。</div>
+            <button type="button" class="line-button" id="chooseImageButton">上传产品图片</button>
+            <input id="imageFile" type="file" accept=".png,.jpg,.jpeg,.webp" hidden>
+            <p class="field-help">支持 PNG / JPG / WEBP，最大 20 MB；图片会作为实际出图输入，不只是风格参考。</p>
+          </div>
+        </div>
+
+        <div class="step" id="lookStep">
+          <div class="step-head"><span class="step-number">2</span><h2>描述想要的效果</h2></div>
+          <label for="description" class="field-label">材质、配色和细节</label>
+          <textarea id="description" name="description" autocomplete="off" rows="4" placeholder="例如：主体为深灰细磨砂塑料，边框为拉丝铝，保留原有按钮与刻度。"></textarea>
+          <div class="style-picks" role="group" aria-label="快速风格">
+            <button type="button" class="style-pick is-active" data-style="studio" aria-pressed="true"><span class="swatch studio"></span>浅灰影棚</button>
+            <button type="button" class="style-pick" data-style="white" aria-pressed="false"><span class="swatch white"></span>纯白主图</button>
+            <button type="button" class="style-pick" data-style="dark" aria-pressed="false"><span class="swatch dark"></span>深色质感</button>
+          </div>
+          <details class="details" id="fineDetails">
+            <summary>细调材质和灯光</summary>
+            <div class="details-body">
+              <label for="materialSelect" class="field-label">主体材质</label>
+              <select id="materialSelect" name="material" autocomplete="off"><option value="matte_plastic">细磨砂塑料</option><option value="brushed_aluminum">拉丝铝</option><option value="polished_metal">抛光金属</option><option value="soft_touch">类肤涂层</option></select>
+              <label for="lightSelect" class="field-label">光照</label>
+              <select id="lightSelect" name="lighting" autocomplete="off"><option value="soft">柔和影棚光</option><option value="top">顶部柔光</option><option value="dramatic">侧逆光</option><option value="natural">自然窗光</option></select>
+              <label for="bodyColor" class="field-label">主体颜色</label>
+              <div class="color-control"><input id="bodyColor" name="bodyColor" type="color" value="#343b42"><span id="bodyColorValue">#343B42</span></div>
+            </div>
+          </details>
+
+          <div class="ref-block">
+            <div class="ref-head">
+              <span class="field-label">参考图</span>
+              <button type="button" class="quiet-button" id="chooseRefButton">上传参考图</button>
+            </div>
+          <p class="field-help" id="refIntro">借鉴配色、材质与光照；结构约束仍以你的白模为准。未装参考图组件时，仅将提取的色彩与影调写入提示词。</p>
+            <input id="refFile" type="file" accept=".png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp" hidden>
+            <div class="ref-body">
+              <div class="ref-thumb" id="refThumb">未选择</div>
+              <div class="ref-side">
+                <label for="refStrength" class="field-label">借鉴程度</label>
+                <select id="refStrength" name="reference">
+                  <option value="">不使用参考图</option>
+                  <option value="L1_style">L1 · 风格轻参考（只借氛围与光感）</option>
+                  <option value="L2_material" selected>L2 · 材质参考（借配色与材质）</option>
+                  <option value="L3_full">L3 · 整体仿照（尽量贴近，仍不改形状）</option>
+                </select>
+                <div class="palette" id="refPalette"></div>
+                <div class="ref-actions">
+                  <button type="button" class="line-button" id="applyPaletteButton" disabled>把主色应用到主体色</button>
+                </div>
+                <p class="field-help" id="refNote">上传参考图后会自动提取调色板。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="step final-step" id="renderStep">
+          <div class="step-head"><span class="step-number">3</span><h2>检查并出图</h2></div>
+          <fieldset class="mode-set" id="modelModeSet">
+            <legend class="field-label">生成方式</legend>
+            <label class="mode-choice"><input type="radio" name="mode" value="controlled" checked><span><strong>结构约束出图</strong><small>使用深度图约束轮廓；细节仍需核对</small></span></label>
+            <label class="mode-choice"><input type="radio" name="mode" value="explore"><span><strong>外观探索</strong><small>仅用文字生成概念图，形状可能变化</small></span></label>
+          </fieldset>
+          <div class="image-settings" id="imageSettings" hidden><label for="imageStrength" class="field-label">改动幅度 <output id="imageStrengthValue" for="imageStrength">85%</output></label><input id="imageStrength" name="strength" type="range" min="55" max="95" step="5" value="85"><p class="field-help">白模/灰模截图建议 <b>85%</b>：低于 55% 在 8–12 步底模下几乎不生效（等于原样返回）。形状由原图边缘约束守住，因此可以放心用高幅度彻底换材质。</p></div>
+          <div class="row-fields">
+            <div id="viewField"><label for="viewSelect" class="field-label">预览视角</label><select id="viewSelect" name="view"><option value="front">正面</option><option value="3q4_left">左前 3/4</option><option value="3q4_right">右前 3/4</option><option value="side">侧面</option><option value="top">俯视</option><option value="detail_keypad">按键特写</option><option value="detail_window">透明件特写</option></select></div>
+            <div><label for="countSelect" class="field-label">候选张数</label><select id="countSelect" name="count"><option value="1">1 张</option><option value="2">2 张</option><option value="4" selected>4 张</option></select></div>
+          </div>
+          <div class="batch-field" id="batchField"><label for="viewBatchSelect" class="field-label">出图范围</label><select id="viewBatchSelect" name="scope"><option value="current">仅预览视角</option><option value="standard">4 个标准视角：正面、左前、右前、侧面</option></select><p class="field-help">候选张数按每个视角计算。批量出图前会逐一检查结构图。</p></div>
+          <div id="preflight" class="preflight" role="status" aria-live="polite">正在检查白模、结构图与渲染服务…</div>
+          <button type="button" class="primary-button" id="generateButton" disabled>开始生成 4 张</button>
+          <p class="field-help centered">生成结果会保存到现有项目的 outputs 文件夹。</p>
+        </div>
+      </section>
+
+      <section class="stage" aria-label="产品预览与结果">
+        <div class="stage-top"><div><span class="stage-kicker">产品预览</span><h2 id="stageTitle">选择一个产品开始</h2></div><div id="stageBadge" class="stage-badge">等待导入</div></div>
+        <div class="hero" id="hero">
+          <div class="hero-grid" aria-hidden="true"></div>
+          <div class="hero-empty" id="heroEmpty"><div class="wire-product" aria-hidden="true"><span class="wire-ring"></span><span class="wire-body"></span><span class="wire-foot"></span></div><strong>你的产品，从这里开始</strong><p>导入白模，或选择已有产品。这里会显示结构预览与生成的图片。</p></div>
+          <img id="heroImage" alt="当前产品预览" width="1232" height="752" hidden>
+          <div id="compareLayer" class="compare-layer" hidden><img id="compareImage" alt="生成结果，用于与白模对比" width="1232" height="752"><span id="compareDivider" class="compare-divider" aria-hidden="true"></span><span class="compare-label compare-label-left">白模</span><span class="compare-label compare-label-right">成图</span></div>
+          <div class="hero-caption" id="heroCaption">白模预览</div>
+        </div>
+        <div class="stage-footer"><div class="view-switch" role="group" aria-label="预览类型"><button type="button" data-preview="clay" class="is-active" aria-pressed="true" id="sourcePreviewButton">白模</button><button type="button" data-preview="depth" aria-pressed="false" id="depthPreviewButton">深度</button><button type="button" data-preview="result" aria-pressed="false">成图</button><button type="button" data-preview="compare" aria-pressed="false">对比</button></div><span id="previewNote">上传白模后可生成结构预览</span></div>
+        <div id="compareControls" class="compare-controls" hidden>
+          <label for="compareRange">白模与成图对比</label>
+          <input id="compareRange" type="range" min="5" max="95" value="50" aria-label="拖动分割线比较白模与成图">
+          <span id="comparePercent">50%</span>
+        </div>
+
+        <section class="results-section" aria-labelledby="resultsTitle"><div class="results-head"><div><span class="stage-kicker">渲染结果</span><h2 id="resultsTitle">最近的候选图</h2></div><span id="resultCount">0 张</span></div><div id="resultsGrid" class="results-grid"><div class="results-empty">出图后，候选图片会出现在这里。可以逐张查看和下载。</div></div></section>
+      </section>
+    </main>
+
+    <div id="statusMessage" class="notice" role="status" aria-live="polite"></div>
+  </div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+  <aside class="drawer" id="queueDrawer" role="dialog" aria-modal="true" aria-labelledby="queueTitle" hidden>
+    <div class="drawer-head"><div><span class="stage-kicker">任务与结构图</span><h2 id="queueTitle">工作记录</h2></div><button type="button" class="icon-button" id="closeQueueButton" aria-label="关闭工作记录">×</button></div>
+    <div class="drawer-body">
+      <section class="drawer-section" id="passSection"><h3>结构图准备</h3><p>“结构约束出图”需要当前视角的深度图。可以用 Blender 自动生成，也可以上传已有结构图。</p><div id="passReadiness" class="readiness"></div><label for="passRoleSelect" class="field-label">上传图片类型</label><select id="passRoleSelect" name="passRole"><option value="depth">深度图</option><option value="normal">法线图</option><option value="clay">白模预览</option></select><div class="drawer-actions" style="margin-top:10px"><button type="button" class="line-button" id="makePassButton">生成此视角结构图</button><button type="button" class="line-button" id="uploadPassButton">上传选定类型</button></div><input id="passFiles" type="file" accept=".png,.jpg,.jpeg,.webp,.tif,.tiff,.bmp" hidden><p id="passJobStatus" class="field-help"></p></section>
+      <section class="drawer-section"><div class="drawer-section-head"><h3>最近任务</h3><button type="button" class="quiet-button" id="refreshTasksButton">刷新</button></div><div class="drawer-actions" style="margin-bottom:12px"><button type="button" class="line-button" id="runPendingButton">运行待处理任务</button></div><div id="taskList" class="task-list">暂无任务</div></section>
+      <section class="drawer-section"><h3>服务与扩展</h3><div class="readiness"><p id="localProviderStatus">本地 ComfyUI：正在检查连接。</p><p id="cloudProviderStatus">云端图像 API：尚未配置，不会上传白模或图片。</p><p id="referenceCapability">参考图控制：正在检查…</p></div><p>云端服务适合概念探索、背景和局部修饰；产品几何仍需白模与人工检查。</p></section>
+
+      <details class="drawer-section drawer-fold" id="foldAssets" open>
+        <summary><h3>投放区总览</h3><span class="fold-hint">每个机位需齐备白模 + 深度 + 法线</span></summary>
+        <div class="fold-body"><div id="assetMatrix" class="matrix">载入中…</div></div>
+      </details>
+
+      <details class="drawer-section drawer-fold" id="foldIou">
+        <summary><h3>对齐校验 · 轮廓 IoU</h3><span class="fold-hint">门槛 ≥ 0.90</span></summary>
+        <div class="fold-body">
+          <p>拿白模掩膜（alpha.png）与最新成图的剪影比对。低于门槛说明「不是一眼同一个产品」。</p>
+          <div class="drawer-actions">
+            <button type="button" class="line-button" id="iouRunButton">计算白模 × 最新成图</button>
+            <label class="iou-thresh">背景容差<input id="iouThreshold" type="range" min="10" max="90" value="34" aria-label="背景容差"><span id="iouThresholdValue">34</span></label>
+          </div>
+          <div id="iouResult" class="iou-result">还未计算。</div>
+        </div>
+      </details>
+
+      <details class="drawer-section drawer-fold" id="foldCard">
+        <summary><h3>参数卡 · RenderSpec</h3><span class="fold-hint">可复现接口契约</span></summary>
+        <div class="fold-body">
+          <p>把当前设置存成参数卡（JSON），或载入已有卡片继续编辑。</p>
+          <div class="drawer-actions">
+            <button type="button" class="line-button" id="loadCardButton">载入所选产品的卡</button>
+            <button type="button" class="line-button" id="saveCardButton">把当前设置存为卡</button>
+          </div>
+          <pre class="code" id="cardPreview">（尚未载入）</pre>
+        </div>
+      </details>
+
+      <details class="drawer-section drawer-fold" id="foldService" open>
+        <summary><h3>渲染服务详情</h3><span class="fold-hint" id="serviceHint">检查中</span></summary>
+        <div class="fold-body"><div id="serviceBox" class="kv-box">载入中…</div></div>
+      </details>
+
+      <details class="drawer-section drawer-fold" id="foldBoard">
+        <summary><h3>项目看板 · 阶段与门槛</h3><span class="fold-hint">来自过程文档</span></summary>
+        <div class="fold-body"><div id="boardBox" class="board-box">载入中…</div></div>
+      </details>
+
+      <details class="drawer-section drawer-fold" id="foldChangelog">
+        <summary><h3>变更记录（只读）</h3><span class="fold-hint">00 文档 第二节</span></summary>
+        <div class="fold-body"><div id="changelogBox" class="changelog-box">载入中…</div></div>
+      </details>
+    </div>
+  </aside>
+</body>
+</html>

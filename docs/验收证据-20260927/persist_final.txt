@@ -1,0 +1,5 @@
+﻿=== final state at 2026-09-27T09:17:39.4766227+08:00 ===
+AIRender_Web : State=Running TimeLimit=PT0S StopOnIdleEnd=False LastResult=2147946720
+AIRender_ComfyUI : State=Running TimeLimit=PT0S StopOnIdleEnd=False LastResult=2147946720
+PID 17628 :: "F:\AI-Renderer\packs\ComfyUI_windows_portable\python_embeded\python.exe" -s ComfyUI\main.py --windows-standalone-build --lowvram
+PID 13792 :: "F:\AI-Renderer\packs\ComfyUI_windows_portable\python_embeded\python.exe" web\server.py --port 8765

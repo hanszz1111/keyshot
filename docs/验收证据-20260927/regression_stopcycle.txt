@@ -1,0 +1,13 @@
+﻿=== TEST 17: full stop -> start persistence cycle ===
+--- [1] invoking scripts\stop_all.ps1 ---
+    AIRender_Web : stopped (was running).
+      killed python pid 17628
+    AIRender_ComfyUI : stopped (was running).
+    
+    Stopped 3 item(s). Ports 8188 / 8765 should be free.
+    Re-launch any time with 一键启动.bat
+--- [2] task state after stop ---
+    AIRender_Web: State=Ready
+    AIRender_ComfyUI: State=Ready
+--- [3] python processes after stop ---
+    none (clean)

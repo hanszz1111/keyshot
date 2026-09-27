@@ -1,0 +1,16 @@
+﻿=== TEST 18: re-launch via scripts\start_all.ps1 (persistence proof) ===
+--- [1] invoking start_all.ps1 ---
+    Project: D:\Dsektop\AI渲染\AI渲染
+    Starting ComfyUI from F:\AI-Renderer\packs\ComfyUI_windows_portable
+    ComfyUI: launched via scheduled task 'AIRender_ComfyUI' (survives closing this window).
+    Starting web UI on 8765
+    Web UI: launched via scheduled task 'AIRender_Web' (survives closing this window).
+    Web UI: http://127.0.0.1:8765/
+    ComfyUI: ready on http://127.0.0.1:8188/
+--- [2] waiting for services to come up ---
+--- [3] scheduled task state (must survive) ---
+    AIRender_Web: State=Running TimeLimit=PT0S StopOnIdleEnd=False DisallowBatt=False LastResult=267009
+    AIRender_ComfyUI: State=Running TimeLimit=PT0S StopOnIdleEnd=False DisallowBatt=False LastResult=267009
+--- [4] python processes (should be 2, owned by Task Scheduler) ---
+    PID=5740 PPID=1700 parent=svchost.exe
+    PID=20528 PPID=1700 parent=svchost.exe

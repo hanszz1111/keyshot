@@ -1,0 +1,201 @@
+{
+  "_comment": "产品图片改图（结构锁定版）：LoadImage → ImageScale → Canny → ControlNetApplyAdvanced，同时 ImageScale → VAEEncode 作为 img2img 起点。2026-09-27 修复：此前只有 denoise 一个旋钮 —— 0.50 几乎不渲染（与原图差值 5.44/255），0.75 能渲染但完全臆造别的产品（雷达枪）。现用原图自身提边缘作 ControlNet 条件，做到「大幅改材质 + 锁住形状」。",
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "RealVisXL_V5.0_Lightning_fp16.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "ControlNetLoader",
+    "inputs": {
+      "control_net_name": "controlnet-union-sdxl-1.0-promax.safetensors"
+    }
+  },
+  "22": {
+    "class_type": "SetUnionControlNetType",
+    "inputs": {
+      "control_net": [
+        "2",
+        0
+      ],
+      "type": "canny/lineart/anime_lineart/mlsd"
+    }
+  },
+  "15": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "placeholder_source.png"
+    }
+  },
+  "5": {
+    "class_type": "ImageScale",
+    "inputs": {
+      "image": [
+        "15",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": 1024,
+      "height": 656,
+      "crop": "disabled"
+    }
+  },
+  "30": {
+    "class_type": "Canny",
+    "inputs": {
+      "image": [
+        "5",
+        0
+      ],
+      "low_threshold": 0.06,
+      "high_threshold": 0.18
+    }
+  },
+  "16": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "5",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "",
+      "clip": [
+        "1",
+        1
+      ]
+    }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "",
+      "clip": [
+        "1",
+        1
+      ]
+    }
+  },
+  "20": {
+    "class_type": "ControlNetApplyAdvanced",
+    "inputs": {
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "control_net": [
+        "22",
+        0
+      ],
+      "image": [
+        "30",
+        0
+      ],
+      "strength": 0.75,
+      "start_percent": 0.0,
+      "end_percent": 0.85
+    }
+  },
+  "12": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "placeholder_ref.png"
+    }
+  },
+  "13": {
+    "class_type": "IPAdapterUnifiedLoader",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "preset": "PLUS (high strength)"
+    }
+  },
+  "14": {
+    "class_type": "IPAdapterAdvanced",
+    "inputs": {
+      "model": [
+        "13",
+        0
+      ],
+      "ipadapter": [
+        "13",
+        1
+      ],
+      "image": [
+        "12",
+        0
+      ],
+      "weight": 0.55,
+      "weight_type": "linear",
+      "combine_embeds": "concat",
+      "start_at": 0.0,
+      "end_at": 1.0,
+      "embeds_scaling": "V only"
+    }
+  },
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 0,
+      "steps": 12,
+      "cfg": 3.0,
+      "sampler_name": "dpmpp_sde",
+      "scheduler": "karras",
+      "denoise": 0.85,
+      "model": [
+        "14",
+        0
+      ],
+      "positive": [
+        "20",
+        0
+      ],
+      "negative": [
+        "20",
+        1
+      ],
+      "latent_image": [
+        "16",
+        0
+      ]
+    }
+  },
+  "4": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    }
+  },
+  "8": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "4",
+        0
+      ],
+      "filename_prefix": "ai_render"
+    }
+  }
+}

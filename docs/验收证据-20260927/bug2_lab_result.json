@@ -1,0 +1,57 @@
+[
+  {
+    "label": "A_现状_8步_0.50_dpmppSDE_karras",
+    "steps": 8,
+    "denoise": 0.5,
+    "effective": 4,
+    "sampler": "dpmpp_sde",
+    "scheduler": "karras",
+    "cfg": 2.0,
+    "file": "bug2_test_00001_.png",
+    "seconds": 10.2
+  },
+  {
+    "label": "B_8步_0.75_dpmppSDE_karras",
+    "steps": 8,
+    "denoise": 0.75,
+    "effective": 6,
+    "sampler": "dpmpp_sde",
+    "scheduler": "karras",
+    "cfg": 2.0,
+    "file": "bug2_test_00002_.png",
+    "seconds": 6.1
+  },
+  {
+    "label": "C_20步_0.60_dpmpp_2m_karras",
+    "steps": 20,
+    "denoise": 0.6,
+    "effective": 12,
+    "sampler": "dpmpp_2m",
+    "scheduler": "karras",
+    "cfg": 4.0,
+    "file": "bug2_test_00003_.png",
+    "seconds": 7.1
+  },
+  {
+    "label": "D_30步_0.70_dpmpp_2m_karras",
+    "steps": 30,
+    "denoise": 0.7,
+    "effective": 21,
+    "sampler": "dpmpp_2m",
+    "scheduler": "karras",
+    "cfg": 5.0,
+    "file": "bug2_test_00004_.png",
+    "seconds": 9.1
+  },
+  {
+    "label": "E_12步_0.65_dpmpp_sde_normal",
+    "steps": 12,
+    "denoise": 0.65,
+    "effective": 8,
+    "sampler": "dpmpp_sde",
+    "scheduler": "normal",
+    "cfg": 2.5,
+    "file": "bug2_test_00005_.png",
+    "seconds": 8.2
+  }
+]

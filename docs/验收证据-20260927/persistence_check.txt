@@ -1,0 +1,25 @@
+﻿=== 计划任务状态 at 2026-09-27T09:16:31.6167132+08:00 ===
+Task: AIRender_Web
+  State       : Running
+  Execute     : F:\AI-Renderer\packs\ComfyUI_windows_portable\python_embeded\python.exe
+  Arguments   : web\server.py --port 8765
+  WorkingDir  : D:\Dsektop\AI渲染\AI渲染
+  TimeLimit   : PT0S
+  StopIfIdle  : True
+  AllowBatt   : False
+  LastRunTime : 09/27/2026 09:16:16
+  LastResult  : 267009
+Task: AIRender_ComfyUI
+  State       : Running
+  Execute     : F:\AI-Renderer\packs\ComfyUI_windows_portable\python_embeded\python.exe
+  Arguments   : -s ComfyUI\main.py --windows-standalone-build --lowvram
+  WorkingDir  : F:\AI-Renderer\packs\ComfyUI_windows_portable
+  TimeLimit   : PT0S
+  StopIfIdle  : True
+  AllowBatt   : False
+  LastRunTime : 09/27/2026 09:15:15
+  LastResult  : 267009
+
+=== python 进程（含命令行） ===
+PID 17628 :: "F:\AI-Renderer\packs\ComfyUI_windows_portable\python_embeded\python.exe" -s ComfyUI\main.py --windows-standalone-build --lowvram
+PID 13792 :: "F:\AI-Renderer\packs\ComfyUI_windows_portable\python_embeded\python.exe" web\server.py --port 8765

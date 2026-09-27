@@ -1,0 +1,2 @@
+﻿OK   D:\Dsektop\AI渲染\AI渲染\scripts\start_all.ps1  (tokens: 918)
+OK   D:\Dsektop\AI渲染\AI渲染\scripts\stop_all.ps1  (tokens: 218)

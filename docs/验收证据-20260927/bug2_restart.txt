@@ -1,0 +1,8 @@
+﻿=== restart services for debugging ===
+    Project: D:\Dsektop\AI渲染\AI渲染
+    Starting ComfyUI from F:\AI-Renderer\packs\ComfyUI_windows_portable
+    ComfyUI: launched via scheduled task 'AIRender_ComfyUI' (survives closing this window).
+    Starting web UI on 8765
+    Web UI: launched via scheduled task 'AIRender_Web' (survives closing this window).
+    Web UI: http://127.0.0.1:8765/
+    ComfyUI: ready on http://127.0.0.1:8188/

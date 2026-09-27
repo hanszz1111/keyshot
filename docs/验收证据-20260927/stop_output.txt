@@ -1,0 +1,7 @@
+﻿=== stop_all.ps1 via -ExecutionPolicy Bypass at 2026-09-27T09:14:35.9031812+08:00 ===
+AIRender_Web : stopped (was running).
+AIRender_ComfyUI : stopped (was running).
+
+Stopped 2 item(s). Ports 8188 / 8765 should be free.
+Re-launch any time with 涓€閿惎鍔?bat
+EXITCODE=0

@@ -1,0 +1,89 @@
+{
+  "denoise=0.75 (新默认)": {
+    "id": 265,
+    "denoise": 0.75,
+    "submit": {
+      "ok": true,
+      "id": 265,
+      "prompt_id": "f189e768-9cb7-4932-9ac5-d68ed5a3bee4",
+      "mode": "img2img",
+      "with_normal": false,
+      "with_ref": false,
+      "ref_weight": null,
+      "ref_weight_type": null,
+      "checkpoint": "RealVisXL_V5.0_Lightning_fp16.safetensors",
+      "applied": [
+        "positive",
+        "negative",
+        "seed",
+        "denoise",
+        "width",
+        "height",
+        "source_img",
+        "steps",
+        "cfg",
+        "sampler_name",
+        "scheduler"
+      ],
+      "skipped": []
+    },
+    "poll": {
+      "state": "done",
+      "saved": [
+        "outputs/stl_2/photo/ai_render_00024_.png"
+      ],
+      "files": [
+        "ai_render_00024_.png"
+      ]
+    }
+  },
+  "denoise=0.50 (旧值，现应仍可用)": {
+    "id": 266,
+    "denoise": 0.5,
+    "submit": {
+      "ok": true,
+      "id": 266,
+      "prompt_id": "e3e72f75-9879-426b-9aa1-c8b09c6942e3",
+      "mode": "img2img",
+      "with_normal": false,
+      "with_ref": false,
+      "ref_weight": null,
+      "ref_weight_type": null,
+      "checkpoint": "RealVisXL_V5.0_Lightning_fp16.safetensors",
+      "applied": [
+        "positive",
+        "negative",
+        "seed",
+        "denoise",
+        "width",
+        "height",
+        "source_img",
+        "steps",
+        "cfg",
+        "sampler_name",
+        "scheduler"
+      ],
+      "skipped": []
+    },
+    "poll": {
+      "state": "done",
+      "saved": [
+        "outputs/stl_2/photo/ai_render_00025_.png"
+      ],
+      "files": [
+        "ai_render_00025_.png"
+      ]
+    }
+  },
+  "denoise=0.95 (超出上限，应被拒)": {
+    "id": 267,
+    "denoise": 0.95,
+    "submit": {
+      "_http_error": 500,
+      "_body": "{\"error\": \"改动幅度须在 35%–90% 之间。\"}"
+    },
+    "poll": {
+      "state": "nosubmit"
+    }
+  }
+}

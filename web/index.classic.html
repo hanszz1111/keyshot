@@ -1,0 +1,1340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 白模渲染器 · 控制台</title>
+<style>
+:root{
+  --bg:#f4f5f7; --panel:#ffffff; --panel2:#fafbfc; --line:#e2e4e9; --line2:#eceef2;
+  --tx:#1b1d21; --tx2:#5d636e; --tx3:#8c929d;
+  --ac:#2f6fed; --ac-bg:#eef3fe; --ac-line:#c3d6fb;
+  --ok:#1a7f4b; --ok-bg:#e9f6ee; --ok-line:#bfe3cd;
+  --wn:#a8690a; --wn-bg:#fdf4e3; --wn-line:#f0ddb4;
+  --er:#b3261e; --er-bg:#fdecea; --er-line:#f5c9c5;
+  --r:10px; --r2:8px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--tx); font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+.app{display:flex;min-height:100vh}
+
+/* ---------- sidebar ---------- */
+.side{
+  width:196px;flex:0 0 196px;background:var(--panel);border-right:1px solid var(--line);
+  padding:18px 12px;position:sticky;top:0;height:100vh;overflow:auto;
+}
+.brand{display:flex;align-items:center;gap:9px;padding:0 8px 16px;border-bottom:1px solid var(--line2);margin-bottom:14px}
+.brand .dot{width:9px;height:9px;border-radius:50%;background:var(--ac);flex:0 0 9px}
+.brand b{font-size:13.5px;font-weight:600;letter-spacing:.2px}
+.brand span{display:block;font-size:11.5px;color:var(--tx3);font-weight:400;margin-top:1px}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav button{
+  all:unset;cursor:pointer;padding:8px 10px;border-radius:var(--r2);font-size:13.5px;color:var(--tx2);
+  display:flex;align-items:center;gap:9px;transition:background .12s;
+}
+.nav button:hover{background:var(--panel2)}
+.nav button.on{background:var(--ac-bg);color:var(--ac);font-weight:600}
+.nav button .ic{width:15px;text-align:center;font-size:12px;opacity:.75}
+.nav .sec{font-size:11px;color:var(--tx3);padding:14px 10px 5px;letter-spacing:.4px}
+.sidefoot{margin-top:16px;padding:10px;border-top:1px solid var(--line2);font-size:11.5px;color:var(--tx3);line-height:1.7}
+.sidefoot code{font-size:11px;background:var(--panel2);padding:1px 4px;border-radius:4px}
+
+/* ---------- main ---------- */
+main{flex:1;min-width:0;display:flex;flex-direction:column}
+.top{
+  background:var(--panel);border-bottom:1px solid var(--line);padding:14px 24px;
+  display:flex;align-items:center;gap:12px;position:sticky;top:0;z-index:20;
+}
+.top h1{font-size:15.5px;font-weight:600;margin:0}
+.top .sub{font-size:12px;color:var(--tx3);margin-left:2px}
+.spacer{flex:1}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;padding:3px 9px;border-radius:20px;
+  background:var(--panel2);color:var(--tx2);border:1px solid var(--line)}
+.chip.a{background:var(--ac-bg);color:var(--ac);border-color:var(--ac-line)}
+.chip.g{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-line)}
+.chip.e{background:var(--er-bg);color:var(--er);border-color:var(--er-line)}
+
+.body{padding:22px 24px 60px;max-width:1400px}
+.view{display:none}
+.view.on{display:block}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:18px;margin-bottom:16px}
+.card > h2{font-size:13.5px;font-weight:600;margin:0 0 3px;display:flex;align-items:center;gap:8px}
+.card > h2 .n{font-size:10.5px;font-weight:600;color:var(--ac);background:var(--ac-bg);
+  border:1px solid var(--ac-line);padding:1px 6px;border-radius:5px;letter-spacing:.3px}
+.card > .desc{font-size:12.5px;color:var(--tx3);margin:0 0 16px}
+
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.grid-auto{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+@media(max-width:1080px){.grid2,.grid3{grid-template-columns:1fr}}
+
+label.f{display:block;margin-bottom:12px}
+label.f > span{display:block;font-size:12px;color:var(--tx2);margin-bottom:5px;font-weight:500}
+label.f > span em{font-style:normal;color:var(--tx3);font-weight:400;font-size:11px}
+input[type=text],input[type=number],select,textarea{
+  width:100%;padding:7px 10px;border:1px solid var(--line);border-radius:var(--r2);
+  font:13px/1.5 inherit;background:var(--panel);color:var(--tx);outline:none;transition:border-color .12s,box-shadow .12s;
+}
+input:focus,select:focus,textarea:focus{border-color:var(--ac);box-shadow:0 0 0 3px var(--ac-bg)}
+input[type=color]{width:100%;height:34px;padding:2px;border:1px solid var(--line);border-radius:var(--r2);background:var(--panel)}
+textarea{resize:vertical;min-height:70px;font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:12.5px;line-height:1.65}
+select{cursor:pointer}
+.row{display:flex;gap:10px}
+.row > *{flex:1;min-width:0}
+
+button.btn{
+  all:unset;cursor:pointer;padding:7px 14px;border-radius:var(--r2);font-size:13px;font-weight:500;
+  background:var(--ac);color:#fff;transition:filter .12s;text-align:center;
+}
+button.btn:hover{filter:brightness(1.08)}
+button.btn.ghost{background:var(--panel);color:var(--tx2);border:1px solid var(--line)}
+button.btn.ghost:hover{background:var(--panel2);border-color:var(--line2)}
+button.btn.danger{background:var(--er)}
+button.btn.sm{padding:4px 9px;font-size:12px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+pre.code{
+  background:#fbfbfc;border:1px solid var(--line);border-radius:var(--r2);padding:12px 13px;margin:0;
+  font:12.5px/1.65 ui-monospace,Consolas,"Courier New",monospace;white-space:pre-wrap;word-break:break-word;
+  max-height:340px;overflow:auto;color:#26282d;
+}
+.codehead{display:flex;align-items:center;gap:8px;margin-bottom:7px}
+.codehead b{font-size:12px;font-weight:600;color:var(--tx2)}
+.codehead .spacer{flex:1}
+
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-weight:600;color:var(--tx2);padding:8px 10px;border-bottom:1px solid var(--line);
+  background:var(--panel2);white-space:nowrap;font-size:12px}
+td{padding:8px 10px;border-bottom:1px solid var(--line2);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:var(--panel2)}
+.tbl-wrap{border:1px solid var(--line);border-radius:var(--r2);overflow:hidden;overflow-x:auto}
+
+.pill{display:inline-block;font-size:11px;padding:1.5px 8px;border-radius:20px;border:1px solid;white-space:nowrap}
+.pill.pending{background:var(--panel2);color:var(--tx2);border-color:var(--line)}
+.pill.running{background:var(--ac-bg);color:var(--ac);border-color:var(--ac-line)}
+.pill.done{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-line)}
+.pill.failed{background:var(--er-bg);color:var(--er);border-color:var(--er-line)}
+.pill.high{background:var(--er-bg);color:var(--er);border-color:var(--er-line)}
+.pill.mid{background:var(--wn-bg);color:var(--wn);border-color:var(--wn-line)}
+.pill.low{background:var(--panel2);color:var(--tx2);border-color:var(--line)}
+.pill.NEW{background:var(--ac-bg);color:var(--ac);border-color:var(--ac-line)}
+.pill.MOD{background:var(--wn-bg);color:var(--wn);border-color:var(--wn-line)}
+.pill.FIX{background:var(--ok-bg);color:var(--ok);border-color:var(--ok-line)}
+.pill.DEL{background:var(--er-bg);color:var(--er);border-color:var(--er-line)}
+.pill.DATA,.pill.STAGE{background:#f0eefb;color:#5b4bbd;border-color:#d8d2f3}
+
+.stat{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.stat .s{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 16px;min-width:104px}
+.stat .s b{display:block;font-size:20px;font-weight:600;line-height:1.25}
+.stat .s span{font-size:11.5px;color:var(--tx3)}
+
+.note{background:var(--ac-bg);border:1px solid var(--ac-line);border-radius:var(--r2);
+  padding:11px 13px;font-size:12.5px;color:#24437f;margin-bottom:14px;line-height:1.7}
+.note.warn{background:var(--wn-bg);border-color:var(--wn-line);color:#7a4d06}
+.note.err{background:var(--er-bg);border-color:var(--er-line);color:#8a1f19}
+.note b{font-weight:600}
+.note code{background:rgba(0,0,0,.05);padding:1px 4px;border-radius:4px;font-size:11.5px}
+
+.cardlist{display:flex;flex-direction:column;gap:6px;max-height:280px;overflow:auto}
+.carditem{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--line);
+  border-radius:var(--r2);cursor:pointer;font-size:12.5px;background:var(--panel)}
+.carditem:hover{background:var(--panel2);border-color:var(--line2)}
+.carditem.on{border-color:var(--ac);background:var(--ac-bg)}
+.carditem b{font-weight:600}
+.carditem .spacer{flex:1}
+.carditem small{color:var(--tx3);font-size:11px}
+
+.phase{border:1px solid var(--line);border-radius:var(--r2);padding:14px;background:var(--panel)}
+.phase.gate{border-color:var(--er-line);background:#fffbfa}
+.phase h3{margin:0 0 2px;font-size:13.5px;font-weight:600;display:flex;align-items:center;gap:8px}
+.phase .dur{font-size:11.5px;color:var(--tx3);font-weight:400}
+.phase p{margin:9px 0 0;font-size:12px;color:var(--tx2);line-height:1.65}
+.phase p b{color:var(--tx);font-weight:600}
+.phase select{margin-top:10px;padding:4px 8px;font-size:12px}
+.phase .gateflag{font-size:10.5px;background:var(--er-bg);color:var(--er);border:1px solid var(--er-line);
+  padding:1px 6px;border-radius:4px;font-weight:600}
+
+.todo{display:flex;align-items:flex-start;gap:9px;padding:8px 2px;border-bottom:1px solid var(--line2);font-size:12.5px}
+.todo:last-child{border-bottom:none}
+.todo input[type=checkbox]{width:15px;height:15px;margin:3px 0 0;cursor:pointer;accent-color:var(--ac);flex:0 0 15px}
+.todo.done label{text-decoration:line-through;color:var(--tx3)}
+.todo label{cursor:pointer;flex:1}
+.todo .tag{font-size:10.5px;color:var(--tx3);border:1px solid var(--line);padding:0 6px;border-radius:4px}
+
+canvas{max-width:100%;border:1px solid var(--line);border-radius:var(--r2);background:#fff;display:block}
+.drop{border:1.5px dashed var(--line);border-radius:var(--r2);padding:16px;text-align:center;font-size:12.5px;
+  color:var(--tx3);cursor:pointer;transition:.12s;background:var(--panel2)}
+.drop:hover,.drop.over{border-color:var(--ac);background:var(--ac-bg);color:var(--ac)}
+.drop b{display:block;color:var(--tx2);font-size:12.5px;font-weight:600;margin-bottom:2px}
+.drop.has{border-style:solid;border-color:var(--ok-line);background:var(--ok-bg);color:var(--ok)}
+.drop.has b{color:var(--ok)}
+
+#toast{position:fixed;right:22px;bottom:22px;display:flex;flex-direction:column;gap:8px;z-index:99;pointer-events:none}
+#toast div{background:#26282d;color:#fff;padding:9px 15px;border-radius:var(--r2);font-size:12.5px;
+  animation:ti .18s ease;box-shadow:0 4px 16px rgba(0,0,0,.16)}
+@keyframes ti{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+
+details.acc{border:1px solid var(--line);border-radius:var(--r2);margin-bottom:8px;overflow:hidden}
+details.acc > summary{cursor:pointer;padding:9px 13px;font-size:12.5px;font-weight:600;background:var(--panel2);
+  list-style:none;display:flex;align-items:center;gap:8px}
+details.acc > summary::-webkit-details-marker{display:none}
+details.acc > summary::before{content:"▸";color:var(--tx3);font-size:10px;transition:transform .15s;display:inline-block}
+details.acc[open] > summary::before{transform:rotate(90deg)}
+details.acc .inner{padding:14px 13px 4px;border-top:1px solid var(--line2)}
+kbd{font:11px ui-monospace,Consolas,monospace;background:var(--panel2);border:1px solid var(--line);
+  border-bottom-width:2px;border-radius:4px;padding:1px 5px}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <span class="dot"></span>
+      <div><b>白模渲染器</b><span>控制台 v1.0</span></div>
+    </div>
+    <div class="nav" id="nav">
+      <div class="sec">生产流程</div>
+      <button data-v="card"     class="on"><span class="ic">◧</span>参数卡</button>
+      <button data-v="prompt"><span class="ic">¶</span>提示词引擎</button>
+      <button data-v="tasks"><span class="ic">☰</span>任务队列</button>
+      <button data-v="align"><span class="ic">⊞</span>对齐校验</button>
+      <div class="sec">项目</div>
+      <button data-v="board"><span class="ic">◇</span>项目看板</button>
+      <button data-v="changelog"><span class="ic">⟳</span>变更记录</button>
+    </div>
+    <div class="sidefoot">
+      对应过程文档<br><code>00-…过程文档.md</code><br>
+      文档版本 <b id="sb-ver">—</b><br>
+      服务 <span id="sb-live">连接中…</span>
+    </div>
+  </aside>
+
+  <main>
+    <header class="top">
+      <h1 id="ttl">参数卡</h1>
+      <span class="sub" id="tsub">L0 / L1 · 渲染参数卡编辑与落盘</span>
+      <span class="spacer"></span>
+      <span class="chip" id="top-phase">阶段 P0</span>
+      <span class="chip a" id="top-doc">文档 —</span>
+    </header>
+    <div class="body">
+
+      <!-- ================= 参数卡 ================= -->
+      <section class="view on" id="v-card">
+        <div class="note">
+          <b>参数卡是本方案的核心接口契约</b>（过程文档 ADR-003 / 5.4）。三种输入方式最终都收敛到这里：自然语言 → 参数卡 → <b>人工复核</b> → 落盘。提示词由参数卡<b>程序化拼装</b>，不手写。
+        </div>
+
+        <div class="grid2">
+          <div>
+            <div class="card">
+              <h2><span class="n">asset</span>产品与机位</h2>
+              <p class="desc">白模路径、类目、SKU、要出的机位。机位用球坐标预设，一套预设跨模型复用。</p>
+              <div class="row">
+                <label class="f"><span>类目 <em>category</em></span><input type="text" id="c-category" placeholder="激光水平仪"></label>
+                <label class="f"><span>SKU</span><input type="text" id="c-sku" placeholder="LS-360G"></label>
+              </div>
+              <label class="f"><span>白模路径 <em>model</em></span><input type="text" id="c-model" placeholder="D:/Models/LS-360G.ksp"></label>
+              <label class="f"><span>机位 <em>views，多选</em></span></label>
+              <div id="views-box" class="btns" style="margin:-6px 0 10px"></div>
+            </div>
+
+            <div class="card">
+              <h2><span class="n">material</span>材质</h2>
+              <p class="desc">用<b>参数</b>（roughness / metallic）而非形容词 —— 参数可映射到引擎，形容词只能映射到 AI 的模糊理解（ADR-003）。</p>
+              <details class="acc" open>
+                <summary>主体 body</summary>
+                <div class="inner">
+                  <div class="row">
+                    <label class="f"><span>类型</span><select id="m-body-type"></select></label>
+                    <label class="f"><span>表面处理</span><select id="m-body-finish"></select></label>
+                  </div>
+                  <div class="row">
+                    <label class="f"><span>颜色</span><input type="color" id="m-body-color"></label>
+                    <label class="f"><span>颜色值</span><input type="text" id="m-body-colorhex"></label>
+                  </div>
+                  <div class="row">
+                    <label class="f"><span>粗糙度 roughness</span><input type="number" id="m-body-rough" min="0" max="1" step="0.05"></label>
+                    <label class="f"><span>金属度 metallic</span><input type="number" id="m-body-metal" min="0" max="1" step="0.05"></label>
+                  </div>
+                </div>
+              </details>
+              <details class="acc">
+                <summary>附属件 trim <em style="font-weight:400;color:var(--tx3)">可选</em></summary>
+                <div class="inner">
+                  <div class="row">
+                    <label class="f"><span>类型</span><select id="m-trim-type"></select></label>
+                    <label class="f"><span>表面处理</span><select id="m-trim-finish"></select></label>
+                  </div>
+                  <div class="row">
+                    <label class="f"><span>颜色</span><input type="color" id="m-trim-color"></label>
+                    <label class="f"><span>粗糙度</span><input type="number" id="m-trim-rough" min="0" max="1" step="0.05"></label>
+                  </div>
+                </div>
+              </details>
+              <details class="acc">
+                <summary>透明件 window <em style="font-weight:400;color:var(--tx3)">可选 · 注意风险 #2</em></summary>
+                <div class="inner">
+                  <div class="note warn" style="margin:0 0 12px">
+                    AI 对透射材质能力不足（边界声明 7.5）。带透明件的产品建议：<b>透明区域用 KeyShot 真渲染后合成</b>，不要把透明件交给 AI 硬刚。
+                  </div>
+                  <div class="row">
+                    <label class="f"><span>类型</span><select id="m-win-type"></select></label>
+                    <label class="f"><span>透射率</span><input type="number" id="m-win-tr" min="0" max="1" step="0.01"></label>
+                    <label class="f"><span>折射率 IOR</span><input type="number" id="m-win-ior" min="1" max="2" step="0.01"></label>
+                  </div>
+                </div>
+              </details>
+            </div>
+
+            <div class="card">
+              <h2><span class="n">lighting</span>光照</h2>
+              <p class="desc">首选在 KeyShot 里换 HDR 环境<b>真三维重渲</b>，比让 AI 猜光照可靠（ADR-009）。IC-Light 只用于"手里只有一张现成图"的场景。</p>
+              <label class="f"><span>光照方案 <em>scheme</em></span><select id="l-scheme"></select></label>
+              <div class="row">
+                <label class="f"><span>主光方向</span><input type="text" id="l-key-dir"></label>
+                <label class="f"><span>主光色温 K</span><input type="number" id="l-key-temp" step="100"></label>
+                <label class="f"><span>光比 fill ratio</span><input type="number" id="l-fill-ratio" step="0.05" min="0" max="1"></label>
+              </div>
+              <label class="f"><span>HDR 环境图 <em>hdr_env</em></span><input type="text" id="l-hdr" placeholder="studio_soft_02.hdr"></label>
+              <label class="f"><span>阴影</span><select id="l-shadow">
+                <option value="soft_contact">柔和接触阴影</option>
+                <option value="hard">硬阴影</option>
+                <option value="none">无阴影</option>
+              </select></label>
+            </div>
+          </div>
+
+          <div>
+            <div class="card">
+              <h2><span class="n">camera</span>相机 · <span class="n">background</span>背景</h2>
+              <p class="desc">相机参数必须与 L2 出 pass 时<b>完全一致</b>，否则 Pass 与成图不对齐、ControlNet 失效（ADR-009 / 风险 #7）。</p>
+              <div class="row">
+                <label class="f"><span>焦段 mm</span><input type="number" id="c-focal" step="1"></label>
+                <label class="f"><span>机位高度</span><select id="c-height">
+                  <option value="product_level">产品水平</option>
+                  <option value="slightly_above">略高俯视</option>
+                  <option value="eye_level">人眼高度</option>
+                  <option value="top_down">正俯视</option>
+                </select></label>
+              </div>
+              <label class="f"><span>背景类型</span><select id="b-type"></select></label>
+              <div class="row">
+                <label class="f"><span>背景起始色</span><input type="color" id="b-from"></label>
+                <label class="f"><span>背景结束色</span><input type="color" id="b-to"></label>
+              </div>
+            </div>
+
+            <div class="card">
+              <h2><span class="n">reference</span>参考图仿照</h2>
+              <p class="desc">三档强度必须显式选择（ADR-005）。混为一谈会导致大量无效试错 —— 三档对应的权重差异巨大。</p>
+              <label class="f"><span>参考图路径 <em>可空</em></span><input type="text" id="r-image" placeholder="D:/refs/ref_01.jpg"></label>
+              <label class="f"><span>仿照强度 <em>strength</em></span><select id="r-strength">
+                <option value="">不使用参考图</option>
+                <option value="L1_style">L1 风格轻参考 · 只借色调影调氛围 · IP-Adapter 0.4–0.6</option>
+                <option value="L2_material">L2 材质参考 · 借某部位质感 · Redux factor 2–3 + 蒙版</option>
+                <option value="L3_full">L3 整体仿照 · 连打光带构图 · Redux factor 1–2 + 图生图</option>
+              </select></label>
+              <div id="r-extra" style="display:none">
+                <div class="row">
+                  <label class="f"><span>目标部位 <em>L2 必填</em></span><input type="text" id="r-part" placeholder="body_upper"></label>
+                  <label class="f"><span>蒙版路径</span><input type="text" id="r-mask" placeholder="D:/refs/ref_01_mask.png"></label>
+                </div>
+                <div class="note warn" style="margin:0 0 4px">
+                  <b>FLUX Redux 已知行为</b>：高权重时完全忽略提示词，只复刻参考图 → 必须配 <code>AdvancedRefluxControl</code> 用 <code>downsampling_factor</code> 把两个力掰开。<br>
+                  <b>已知限制</b>：只接受正方形输入，所以有 center crop / keep aspect ratio / autocrop with mask 三种裁切。
+                </div>
+              </div>
+            </div>
+
+            <div class="card">
+              <h2><span class="n">output</span>输出</h2>
+              <div class="row">
+                <label class="f"><span>长边 px</span><input type="number" id="o-res" step="128"></label>
+                <label class="f"><span>每机位张数</span><input type="number" id="o-count" min="1" max="20"></label>
+                <label class="f"><span>超分倍率</span><select id="o-up">
+                  <option value="1">1x 不放大</option><option value="2">2x</option><option value="4">4x</option>
+                </select></label>
+              </div>
+              <div class="row">
+                <label class="f"><span>语言</span><select id="o-lang"><option>CN</option><option>EN</option></select></label>
+                <label class="f"><span>seed 基数</span><input type="number" id="o-seed" step="1"></label>
+              </div>
+              <div class="row">
+                <label class="f"><span>depth 权重</span><input type="number" id="o-dw" min="0" max="1.5" step="0.05"></label>
+                <label class="f"><span>normal 权重</span><input type="number" id="o-nw" min="0" max="1.5" step="0.05"></label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2><span class="n">JSON</span>参数卡预览与落盘</h2>
+          <p class="desc">可直接编辑回填（双向同步）。落盘位置：<code>web/data/cards/{SKU}.json</code></p>
+          <div class="btns" style="margin-bottom:12px">
+            <button class="btn" id="btn-save">保存参数卡</button>
+            <button class="btn ghost" id="btn-copy-json">复制 JSON</button>
+            <button class="btn ghost" id="btn-reset">重置为默认</button>
+            <button class="btn ghost" id="btn-totasks">用此卡生成任务 →</button>
+            <span class="spacer"></span>
+            <button class="btn ghost" id="btn-newcard">新建空白卡</button>
+          </div>
+          <div class="grid2" style="gap:16px">
+            <div>
+              <div class="codehead"><b>当前编辑中</b></div>
+              <textarea id="json-edit" style="min-height:420px" spellcheck="false"></textarea>
+            </div>
+            <div>
+              <div class="codehead"><b>已落盘参数卡</b><span class="spacer"></span>
+                <button class="btn ghost sm" id="btn-reload">刷新</button></div>
+              <div class="cardlist" id="cardlist"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 提示词 ================= -->
+      <section class="view" id="v-prompt">
+        <div class="note">
+          提示词由参数卡<b>程序化拼装</b>，顺序固定（过程文档 9.5）：<br>
+          <code>[产品主体 + 禁止改形状] , [主体材质与表面处理] , [附属件材质] , [光照方案] , [背景] , [镜头与画质] , [正向品质词]</code>
+        </div>
+
+        <div class="card">
+          <h2>拼装结果 <span class="n" id="pv-view-label">front</span></h2>
+          <p class="desc">切换机位看不同视角的描述词。这一步对应 L1 → L3 的交接。</p>
+          <div class="btns" style="margin-bottom:14px" id="pv-views"></div>
+          <div class="grid2">
+            <div>
+              <div class="codehead"><b>正向 Positive</b><span class="spacer"></span>
+                <button class="btn ghost sm" id="pv-copy-pos">复制</button></div>
+              <pre class="code" id="pv-pos"></pre>
+            </div>
+            <div>
+              <div class="codehead"><b>负向 Negative</b><span class="spacer"></span>
+                <button class="btn ghost sm" id="pv-copy-neg">复制</button></div>
+              <pre class="code" id="pv-neg"></pre>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>为什么必须这样写</h2>
+          <div class="grid3">
+            <div>
+              <h3 style="font-size:12.5px;margin:0 0 6px">① prompt 里禁止写形状词</h3>
+              <p style="font-size:12.5px;color:var(--tx2);margin:0;line-height:1.7">
+                形状由 ControlNet 用 depth/normal 锁死。写形状词会与 ControlNet 信号冲突，且是 AI 最不可控的输入（ADR-002）。<br>
+                <b>自检</b>：如果你发现要写很长的形状描述才能出对图，说明 depth 权重没调好，回去调 9.3 第 1 步。
+              </p>
+            </div>
+            <div>
+              <h3 style="font-size:12.5px;margin:0 0 6px">② 负向词必须排除文字</h3>
+              <p style="font-size:12.5px;color:var(--tx2);margin:0;line-height:1.7">
+                负向词里显式包含 <code>text / numbers / logo / markings</code>，AI 就不会去"猜"丝印内容，留下干净表面供后期回贴（ADR-002）。<br>
+                <b>这是把「丝印错乱」这个 🔴 高风险从 AI 侧摘掉的关键动作。</b>
+              </p>
+            </div>
+            <div>
+              <h3 style="font-size:12.5px;margin:0 0 6px">③ 调参顺序不能平行</h3>
+              <p style="font-size:12.5px;color:var(--tx2);margin:0;line-height:1.7">
+                只开 Depth（0.60 起）→ 加 Normal（0.35 起）→ 加参考图（低权重）→ 最后才调 prompt → 打光单独一轮。<br>
+                <b>Normal 权重超过 0.5 要警惕</b>，画面会发"塑料感"和"死灰"。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>词表速查</h2>
+          <div class="grid3">
+            <div><div class="codehead"><b>材质</b></div><div class="tbl-wrap"><table id="tbl-mat"></table></div></div>
+            <div><div class="codehead"><b>光照</b></div><div class="tbl-wrap"><table id="tbl-lit"></table></div></div>
+            <div><div class="codehead"><b>背景</b></div><div class="tbl-wrap"><table id="tbl-bg"></table></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 任务队列 ================= -->
+      <section class="view" id="v-tasks">
+        <div class="note">
+          对应过程文档 5.6 调度设计与 ADR-007。任务落 <code>config/tasks.db</code>（SQLite）。<b>断点续跑</b>：服务启动时会把残留 <code>running</code> 自动重置为 <code>pending</code>。
+        </div>
+        <div class="stat" id="t-stats"></div>
+        <div class="card">
+          <h2>队列操作</h2>
+          <p class="desc">从参数卡展开任务：SKU × 机位 × 每机位张数。提示词与载荷在此刻固化，保证可复现。</p>
+          <div class="btns">
+            <button class="btn" id="t-gen">用当前参数卡生成任务</button>
+            <button class="btn ghost" id="t-refresh">刷新</button>
+            <button class="btn ghost" id="t-export">导出下一个任务的 ComfyUI 载荷</button>
+            <span class="spacer"></span>
+            <button class="btn danger" id="t-clear">清空队列</button>
+          </div>
+        </div>
+        <div class="card">
+          <h2>任务列表 <span class="n" id="t-count">0</span></h2>
+          <div class="tbl-wrap">
+            <table><thead><tr>
+              <th>ID</th><th>SKU</th><th>机位</th><th>变体</th><th>seed</th><th>状态</th><th>重试</th><th>操作</th>
+            </tr></thead><tbody id="t-body"></tbody></table>
+          </div>
+        </div>
+        <div class="card">
+          <h2>ComfyUI 载荷与槽位映射</h2>
+          <p class="desc">与 <code>scripts/comfy_batch.py</code> 的 <code>SLOTS</code> 一一对应。把 <code>workflows/product_render_api.json</code> 放在工作流目录后即可直接消费。</p>
+          <div class="grid2">
+            <div><div class="codehead"><b>载荷 payload</b><span class="spacer"></span>
+              <button class="btn ghost sm" id="p-copy">复制</button></div>
+              <pre class="code" id="payload"></pre></div>
+            <div><div class="codehead"><b>槽位映射 SLOTS</b></div>
+              <div class="tbl-wrap"><table id="tbl-slots"></table></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 对齐校验 ================= -->
+      <section class="view" id="v-align">
+        <div class="note">
+          <b>像素级对齐是一切的前提</b>（设计理念 4.4 / 风险 #7）。Pass 与成图不对齐，ControlNet 传递的就是噪音 —— 你再怎么调权重都是在跟错误信号对抗。<br>
+          判定口径与 <code>scripts/align_check.py</code> 一致：轮廓 <b>IoU &lt; 0.90</b> 或质心偏移 <b>&gt; 2% 图宽</b> → FAIL，打回重跑，不要浪费时间精修。
+        </div>
+
+        <div class="card">
+          <h2>上传两张图计算轮廓重合度</h2>
+          <p class="desc">左：白模 beauty（L2 产出）｜右：AI 生成图（L3 产出）。全部在浏览器内计算，图片不上传服务器。</p>
+          <div class="grid2">
+            <div>
+              <div class="drop" id="drop-a"><b>白模 beauty.png</b>点击选择或拖入</div>
+              <input type="file" id="file-a" accept="image/*" hidden>
+            </div>
+            <div>
+              <div class="drop" id="drop-b"><b>AI 生成图.png</b>点击选择或拖入</div>
+              <input type="file" id="file-b" accept="image/*" hidden>
+            </div>
+          </div>
+          <div class="row" style="margin-top:16px;max-width:520px">
+            <label class="f"><span>亮度阈值 <em>低于此值视为主体</em></span><input type="number" id="al-thresh" value="245" step="1"></label>
+            <label class="f"><span>IoU 下限</span><input type="number" id="al-iou" value="0.90" step="0.01"></label>
+            <label class="f"><span>偏移上限 <em>占图宽</em></span><input type="number" id="al-off" value="0.02" step="0.005"></label>
+          </div>
+          <div class="btns">
+            <button class="btn" id="al-run">计算对齐度</button>
+            <button class="btn ghost" id="al-clear">清空</button>
+          </div>
+        </div>
+
+        <div class="grid2" id="al-result" style="display:none">
+          <div class="card">
+            <h2>判定结果</h2>
+            <div id="al-verdict"></div>
+            <div class="tbl-wrap" style="margin-top:14px"><table id="al-table"></table></div>
+          </div>
+          <div class="card">
+            <h2>轮廓叠加可视化</h2>
+            <p class="desc">红 = 白模轮廓｜蓝 = 生成图轮廓｜深紫 = 重合区。重合区应当基本覆盖主体。</p>
+            <canvas id="al-canvas" width="520" height="520"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 项目看板 ================= -->
+      <section class="view" id="v-board">
+        <div class="note">
+          来源：过程文档第十一章（阶段）、第十三章（风险登记册）、附录 E（待办）。这里是<b>可编辑的执行面</b>，勾选状态存在 <code>web/data/board.json</code>。
+          <b>结论与参数的变更仍须回写到 00 过程文档并留痕</b>，本页面不代替文档。
+        </div>
+
+        <div class="card">
+          <h2>阶段推进</h2>
+          <p class="desc">阶段状态可在此更新。P0 带 <span class="gateflag">硬门槛</span> 标记 —— 它不过，整个方案暂停。</p>
+          <div class="grid-auto" id="phases"></div>
+        </div>
+
+        <div class="card">
+          <h2>风险登记册 <span class="n" id="risk-count"></span></h2>
+          <p class="desc">等级：<span class="pill high">高</span> <span class="pill mid">中</span> <span class="pill low">低</span></p>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th style="width:40px">#</th><th>风险</th><th style="width:60px">等级</th><th>应对措施</th></tr></thead>
+            <tbody id="t-body-risk"></tbody></table></div>
+        </div>
+
+        <div class="card">
+          <h2>待办与待验证 <span class="n" id="todo-count"></span></h2>
+          <p class="desc">勾选即持久化。对应过程文档附录 E。</p>
+          <div id="todos"></div>
+        </div>
+
+        <div class="card">
+          <h2>实测坑位记录</h2>
+          <p class="desc">对应过程文档 10.3。每次踩坑必须登记：日期 / 现象 / 原因 / 解法。这是本方案最有长期价值的表之一。</p>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th style="width:100px">日期</th><th>现象</th><th>原因</th><th>解法</th><th style="width:90px">来源</th></tr></thead>
+            <tbody id="t-body-pit"></tbody></table></div>
+          <div class="btns" style="margin-top:12px">
+            <button class="btn ghost sm" id="pit-add">+ 登记一条</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= 变更记录 ================= -->
+      <section class="view" id="v-changelog">
+        <div class="note">
+          数据来自 <code>00-AI白模渲染器-过程文档.md</code> 的「二、变更记录」表格，<b>只读</b>。<br>
+          新增变更请在文档中登记，规则见「一、文档说明与留痕规范」：先在变更记录追加一行 → 再改正文 → 章节末尾加 <code>&gt; 留痕：vX.Y（日期）说明</code> → 更新文末版本号。
+        </div>
+        <div class="card">
+          <h2>版本历史</h2>
+          <p class="desc">变更类型：<span class="pill NEW">NEW</span> 新增 · <span class="pill MOD">MOD</span> 修改 · <span class="pill FIX">FIX</span> 修正 · <span class="pill DEL">DEL</span> 废弃 · <span class="pill DATA">DATA</span> 实测数据 · <span class="pill STAGE">STAGE</span> 阶段状态</p>
+          <div class="tbl-wrap"><table>
+            <thead><tr><th style="width:96px">日期</th><th style="width:70px">版本</th><th style="width:74px">类型</th><th>变更摘要</th><th style="width:15%">触发原因</th><th style="width:12%">影响章节</th></tr></thead>
+            <tbody id="t-body-cl"></tbody></table></div>
+          <div id="cl-empty" style="display:none;padding:14px;color:var(--tx3);font-size:12.5px">
+            未找到过程文档或未解析到变更记录。请确认 <code>00-AI白模渲染器-过程文档.md</code> 位于项目根目录。
+          </div>
+        </div>
+        <div class="card">
+          <h2>留痕规范摘录</h2>
+          <div class="grid3">
+            <div>
+              <h3 style="font-size:12.5px;margin:0 0 6px">版本号规则</h3>
+              <p style="font-size:12.5px;color:var(--tx2);margin:0;line-height:1.8">
+                <b>主版本</b> 架构级变更（分层、路线、核心决策）<br>
+                <b>次版本</b> 内容新增或重要修正<br>
+                <b>修订号</b> 错别字、链接、表述
+              </p>
+            </div>
+            <div>
+              <h3 style="font-size:12.5px;margin:0 0 6px">标准动作</h3>
+              <p style="font-size:12.5px;color:var(--tx2);margin:0;line-height:1.8">
+                ① 变更记录表<b>顶部追加一行</b><br>
+                ② 正文被改章节末尾加 <code>&gt; 留痕：</code><br>
+                ③ <b>不做删除式覆盖</b>，废弃移入附录 D<br>
+                ④ 量化优先（68% → 84%，不是"更好了"）
+              </p>
+            </div>
+            <div>
+              <h3 style="font-size:12.5px;margin:0 0 6px">一句话原则</h3>
+              <p style="font-size:12.5px;color:var(--tx2);margin:0;line-height:1.8">
+                论文档的长期价值不在于写得多好，而在于<b>三个月后还能查回为什么当初这么定</b>。ADR 记的是理由，不是结论。
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+<div id="toast"></div>
+
+<script>
+/* =========================================================
+   词表 —— 严格对应过程文档 9.5
+   ========================================================= */
+const MATERIAL_EN = {
+  ABS:"ABS plastic", PC:"polycarbonate", aluminum:"aluminum",
+  PMMA:"acrylic", rubber:"TPE rubber", stainless:"stainless steel",
+  glass:"tempered glass", silicone:"silicone"
+};
+const FINISH_EN = {
+  fine_sandblast:"fine sandblasted matte", anodized_brushed:"anodized brushed",
+  high_gloss:"high gloss", soft_touch:"soft-touch coating",
+  matte:"matte", polished:"polished", injection:"injection-molded"
+};
+const LIGHTING_MAP = {
+  studio_softbox_3point:"professional studio three-point softbox lighting, soft large key light from front-left, soft fill from front-right, subtle rim light, soft contact shadow",
+  top_soft:"soft overhead diffused lighting, even illumination, minimal shadow",
+  backlight_dramatic:"dramatic backlight with soft front fill, bright edge separation",
+  natural_window:"natural window light from the side, soft gradient falloff",
+  ring_light:"ring light, flat even illumination, minimal shadow, e-commerce catalog style",
+  hard_light:"hard directional light, crisp defined shadow, high contrast product shot",
+  white_bg_studio:"bright e-commerce studio lighting on pure white, clean even illumination"
+};
+const BG_MAP = {
+  pure_white:"seamless pure white background, isolated product, clean cutout",
+  gradient_gray:"seamless light gray gradient background",
+  charcoal_gradient:"deep charcoal gradient background, dramatic studio falloff",
+  scene_desktop:"minimal wooden desktop workspace scene, shallow depth of field",
+  scene_site:"construction site surface, concrete floor, softly blurred background",
+  scene_workshop:"industrial workshop environment, softly blurred pipes and machinery"
+};
+const VIEWS = {
+  front:"straight-on front view",
+  "3q4_left":"front three-quarter view from the left",
+  "3q4_right":"front three-quarter view from the right",
+  side:"side profile view",
+  top:"top-down view",
+  detail_keypad:"close-up macro detail view",
+  detail_window:"close-up macro view of the transparent window area"
+};
+/* 与文档 9.5 完全一致 —— 必须保留 text/numbers/logo/markings */
+const NEGATIVE = "blurry, low quality, distorted shape, warped geometry, extra parts, "
+  + "text, watermark, letters, numbers, logo, label, ruler markings, "
+  + "reflections of other objects, people, hands, cluttered background, "
+  + "oversaturated, cartoon, illustration, CGI plastic look";
+
+/* 槽位映射 —— 与 scripts/comfy_batch.py 的 SLOTS 一致 */
+const SLOTS = {
+  positive:["6","inputs","text"], negative:["7","inputs","text"],
+  seed:["3","inputs","seed"], width:["5","inputs","width"], height:["5","inputs","height"],
+  depth_img:["10","inputs","image"], normal_img:["11","inputs","image"], ref_img:["12","inputs","image"],
+  depth_w:["20","inputs","strength"], normal_w:["21","inputs","strength"],
+  redux_f:["30","inputs","downsampling_factor"], denoise:["3","inputs","denoise"]
+};
+const STRENGTH_REDUX = {"L1_style":3,"L2_material":2,"L3_full":1};
+const STRENGTH_LABEL = {"L1_style":"L1 风格轻参考","L2_material":"L2 材质参考","L3_full":"L3 整体仿照"};
+
+/* =========================================================
+   默认参数卡
+   ========================================================= */
+function defaultCard(){
+  return {
+    asset:{ model:"D:/Models/LS-360G.ksp", category:"激光水平仪", sku:"LS-360G",
+            views:["front","3q4_left","3q4_right","top"] },
+    material:{
+      body:{ type:"ABS", finish:"fine_sandblast", color:"#2B2F33", roughness:0.75, metallic:0.0 },
+      trim:{ type:"aluminum", finish:"anodized_brushed", color:"#9AA0A6", roughness:0.35, metallic:1.0 },
+      window:{ type:"PMMA", transmission:0.92, ior:1.49 }
+    },
+    lighting:{
+      scheme:"studio_softbox_3point",
+      key:{ dir:"front_left_45", temp:5600, size:"soft_large" },
+      fill:{ dir:"front_right_60", temp:5600, ratio:0.35 },
+      rim:{ dir:"back_right", temp:6000, intensity:0.8 },
+      shadow:"soft_contact", hdr_env:"studio_soft_02.hdr"
+    },
+    camera:{ focal:85, height:"product_level", perspective:"mild_tele" },
+    background:{ type:"gradient_gray", from:"#F5F6F7", to:"#DDE1E4" },
+    reference:{ image:"", strength:"", target_part:"", mask:"" },
+    output:{ resolution:[2048,2048], count:4, upscale:2, lang:"CN" },
+    _seed_base:100000,
+    _pass_dir:"D:/Dsektop/AI渲染/output/passes/LS-360G",
+    _depth_w:0.65, _normal_w:0.40, _timeout:600
+  };
+}
+let card = defaultCard();
+let state = { cards:[], board:null, doc:{} };
+
+/* =========================================================
+   提示词拼装 —— 严格对应文档 9.5 的结构公式
+   ========================================================= */
+function buildPositive(c, view){
+  const m=c.material, l=c.lighting, b=c.background, cam=c.camera;
+  const parts=[];
+  const body=m.body;
+  const bodyDesc = (FINISH_EN[body.finish]||body.finish)+" "+(MATERIAL_EN[body.type]||body.type)
+                 + " body in "+(body.color||"#888888");
+  if(m.trim && m.trim.type){
+    parts.push((FINISH_EN[m.trim.finish]||m.trim.finish)+" "+(MATERIAL_EN[m.trim.type]||m.trim.type)
+      + " trim in "+(m.trim.color||"#999999"));
+  }
+  if(m.window && m.window.type){
+    parts.push(m.window.type==="PMMA"
+      ? "clear acrylic transparent window with realistic refraction"
+      : "tempered glass window with realistic refraction and edge highlight");
+  }
+  return "Professional commercial product photograph of a "+(c.asset.category||"product")
+    + " (do not change its shape), "+bodyDesc
+    + (parts.length? ", "+parts.join(", ") : "") + ". "
+    + (LIGHTING_MAP[l.scheme]||l.scheme) + ". "
+    + (BG_MAP[b.type]||b.type) + ". "
+    + "Shot on "+cam.focal+"mm lens, "+(VIEWS[view]||view)+", "
+    + "sharp focus, high detail, photorealistic, 8k product photography, "
+    + "accurate proportions, clean surfaces, studio quality";
+}
+
+function buildPayload(c, view, variant){
+  const ref = c.reference||{};
+  const hasRef = !!(ref.image && ref.strength);
+  return {
+    positive: buildPositive(c, view),
+    negative: NEGATIVE,
+    seed: (c._seed_base|0) + (variant|0),
+    width: 1024, height: 1024,
+    depth_img: `${c.asset.sku}/${view}/depth.png`,
+    normal_img: `${c.asset.sku}/${view}/normal.png`,
+    ref_img: hasRef ? ref.image : "",
+    depth_w: c._depth_w, normal_w: c._normal_w,
+    redux_f: hasRef ? (STRENGTH_REDUX[ref.strength]||3) : null,
+    denoise: ref.strength==="L3_full" ? 0.6 : null,
+    // 元数据（非槽位，便于追溯）
+    _meta: { sku:c.asset.sku, view, variant, strength: ref.strength||null,
+             lang: c.output.lang, upscale: c.output.upscale, resolution: c.output.resolution }
+  };
+}
+
+/* =========================================================
+   工具
+   ========================================================= */
+const $ = s => document.querySelector(s);
+const $$ = s => Array.from(document.querySelectorAll(s));
+function toast(msg){
+  const d=document.createElement("div"); d.textContent=msg;
+  $("#toast").appendChild(d); setTimeout(()=>d.remove(), 2200);
+}
+async function api(path, opts){
+  const r = await fetch(path, opts);
+  const t = await r.text();
+  let j; try{ j = JSON.parse(t); }catch(e){ throw new Error(t.slice(0,200)); }
+  if(!r.ok) throw new Error(j.error||("HTTP "+r.status));
+  return j;
+}
+function copy(text, label){
+  const done=()=>toast((label||"内容")+"已复制");
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(done).catch(()=>fallback());
+  } else fallback();
+  function fallback(){
+    const ta=document.createElement("textarea"); ta.value=text;
+    ta.style.position="fixed"; ta.style.opacity="0"; document.body.appendChild(ta);
+    ta.select(); try{document.execCommand("copy"); done();}catch(e){toast("复制失败，请手动选择");}
+    ta.remove();
+  }
+}
+
+/* =========================================================
+   下拉框初始化
+   ========================================================= */
+function fillSelect(sel, obj, labeler){
+  sel.innerHTML = Object.keys(obj).map(k=>{
+    const label = labeler ? labeler(k, obj[k]) : (obj[k].zh||k);
+    return `<option value="${k}">${label}</option>`;
+  }).join("");
+}
+const MATERIAL_LABELS = {ABS:"ABS 塑料",PC:"聚碳酸酯 PC",aluminum:"铝",PMMA:"亚克力 PMMA",
+  rubber:"TPE 橡胶",stainless:"不锈钢",glass:"玻璃",silicone:"硅胶"};
+const FINISH_LABELS = {fine_sandblast:"细磨砂",anodized_brushed:"阳极氧化拉丝",high_gloss:"高光",
+  soft_touch:"类肤漆",matte:"哑光",polished:"抛光",injection:"注塑"};
+const LIGHT_LABELS = {studio_softbox_3point:"影棚柔光箱三点光",top_soft:"顶柔光",
+  backlight_dramatic:"侧逆光",natural_window:"自然窗光",ring_light:"环形光（无阴影）",
+  hard_light:"硬光高对比",white_bg_studio:"产品棚拍白底"};
+const BG_LABELS = {pure_white:"纯白无缝",gradient_gray:"浅灰渐变",charcoal_gradient:"深灰影调",
+  scene_desktop:"桌面场景",scene_site:"工地场景",scene_workshop:"车间场景"};
+
+function initSelects(){
+  fillSelect($("#m-body-type"), MATERIAL_EN, k=>MATERIAL_LABELS[k]||k);
+  fillSelect($("#m-trim-type"), MATERIAL_EN, k=>MATERIAL_LABELS[k]||k);
+  fillSelect($("#m-body-finish"), FINISH_EN, k=>FINISH_LABELS[k]||k);
+  fillSelect($("#m-trim-finish"), FINISH_EN, k=>FINISH_LABELS[k]||k);
+  $("#m-win-type").innerHTML = '<option value="PMMA">亚克力 PMMA</option><option value="glass">钢化玻璃</option><option value="PC">聚碳酸酯 PC</option>';
+  fillSelect($("#l-scheme"), LIGHTING_MAP, k=>LIGHT_LABELS[k]||k);
+  fillSelect($("#b-type"), BG_MAP, k=>BG_LABELS[k]||k);
+  // 机位多选
+  $("#views-box").innerHTML = Object.keys(VIEWS).map(v=>
+    `<label class="chip" style="cursor:pointer;user-select:none" data-view="${v}">
+       <input type="checkbox" value="${v}" style="accent-color:var(--ac);margin:0">
+       ${v}
+     </label>`).join("");
+  $$("#views-box input").forEach(cb=>cb.addEventListener("change", ()=>{
+    const v = cb.value, i = card.asset.views.indexOf(v);
+    if(cb.checked && i<0) card.asset.views.push(v);
+    if(!cb.checked && i>=0) card.asset.views.splice(i,1);
+    renderAll();
+  }));
+  $("#pv-views").innerHTML = "";
+}
+
+/* =========================================================
+   表单 <-> 卡片 双向同步
+   ========================================================= */
+function cardToForm(){
+  const c=card;
+  $("#c-category").value=c.asset.category; $("#c-sku").value=c.asset.sku; $("#c-model").value=c.asset.model;
+  $("#m-body-type").value=c.material.body.type; $("#m-body-finish").value=c.material.body.finish;
+  $("#m-body-color").value=c.material.body.color; $("#m-body-colorhex").value=c.material.body.color;
+  $("#m-body-rough").value=c.material.body.roughness; $("#m-body-metal").value=c.material.body.metallic;
+  $("#m-trim-type").value=c.material.trim.type; $("#m-trim-finish").value=c.material.trim.finish;
+  $("#m-trim-color").value=c.material.trim.color; $("#m-trim-rough").value=c.material.trim.roughness;
+  $("#m-win-type").value=c.material.window.type;
+  $("#m-win-tr").value=c.material.window.transmission; $("#m-win-ior").value=c.material.window.ior;
+  $("#l-scheme").value=c.lighting.scheme; $("#l-key-dir").value=c.lighting.key.dir;
+  $("#l-key-temp").value=c.lighting.key.temp; $("#l-fill-ratio").value=c.lighting.fill.ratio;
+  $("#l-hdr").value=c.lighting.hdr_env; $("#l-shadow").value=c.lighting.shadow;
+  $("#c-focal").value=c.camera.focal; $("#c-height").value=c.camera.height;
+  $("#b-type").value=c.background.type; $("#b-from").value=c.background.from; $("#b-to").value=c.background.to;
+  $("#r-image").value=c.reference.image||""; $("#r-strength").value=c.reference.strength||"";
+  $("#r-part").value=c.reference.target_part||""; $("#r-mask").value=c.reference.mask||"";
+  $("#o-res").value=c.output.resolution[0]; $("#o-count").value=c.output.count;
+  $("#o-up").value=c.output.upscale; $("#o-lang").value=c.output.lang; $("#o-seed").value=c._seed_base;
+  $("#o-dw").value=c._depth_w; $("#o-nw").value=c._normal_w;
+  $$("#views-box input").forEach(cb=>cb.checked = c.asset.views.includes(cb.value));
+  $("#r-extra").style.display = c.reference.strength ? "block" : "none";
+  $("#json-edit").value = JSON.stringify(c, null, 2);
+}
+function formToCard(){
+  const c=card;
+  c.asset.category=$("#c-category").value; c.asset.sku=$("#c-sku").value.trim(); c.asset.model=$("#c-model").value;
+  c.material.body.type=$("#m-body-type").value; c.material.body.finish=$("#m-body-finish").value;
+  c.material.body.color=$("#m-body-colorhex").value||$("#m-body-color").value;
+  c.material.body.roughness=parseFloat($("#m-body-rough").value)||0;
+  c.material.body.metallic=parseFloat($("#m-body-metal").value)||0;
+  c.material.trim.type=$("#m-trim-type").value; c.material.trim.finish=$("#m-trim-finish").value;
+  c.material.trim.color=$("#m-trim-color").value;
+  c.material.trim.roughness=parseFloat($("#m-trim-rough").value)||0;
+  c.material.window.type=$("#m-win-type").value;
+  c.material.window.transmission=parseFloat($("#m-win-tr").value)||0;
+  c.material.window.ior=parseFloat($("#m-win-ior").value)||1.49;
+  c.lighting.scheme=$("#l-scheme").value; c.lighting.key.dir=$("#l-key-dir").value;
+  c.lighting.key.temp=parseInt($("#l-key-temp").value)||5600;
+  c.lighting.fill.ratio=parseFloat($("#l-fill-ratio").value)||0.35;
+  c.lighting.hdr_env=$("#l-hdr").value; c.lighting.shadow=$("#l-shadow").value;
+  c.camera.focal=parseInt($("#c-focal").value)||85; c.camera.height=$("#c-height").value;
+  c.background.type=$("#b-type").value; c.background.from=$("#b-from").value; c.background.to=$("#b-to").value;
+  c.reference.image=$("#r-image").value; c.reference.strength=$("#r-strength").value;
+  c.reference.target_part=$("#r-part").value; c.reference.mask=$("#r-mask").value;
+  const res=parseInt($("#o-res").value)||2048;
+  c.output.resolution=[res,res];
+  c.output.count=parseInt($("#o-count").value)||1;
+  c.output.upscale=parseInt($("#o-up").value)||1;
+  c.output.lang=$("#o-lang").value; c._seed_base=parseInt($("#o-seed").value)||100000;
+  c._depth_w=parseFloat($("#o-dw").value)||0.65; c._normal_w=parseFloat($("#o-nw").value)||0.40;
+  c._pass_dir = "D:/Dsektop/AI渲染/output/passes/"+c.asset.sku;
+  $("#r-extra").style.display = c.reference.strength ? "block" : "none";
+}
+
+/* =========================================================
+   渲染
+   ========================================================= */
+let pvView = "front";
+
+function renderPrompt(){
+  if(!card.asset.views.includes(pvView)) pvView = card.asset.views[0] || "front";
+  $("#pv-views").innerHTML = card.asset.views.map(v=>
+    `<button class="btn ${v===pvView?'':'ghost'} sm" data-pv="${v}">${v}</button>`).join("");
+  $$("#pv-views button").forEach(b=>b.onclick=()=>{ pvView=b.dataset.pv; renderPrompt(); });
+  $("#pv-view-label").textContent = pvView;
+  $("#pv-pos").textContent = buildPositive(card, pvView);
+  $("#pv-neg").textContent = NEGATIVE;
+}
+
+function renderCardList(){
+  const el=$("#cardlist");
+  if(!state.cards.length){ el.innerHTML='<div style="color:var(--tx3);font-size:12.5px;padding:8px">还没有落盘的参数卡</div>'; return; }
+  el.innerHTML = state.cards.map((c,i)=>
+    `<div class="carditem" data-i="${i}">
+       <b>${c.sku}</b><span style="color:var(--tx3)">${c.category||""}</span>
+       <span class="spacer"></span><small>${c.mtime}</small>
+       <button class="btn ghost sm" data-del="${c.sku}">删</button>
+     </div>`).join("");
+  $$("#cardlist .carditem").forEach(it=>{
+    it.onclick = e=>{
+      if(e.target.dataset.del) return;
+      const c = state.cards[+it.dataset.i];
+      if(!c.data) return toast("该卡解析失败");
+      card = JSON.parse(JSON.stringify(c.data));
+      cardToForm(); renderPrompt(); toast("已载入 "+c.sku);
+    };
+  });
+  $$("#cardlist [data-del]").forEach(b=>b.onclick = async e=>{
+    e.stopPropagation();
+    const sku=b.dataset.del;
+    if(!confirm(`确认删除参数卡 ${sku}？`)) return;
+    await api("/api/card?sku="+encodeURIComponent(sku), {method:"DELETE"});
+    toast("已删除"); await refresh();
+  });
+}
+
+function renderTasks(){
+  const s = state.stats||{};
+  $("#t-stats").innerHTML = [
+    ["总计", s.total||0, ""], ["待跑", s.pending||0, ""], ["运行中", s.running||0, "a"],
+    ["已完成", s.done||0, "g"], ["失败", s.failed||0, "e"]
+  ].map(([k,v,cl])=>`<div class="s"><b style="${cl==='g'?'color:var(--ok)':cl==='e'?'color:var(--er)':cl==='a'?'color:var(--ac)':''}">${v}</b><span>${k}</span></div>`).join("");
+
+  const rows = state.tasks||[];
+  $("#t-count").textContent = rows.length;
+  const tb=$("#t-body");
+  if(!rows.length){
+    tb.innerHTML = '<tr><td colspan="8" style="color:var(--tx3);padding:18px;text-align:center">队列为空。用左侧参数卡生成任务。</td></tr>';
+  } else {
+    tb.innerHTML = rows.map(t=>{
+      let seed="—";
+      try{ seed = JSON.parse(t.payload||"{}").seed ?? "—"; }catch(e){}
+      return `<tr>
+        <td>${t.id}</td><td><b>${t.sku}</b></td><td>${t.view}</td><td>v${t.variant}</td><td>${seed}</td>
+        <td><span class="pill ${t.status}">${t.status}</span></td><td>${t.retry}</td>
+        <td><div class="btns">
+          <button class="btn ghost sm" data-set="${t.id}" data-to="pending">待跑</button>
+          <button class="btn ghost sm" data-set="${t.id}" data-to="running">运行</button>
+          <button class="btn ghost sm" data-set="${t.id}" data-to="done">完成</button>
+          <button class="btn ghost sm" data-set="${t.id}" data-to="failed">失败</button>
+        </div></td></tr>`;
+    }).join("");
+    $$("#t-body [data-set]").forEach(b=>b.onclick=async()=>{
+      await api("/api/task/status", {method:"POST",headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({id:+b.dataset.set, status:b.dataset.to})});
+      await loadTasks();
+    });
+  }
+
+  // 槽位表
+  $("#tbl-slots").innerHTML = "<thead><tr><th>槽位</th><th>节点</th><th>字段</th></tr></thead><tbody>"
+    + Object.entries(SLOTS).map(([k,v])=>`<tr><td><code>${k}</code></td><td>${v[0]}</td><td>${v[2]}</td></tr>`).join("")
+    + "</tbody>";
+
+  renderPayload();
+}
+
+let lastPayloadTask = null;
+function renderPayload(){
+  const t = (state.tasks||[])[0];
+  const p = t ? (()=>{ try{return JSON.parse(t.payload||"{}");}catch(e){return null;} })() : null;
+  if(!p){
+    $("#payload").textContent = "// 先生成任务。\n// 这里会显示与 comfy_batch.py SLOTS 对齐的载荷，可直接喂给 ComfyUI /prompt。";
+    return;
+  }
+  lastPayloadTask = t;
+  const clean = {}; Object.entries(p).forEach(([k,v])=>{ if(k!=="_meta") clean[k]=v; });
+  $("#payload").textContent = JSON.stringify({
+    _comment: `任务 #${t.id} · ${t.sku} / ${t.view} / v${t.variant}`,
+    _note: "文件型槽位（depth_img / normal_img / ref_img）需先用 /upload/image 上传，再把返回文件名填回。",
+    ...clean
+  }, null, 2);
+}
+
+function renderBoard(){
+  const b = state.board; if(!b) return;
+  $("#phases").innerHTML = b.phases.map((p,i)=>`
+    <div class="phase ${p.gate?'gate':''}">
+      <h3>${p.id} · ${p.name} ${p.gate?'<span class="gateflag">硬门槛</span>':''}
+        <span class="spacer" style="flex:1"></span></h3>
+      <div class="dur">${p.duration}</div>
+      <p><b>目标</b>　${p.goal}</p>
+      <p><b>验收</b>　${p.accept}</p>
+      <select data-phase="${i}">
+        ${["未开始","进行中","已完成","受阻"].map(s=>
+          `<option ${s===p.status?"selected":""}>${s}</option>`).join("")}
+      </select>
+    </div>`).join("");
+  $$("#phases select").forEach(sel=>sel.onchange=async()=>{
+    state.board.phases[+sel.dataset.phase].status = sel.value;
+    await saveBoard(); updateTopChip(); toast("阶段状态已更新");
+  });
+
+  $("#risk-count").textContent = b.risks.length;
+  $("#t-body-risk").innerHTML = b.risks.map(r=>{
+    const cl = r.level==="高"?"high":r.level==="中"?"mid":"low";
+    return `<tr><td>${r.id}</td><td><b>${r.name}</b></td>
+      <td><span class="pill ${cl}">${r.level}</span></td><td>${r.action}</td></tr>`;
+  }).join("");
+
+  const dn = b.todos.filter(t=>t.done).length;
+  $("#todo-count").textContent = `${dn}/${b.todos.length}`;
+  $("#todos").innerHTML = b.todos.map((t,i)=>`
+    <div class="todo ${t.done?'done':''}">
+      <input type="checkbox" data-todo="${i}" ${t.done?'checked':''}>
+      <label for="">${t.name}</label>
+      <span class="tag">${t.type}</span>
+      <span class="tag" style="color:${t.priority==='最高'?'var(--er)':t.priority==='高'?'var(--wn)':'var(--tx3)'}">${t.priority}</span>
+    </div>`).join("");
+  $$("#todos input").forEach(cb=>cb.onchange=async()=>{
+    state.board.todos[+cb.dataset.todo].done = cb.checked;
+    await saveBoard(); renderBoard();
+  });
+
+  const pits = b.pitfalls||[];
+  $("#t-body-pit").innerHTML = pits.map((p,i)=>`
+    <tr>
+      <td><input type="text" data-pit="${i}" data-k="date" value="${p.date||""}" placeholder="2026-09-19"></td>
+      <td><input type="text" data-pit="${i}" data-k="symptom" value="${p.symptom||""}"></td>
+      <td><input type="text" data-pit="${i}" data-k="cause" value="${p.cause||""}"></td>
+      <td><input type="text" data-pit="${i}" data-k="fix" value="${p.fix||""}"></td>
+      <td><input type="text" data-pit="${i}" data-k="source" value="${p.source||""}"></td>
+    </tr>`).join("");
+  $$("#t-body-pit input").forEach(inp=>inp.onchange=async()=>{
+    state.board.pitfalls[+inp.dataset.pit][inp.dataset.k] = inp.value;
+    await saveBoard();
+  });
+}
+
+async function saveBoard(){
+  await api("/api/board", {method:"POST",headers:{"Content-Type":"application/json"},
+    body: JSON.stringify(state.board)});
+}
+function updateTopChip(){
+  const cur = (state.board?.phases||[]).find(p=>p.status==="进行中")
+           || (state.board?.phases||[]).find(p=>p.status!=="已完成");
+  $("#top-phase").textContent = "阶段 " + (cur? cur.id : "—");
+  $("#top-phase").className = "chip" + (cur && cur.status==="受阻" ? " e" : " a");
+  $("#top-doc").textContent = "文档 " + (state.doc?.version||"—");
+  $("#sb-ver").textContent = state.doc?.version||"—";
+}
+
+function renderChangelog(rows){
+  const tb=$("#t-body-cl");
+  if(!rows || !rows.length){ $("#cl-empty").style.display="block"; tb.innerHTML=""; return; }
+  tb.innerHTML = rows.map(r=>`<tr>
+    <td>${r.date}</td><td><b>${r.version}</b></td>
+    <td><span class="pill ${r.type}">${r.type}</span></td>
+    <td>${r.summary}</td><td>${r.reason}</td><td>${r.scope}</td></tr>`).join("");
+}
+
+/* =========================================================
+   对齐校验（浏览器内 Canvas 计算）
+   ========================================================= */
+const AL = { a:null, b:null };
+function loadImage(file){
+  return new Promise((res,rej)=>{
+    const img=new Image(); const url=URL.createObjectURL(file);
+    img.onload=()=>{ res({img, url}); };
+    img.onerror=()=>rej(new Error("图片读取失败"));
+    img.src=url;
+  });
+}
+function setupDrop(dropId, inputId, key){
+  const d=$(dropId), f=$(inputId);
+  d.onclick=()=>f.click();
+  f.onchange=()=>{ if(f.files[0]) take(f.files[0]); };
+  ["dragenter","dragover"].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.add("over");}));
+  ["dragleave","drop"].forEach(ev=>d.addEventListener(ev,e=>{e.preventDefault();d.classList.remove("over");}));
+  d.addEventListener("drop", e=>{ const fl=e.dataTransfer.files[0]; if(fl) take(fl); });
+  async function take(file){
+    try{
+      const o = await loadImage(file);
+      AL[key] = o;
+      d.classList.add("has");
+      d.querySelector("b").textContent = file.name;
+      d.childNodes[d.childNodes.length-1].textContent = ` · ${o.img.width}×${o.img.height}`;
+    }catch(e){ toast(e.message); }
+  }
+}
+/* 提取轮廓：有 alpha 通道且非全不透明 → 用 alpha；否则用亮度阈值 */
+function extractMask(img, thresh, W, H){
+  const cv=document.createElement("canvas"); cv.width=W; cv.height=H;
+  const cx=cv.getContext("2d",{willReadFrequently:true});
+  cx.clearRect(0,0,W,H);
+  cx.drawImage(img,0,0,W,H);
+  const d=cx.getImageData(0,0,W,H).data;
+  const mask=new Uint8Array(W*H);
+  let alphaVar=false;
+  for(let i=3;i<d.length;i+=4*97){ if(d[i]<250){ alphaVar=true; break; } }
+  if(alphaVar){
+    for(let p=0;p<W*H;p++) mask[p] = d[p*4+3]>16 ? 1 : 0;
+  } else {
+    for(let p=0;p<W*H;p++){
+      const i=p*4;
+      const lum = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+      mask[p] = lum < thresh ? 1 : 0;
+    }
+  }
+  return mask;
+}
+function runAlign(){
+  if(!AL.a || !AL.b) return toast("请先选择两张图");
+  const W=520, H=520;
+  const thresh = parseFloat($("#al-thresh").value)||245;
+  const ma = extractMask(AL.a.img, thresh, W, H);
+  const mb = extractMask(AL.b.img, thresh, W, H);
+  let inter=0, uni=0, sa=0, sb=0, ax=0, ay=0, bx=0, by=0;
+  for(let y=0;y<H;y++) for(let x=0;x<W;x++){
+    const p=y*W+x, A=ma[p], B=mb[p];
+    if(A||B) uni++;
+    if(A&&B) inter++;
+    if(A){ sa++; ax+=x; ay+=y; }
+    if(B){ sb++; bx+=x; by+=y; }
+  }
+  if(!sa || !sb) return toast("至少一张图没提取到主体轮廓，试试调整亮度阈值");
+
+  const iou = uni ? inter/uni : 0;
+  const dx = Math.abs((ax/sa)-(bx/sb))/W;
+  const dy = Math.abs((ay/sa)-(by/sb))/H;
+  const iouMin = parseFloat($("#al-iou").value)||0.90;
+  const offMax = parseFloat($("#al-off").value)||0.02;
+  const pass = (iou>=iouMin) && (Math.max(dx,dy)<=offMax);
+
+  $("#al-result").style.display="grid";
+  $("#al-verdict").innerHTML = pass
+    ? `<div class="note" style="margin:0"><b>PASS</b> —— 轮廓对齐达标，可以进入材质与光影调优。</div>`
+    : `<div class="note err" style="margin:0"><b>FAIL</b> —— 不要继续调 prompt 和权重。先排查：<br>
+        ① 相机参数是否与出 pass 时完全一致（焦距 / 机位 / 朝向 / 目标点）<br>
+        ② Normal 是不是相机空间（世界空间法线会让 ControlNet 直接失效）<br>
+        ③ depth 归一化方向有没有反（近白远黑 vs 近黑远白）<br>
+        ④ 模型导入 Blender 后缩放是否一致</div>`;
+  $("#al-table").innerHTML = `
+    <thead><tr><th>指标</th><th>实测</th><th>阈值</th><th>判定</th></tr></thead>
+    <tbody>
+      <tr><td>轮廓 IoU</td><td><b>${iou.toFixed(4)}</b></td><td>≥ ${iouMin}</td>
+          <td><span class="pill ${iou>=iouMin?'done':'failed'}">${iou>=iouMin?'OK':'不足'}</span></td></tr>
+      <tr><td>水平偏移 dx</td><td><b>${(dx*100).toFixed(2)}%</b></td><td>≤ ${(offMax*100).toFixed(1)}%</td>
+          <td><span class="pill ${dx<=offMax?'done':'failed'}">${dx<=offMax?'OK':'超限'}</span></td></tr>
+      <tr><td>垂直偏移 dy</td><td><b>${(dy*100).toFixed(2)}%</b></td><td>≤ ${(offMax*100).toFixed(1)}%</td>
+          <td><span class="pill ${dy<=offMax?'done':'failed'}">${dy<=offMax?'OK':'超限'}</span></td></tr>
+      <tr><td>主体占比 A / B</td><td>${(sa/(W*H)*100).toFixed(1)}% / ${(sb/(W*H)*100).toFixed(1)}%</td><td>—</td><td>—</td></tr>
+      <tr><td>重合面积</td><td>${(inter/(W*H)*100).toFixed(1)}%</td><td>—</td><td>—</td></tr>
+    </tbody>`;
+
+  const cv=$("#al-canvas"), cx=cv.getContext("2d");
+  const id=cx.createImageData(W,H);
+  for(let p=0;p<W*H;p++){
+    const A=ma[p], B=mb[p];
+    let r=255,g=255,b=255;
+    if(A&&B){ r=88; g=60; b=150; }
+    else if(A){ r=226; g=75; b=74; }
+    else if(B){ r=55; g=138; b=221; }
+    id.data[p*4]=r; id.data[p*4+1]=g; id.data[p*4+2]=b; id.data[p*4+3]=255;
+  }
+  cx.putImageData(id,0,0);
+}
+
+/* =========================================================
+   数据加载
+   ========================================================= */
+async function loadTasks(){
+  const r = await api("/api/tasks");
+  state.tasks = r.tasks; state.stats = r.stats;
+  renderTasks();
+}
+async function refresh(){
+  const s = await api("/api/state");
+  state.cards = s.cards; state.board = s.board; state.doc = s.doc; state.stats = s.stats;
+  renderCardList(); renderBoard(); renderTasks(); updateTopChip();
+  $("#sb-live").textContent = "已连接";
+}
+async function loadChangelog(){
+  try{
+    const r = await api("/api/changelog");
+    renderChangelog(r.rows);
+  }catch(e){ renderChangelog([]); }
+}
+
+/* =========================================================
+   事件绑定
+   ========================================================= */
+const TITLES = {
+  card:["参数卡","L0 / L1 · 渲染参数卡编辑与落盘"],
+  prompt:["提示词引擎","L1 → L3 · 由参数卡程序化拼装提示词"],
+  tasks:["任务队列","L3 / L5 · SQLite 持久化 + ComfyUI 载荷导出"],
+  align:["对齐校验","L4 · 轮廓重合度校验（硬门槛）"],
+  board:["项目看板","阶段 / 风险 / 待办 / 坑位记录"],
+  changelog:["变更记录","过程文档留痕（只读）"]
+};
+$$("#nav button").forEach(b=>b.onclick=()=>{
+  const v=b.dataset.v;
+  $$("#nav button").forEach(x=>x.classList.toggle("on", x===b));
+  $$(".view").forEach(s=>s.classList.toggle("on", s.id==="v-"+v));
+  $("#ttl").textContent = TITLES[v][0];
+  $("#tsub").textContent = TITLES[v][1];
+  window.scrollTo({top:0});
+  if(v==="changelog") loadChangelog();
+  if(v==="tasks") loadTasks();
+});
+
+// 表单联动
+["c-category","c-sku","c-model","m-body-type","m-body-finish","m-body-rough","m-body-metal",
+ "m-trim-type","m-trim-finish","m-trim-rough","m-win-type","m-win-tr","m-win-ior",
+ "l-scheme","l-key-dir","l-key-temp","l-fill-ratio","l-hdr","l-shadow",
+ "c-focal","c-height","b-type","b-from","b-to",
+ "r-image","r-strength","r-part","r-mask","o-res","o-count","o-up","o-lang","o-seed","o-dw","o-nw"
+].forEach(id=>{
+  const el=$("#"+id); if(!el) return;
+  el.addEventListener("input", ()=>{ formToCard(); $("#json-edit").value=JSON.stringify(card,null,2); renderPrompt(); });
+  el.addEventListener("change", ()=>{ formToCard(); $("#json-edit").value=JSON.stringify(card,null,2); renderPrompt(); });
+});
+$("#m-body-color").addEventListener("input", ()=>{
+  $("#m-body-colorhex").value = $("#m-body-color").value;
+  formToCard(); renderPrompt(); $("#json-edit").value=JSON.stringify(card,null,2);
+});
+$("#json-edit").addEventListener("change", ()=>{
+  try{
+    card = JSON.parse($("#json-edit").value);
+    cardToForm(); renderPrompt(); toast("已从 JSON 回填");
+  }catch(e){ toast("JSON 解析失败："+e.message); }
+});
+$("#btn-save").onclick = async ()=>{
+  try{
+    formToCard();
+    if(!card.asset.sku) return toast("请先填 SKU");
+    await api("/api/card", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(card)});
+    toast("已保存 "+card.asset.sku); await refresh();
+  }catch(e){ toast("保存失败："+e.message); }
+};
+$("#btn-copy-json").onclick = ()=>copy($("#json-edit").value, "参数卡 JSON");
+$("#btn-reset").onclick = ()=>{ card=defaultCard(); cardToForm(); renderPrompt(); toast("已重置"); };
+$("#btn-newcard").onclick = ()=>{
+  card=defaultCard(); card.asset.sku=""; card.asset.category=""; card.asset.model="";
+  cardToForm(); renderPrompt(); toast("已新建空白卡，填好 SKU 后保存");
+};
+$("#btn-reload").onclick = refresh;
+$("#btn-totasks").onclick = ()=>{ switchTo("tasks"); genTasks(); };
+$("#pv-copy-pos").onclick = ()=>copy($("#pv-pos").textContent, "正向提示词");
+$("#pv-copy-neg").onclick = ()=>copy($("#pv-neg").textContent, "负向提示词");
+$("#p-copy").onclick = ()=>copy($("#payload").textContent, "载荷");
+
+async function genTasks(){
+  formToCard();
+  if(!card.asset.sku) return toast("请先填 SKU");
+  if(!card.asset.views.length) return toast("请至少选一个机位");
+  const items=[];
+  card.asset.views.forEach(v=>{
+    for(let i=0;i<(card.output.count||1);i++){
+      items.push({ sku:card.asset.sku, view:v, variant:i,
+        positive: buildPositive(card, v), negative: NEGATIVE,
+        payload: buildPayload(card, v, i) });
+    }
+  });
+  const r = await api("/api/tasks", {method:"POST",headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({tasks:items})});
+  toast(`已生成 ${r.inserted} 个任务`);
+  await loadTasks();
+}
+$("#t-gen").onclick = genTasks;
+$("#t-refresh").onclick = loadTasks;
+$("#t-clear").onclick = async ()=>{
+  if(!confirm("确认清空任务队列？此操作不可撤销。")) return;
+  await api("/api/tasks/clear", {method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+  toast("队列已清空"); await loadTasks();
+};
+$("#t-export").onclick = ()=>{
+  if(!lastPayloadTask) return toast("队列为空");
+  copy($("#payload").textContent, "ComfyUI 载荷");
+};
+$("#pit-add").onclick = async ()=>{
+  state.board.pitfalls.push({date:new Date().toISOString().slice(0,10),symptom:"",cause:"",fix:"",source:"实测"});
+  await saveBoard(); renderBoard();
+};
+
+$("#al-run").onclick = runAlign;
+$("#al-clear").onclick = ()=>{
+  AL.a=AL.b=null;
+  ["#drop-a","#drop-b"].forEach((d,i)=>{
+    const el=$(d); el.classList.remove("has");
+    el.innerHTML = `<b>${i?"AI 生成图.png":"白模 beauty.png"}</b>点击选择或拖入`;
+  });
+  $("#al-result").style.display="none";
+};
+setupDrop("#drop-a","#file-a","a");
+setupDrop("#drop-b","#file-b","b");
+
+function switchTo(v){
+  $$("#nav button").forEach(x=>x.classList.toggle("on", x.dataset.v===v));
+  $$(".view").forEach(s=>s.classList.toggle("on", s.id==="v-"+v));
+  $("#ttl").textContent = TITLES[v][0];
+  $("#tsub").textContent = TITLES[v][1];
+}
+
+/* =========================================================
+   初始化
+   ========================================================= */
+(async function init(){
+  initSelects();
+  cardToForm();
+  renderPrompt();
+  try{
+    await refresh();
+    await loadTasks();
+    await loadChangelog();
+  }catch(e){
+    $("#sb-live").textContent = "未连接";
+    toast("后端未连接，仅表单可用");
+  }
+})();
+</script>
+</body>
+</html>

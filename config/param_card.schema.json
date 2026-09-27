@@ -1,0 +1,164 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AI 白模渲染器 · 渲染参数卡",
+  "description": "过程文档 5.4 定义的核心接口契约（ADR-003）。上层输入（自然语言/表单/CAD 元数据）全部收敛到此结构；下层执行（ControlNet/Redux/IC-Light）全部由它派生。提示词由本卡程序化拼装，不手写。枚举值与 web/index.html 的 JS 词表、scripts/comfy_batch.py 的槽位表保持一致。",
+  "type": "object",
+  "required": ["asset", "material", "lighting", "camera", "background", "output"],
+  "properties": {
+    "asset": {
+      "type": "object",
+      "required": ["sku", "views"],
+      "properties": {
+        "model": { "type": "string", "description": "白模路径（.ksp / .blend / .glb）" },
+        "category": { "type": "string", "description": "类目，用于提示词主体描述" },
+        "sku": { "type": "string", "description": "唯一标识，决定落盘文件名与输出目录" },
+        "views": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": ["front", "3q4_left", "3q4_right", "side", "top", "detail_keypad", "detail_window"]
+          },
+          "description": "机位。球坐标预设见 scripts/keyshot_passes.py 的 VIEW_PRESETS；detail_* 用于局部特写"
+        }
+      }
+    },
+
+    "material": {
+      "type": "object",
+      "description": "用参数而非形容词 —— 参数可映射到引擎，形容词只能映射到 AI 的模糊理解（ADR-003）",
+      "properties": {
+        "body": { "$ref": "#/definitions/pbrMat" },
+        "trim": { "$ref": "#/definitions/pbrMat", "description": "附属件（旋钮/边框/卡扣），可选" },
+        "window": {
+          "type": "object",
+          "description": "透明件。⚠ 风险 #2：AI 对透射材质能力不足，建议该区域走 KeyShot 真渲染后合成（边界声明 7.5）",
+          "properties": {
+            "type": { "type": "string", "enum": ["PMMA", "glass", "PC"] },
+            "transmission": { "type": "number", "minimum": 0, "maximum": 1 },
+            "ior": { "type": "number", "minimum": 1, "maximum": 2 }
+          }
+        }
+      }
+    },
+
+    "lighting": {
+      "type": "object",
+      "description": "首选在 KeyShot 换 HDR 真三维重渲，比让 AI 猜光照可靠（ADR-009）",
+      "required": ["scheme"],
+      "properties": {
+        "scheme": {
+          "type": "string",
+          "enum": ["studio_softbox_3point", "top_soft", "backlight_dramatic",
+                   "natural_window", "ring_light", "hard_light", "white_bg_studio"]
+        },
+        "key": { "$ref": "#/definitions/light" },
+        "fill": { "$ref": "#/definitions/light" },
+        "rim": { "$ref": "#/definitions/light" },
+        "shadow": { "type": "string", "enum": ["soft_contact", "hard", "none"] },
+        "hdr_env": { "type": "string" }
+      }
+    },
+
+    "camera": {
+      "type": "object",
+      "description": "⚠ 必须与 L2 出 pass 时完全一致，否则 Pass 与成图不对齐、ControlNet 失效（风险 #7）",
+      "properties": {
+        "focal": { "type": "integer", "description": "焦段 mm" },
+        "height": { "type": "string", "enum": ["product_level", "slightly_above", "eye_level", "top_down"] },
+        "perspective": { "type": "string", "enum": ["mild_tele", "normal", "wide"] }
+      }
+    },
+
+    "background": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["pure_white", "gradient_gray", "charcoal_gradient",
+                   "scene_desktop", "scene_site", "scene_workshop"]
+        },
+        "from": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "to": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" }
+      }
+    },
+
+    "reference": {
+      "type": "object",
+      "description": "参考图仿照。三档强度必须显式选择（ADR-005）：L1 风格轻参考 / L2 材质参考 / L3 整体仿照",
+      "properties": {
+        "image": { "type": "string" },
+        "strength": { "type": "string", "enum": ["", "L1_style", "L2_material", "L3_full"] },
+        "target_part": { "type": "string", "description": "L2 时限定参考哪个部位" },
+        "mask": { "type": "string" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "strength": { "const": "L2_material" } }, "required": ["strength"] },
+          "then": {
+            "anyOf": [{ "required": ["target_part"] }, { "required": ["mask"] }],
+            "description": "L2 材质参考必须指定 target_part 或 mask，否则无法限定参考范围"
+          }
+        },
+        {
+          "if": {
+            "properties": { "strength": { "enum": ["L1_style", "L2_material", "L3_full"] } },
+            "required": ["strength"]
+          },
+          "then": { "required": ["image"], "description": "选了强度就必须给参考图路径" }
+        }
+      ]
+    },
+
+    "output": {
+      "type": "object",
+      "properties": {
+        "resolution": {
+          "type": "array", "items": { "type": "integer" },
+          "minItems": 2, "maxItems": 2,
+          "description": "ADR-006：pass 出 2048，成图 1024，按需超分"
+        },
+        "count": { "type": "integer", "minimum": 1, "maximum": 20, "description": "每机位张数（变体数）" },
+        "upscale": { "type": "integer", "enum": [1, 2, 4] },
+        "lang": { "type": "string", "enum": ["CN", "EN"] }
+      }
+    },
+
+    "_seed_base": { "type": "integer", "description": "seed 基数；变体 i 的 seed = _seed_base + i。同 SKU 固定基数保证一致性（风险 #6）" },
+    "_pass_dir": { "type": "string", "description": "pass 输出根目录" },
+    "_depth_w": { "type": "number", "default": 0.65, "description": "ControlNet depth 权重，基线 0.55–0.75" },
+    "_normal_w": { "type": "number", "default": 0.4, "description": "ControlNet normal 权重，基线 0.35–0.50；超 0.5 画面会发死灰" },
+    "_timeout": { "type": "integer", "default": 600, "description": "单任务超时秒数。节点静默失败不会通过 API 返回，必须靠超时兜底（5.6）" }
+  },
+
+  "definitions": {
+    "pbrMat": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["ABS", "PC", "aluminum", "PMMA", "rubber", "stainless", "glass", "silicone"]
+        },
+        "finish": {
+          "type": "string",
+          "enum": ["fine_sandblast", "anodized_brushed", "high_gloss", "soft_touch", "matte", "polished", "injection"]
+        },
+        "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "roughness": { "type": "number", "minimum": 0, "maximum": 1 },
+        "metallic": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "light": {
+      "type": "object",
+      "properties": {
+        "dir": { "type": "string", "examples": ["front_left_45"] },
+        "temp": { "type": "integer", "description": "色温 K" },
+        "size": { "type": "string", "examples": ["soft_large"] },
+        "ratio": { "type": "number", "minimum": 0, "maximum": 1, "description": "光比，fill 用" },
+        "intensity": { "type": "number", "description": "强度，rim 用" }
+      }
+    }
+  }
+}

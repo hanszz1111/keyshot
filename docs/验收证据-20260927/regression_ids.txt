@@ -1,0 +1,11 @@
+=== TEST 6: DOM id contract ===
+index.html ids            = 96
+app.js $('id') refs       = 78
+MISSING in index.html     = 0
+RESULT: PASS
+
+=== TEST 6b: API route contract ===
+routes registered in server.py = 25
+routes called by app.js        = 11
+called but NOT registered      = 0
+RESULT: PASS

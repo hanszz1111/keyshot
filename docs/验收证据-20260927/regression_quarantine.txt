@@ -1,0 +1,19 @@
+manifest: created=2026-09-27 stamp=20260927 project_root=D:\Dsektop\AI渲染\AI渲染
+reason: 清理本轮 P2/P3 验收残留与 UI 验证脚本；只移动不删除，可原样回滚。
+moved=4  skipped=0
+
+=== per-directory verify: quarantined payload intact + original path gone ===
+  assets/source/_P2TEST
+     -> _隔离区\20260927\assets\source\_P2TEST  files=2 bytes=1887724  original_gone=True  inside_project=True
+  outputs/_P2TEST
+     -> _隔离区\20260927\outputs\_P2TEST  files=1 bytes=266034  original_gone=True  inside_project=True
+  outputs/_验收P2
+     -> _隔离区\20260927\outputs\_验收P2  files=1 bytes=943862  original_gone=True  inside_project=True
+  _ui_verify
+     -> _隔离区\20260927\_ui_verify  files=20 bytes=1503039  original_gone=True  inside_project=True
+
+TOTAL quarantined payload: files=24 bytes=4600659 (4.39 MB)
+RESULT: PASS
+
+=== add content hashes for the record (rollback aid) ===
+aggregate sha256 of all quarantined payload = 99ebbe8766713de080c4c2a8e935b3ee9bd2727110d4579d7d7072d2db0302ae

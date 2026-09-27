@@ -1,0 +1,6 @@
+﻿=== FINAL state ===
+AIRender_Web: State=Running TimeLimit=PT0S StopOnIdleEnd=False
+AIRender_ComfyUI: State=Running TimeLimit=PT0S StopOnIdleEnd=False
+--- processes + parent ---
+PID=5740 parent=svchost.exe
+PID=20528 parent=svchost.exe

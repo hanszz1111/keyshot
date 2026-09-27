@@ -1,0 +1,30 @@
+[
+  {
+    "label": "N1_无CN_12步_denoise0.85",
+    "file": "bug2_cn_00001_.png",
+    "mae": 56.58,
+    "sil_iou": 0.7839,
+    "edge_iou": 0.0586
+  },
+  {
+    "label": "C1_CN0.75_12步_denoise0.85",
+    "file": "bug2_cn_00002_.png",
+    "mae": 74.8,
+    "sil_iou": 0.2671,
+    "edge_iou": 0.1181
+  },
+  {
+    "label": "C2_CN1.00_12步_denoise0.85",
+    "file": "bug2_cn_00003_.png",
+    "mae": 65.22,
+    "sil_iou": 0.3196,
+    "edge_iou": 0.1333
+  },
+  {
+    "label": "C3_CN0.75_12步_denoise0.70",
+    "file": "bug2_cn_00004_.png",
+    "mae": 41.55,
+    "sil_iou": 0.8216,
+    "edge_iou": 0.1781
+  }
+]

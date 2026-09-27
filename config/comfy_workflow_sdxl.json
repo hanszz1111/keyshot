@@ -1,0 +1,72 @@
+{
+  "_comment": "AI 白模渲染器 · 纯文生图（无 ControlNet） · 节点 ID 与 web/index.html 的 SLOTS 契约严格对齐",
+  "_slots": "3=KSampler(seed/denoise) 5=EmptyLatentImage(width/height) 6=正提示词 7=负提示词 8=SaveImage",
+  "_when": "当某个机位没凑齐 clay+depth+normal 时使用本工作流",
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": { "ckpt_name": "RealVisXL_V5.0_Lightning_fp16.safetensors" }
+  },
+  "5": {
+    "class_type": "EmptyLatentImage",
+    "inputs": { "width": 1024, "height": 1024, "batch_size": 1 }
+  },
+  "6": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "", "clip": ["1", 1] }
+  },
+  "7": {
+    "class_type": "CLIPTextEncode",
+    "inputs": { "text": "", "clip": ["1", 1] }
+  },
+  "12": {
+    "_comment": "参考图（SLOTS: ref_img）。参考图只借配色/材质/光照，不替换形状",
+    "class_type": "LoadImage",
+    "inputs": { "image": "placeholder_ref.png" }
+  },
+  "13": {
+    "_comment": "统一加载器：按 preset 自动配对 ipadapter + clip_vision",
+    "class_type": "IPAdapterUnifiedLoader",
+    "inputs": {
+      "model": ["1", 0],
+      "preset": "PLUS (high strength)"
+    }
+  },
+  "14": {
+    "_comment": "参考图条件注入：SLOTS 的 ref_w 映射到 weight",
+    "class_type": "IPAdapterAdvanced",
+    "inputs": {
+      "model": ["13", 0],
+      "ipadapter": ["13", 1],
+      "image": ["12", 0],
+      "weight": 0.55,
+      "weight_type": "linear",
+      "combine_embeds": "concat",
+      "start_at": 0.0,
+      "end_at": 1.0,
+      "embeds_scaling": "V only"
+    }
+  },
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": 0,
+      "steps": 8,
+      "cfg": 2.0,
+      "sampler_name": "dpmpp_sde",
+      "scheduler": "karras",
+      "denoise": 1.0,
+      "model": ["14", 0],
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "latent_image": ["5", 0]
+    }
+  },
+  "4": {
+    "class_type": "VAEDecode",
+    "inputs": { "samples": ["3", 0], "vae": ["1", 2] }
+  },
+  "8": {
+    "class_type": "SaveImage",
+    "inputs": { "images": ["4", 0], "filename_prefix": "ai_render" }
+  }
+}

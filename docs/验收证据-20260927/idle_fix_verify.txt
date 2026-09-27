@@ -1,0 +1,3 @@
+﻿=== verify -DontStopOnIdleEnd at 2026-09-27T09:17:17.5326154+08:00 ===
+AIRender_Web: StopOnIdleEnd=False  TimeLimit=PT0S  DisallowBatt=False
+AIRender_ComfyUI: StopOnIdleEnd=False  TimeLimit=PT0S  DisallowBatt=False

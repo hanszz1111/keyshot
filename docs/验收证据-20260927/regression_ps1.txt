@@ -1,0 +1,8 @@
+﻿OK    scripts\start_all.ps1  (syntax clean)
+OK    scripts\stop_all.ps1  (syntax clean)
+--- Scheduled task state ---
+AIRender_Web: State=Running StopOnIdleEnd=False TimeLimit=PT0S DisallowBatt=False LastResult=2147946720
+AIRender_ComfyUI: State=Running StopOnIdleEnd=False TimeLimit=PT0S DisallowBatt=False LastResult=2147946720
+--- python processes ---
+PID=17628 :: "F:\AI-Renderer\packs\ComfyUI_windows_portable\python_embeded\python.exe" -s ComfyUI\main.py --windows-standalone-build --lowvram
+PID=13792 :: "F:\AI-Renderer\packs\ComfyUI_windows_portable\python_embeded\python.exe" web\server.py --port 8765

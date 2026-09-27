@@ -1,0 +1,17 @@
+  [OK] start: Start-PersistentTask helper defined
+  [OK] start: Register-ScheduledTask used
+  [OK] start: Start-ScheduledTask used
+  [OK] start: ExecutionTimeLimit Zero (unlimited)
+  [OK] start: -DontStopOnIdleEnd present
+  [OK] start: Start-Process fallback present
+  [OK] start: task name AIRender_Web
+  [OK] start: task name AIRender_ComfyUI
+  [OK] start: helper called for ComfyUI
+  [OK] start: helper called for Web
+  [OK] stop: Stop-ScheduledTask used
+  [OK] stop: kills orphaned python (Win32_Process)
+  [OK] stop: Stop-Process used
+  [OK] stop: filters web\server.py
+  [OK] stop: filters ComfyUI\main.py
+
+RESULT: PASS

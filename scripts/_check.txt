@@ -1,0 +1,3 @@
+﻿PS1 SYNTAX: OK
+BAT: bytes=537 CRLF=31 bareLF=0
+BAT 引用 PS1 路径: 2 处

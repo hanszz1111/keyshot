@@ -1,0 +1,33 @@
+=== TEST 14: ui/ de-duplication evidence ===
+
+A) top-level D://Dsektop//AI渲染//ui  (OUTSIDE real root, REPORT ONLY)
+B) real-root  ...\AI渲染\ui        (was the duplicate -> ARCHIVED)
+C) archive    ...\AI渲染\_隔离区\20260927\_archived_ui-older\ui
+
+file                   top-level(A)       archived(B)        realroot now  
+README.md              919f5bd962c8c143   ba8191f8da8e2d7e   None          
+_已合并到-web.md           None               8f9773235d0a38b4   None          
+app.js                 6f65e6708c12681c   f73e7392a1e2dcd4   None          
+index.html             544265e8fa2169de   08ed2c8c4f96391e   None          
+server.py              a44c655d7e94c93a   a44c655d7e94c93a   None          
+styles.css             820d64c08ead713c   43049820444067eb   None          
+启动新版UI.bat             bf8fcada73e87c03   bf8fcada73e87c03   None          
+设计与API优化记录.md          ffd95181b6e11143   None               None          
+
+verdict: A == B on shared files?  False
+real root ui/ exists now?  False
+
+unique-to-A files: ['设计与API优化记录.md']
+unique-to-B files: ['_已合并到-web.md']
+
+=== TEST 15: no live code references the archived ui/ ===
+lines mentioning ui/ in live code = 9
+    web\server.py: # 说明：这块原在已归档的独立 UI（`_隔离区/20260927/_archived_ui-older/ui/server.py`，
+    web\server.py: if p == "/api/ui/info":
+    web\server.py: if p == "/api/ui/pass/status":
+    web\server.py: if p == "/api/ui/pass/start":
+    web\server.py: if p == "/api/ui/comfy/submit":
+    web\app.js: api("/api/assets"),api("/api/tasks?limit=300"),api("/api/comfy/status"),api("/api/ui/info")
+    web\app.js: await post("/api/ui/comfy/submit",{id:task.id});await refreshTasks();
+    web\app.js: try{await post("/api/ui/pass/start",{sku:state.sku,view:selectedView()});announce("Blender 正在生成结构图。 ");await r
+    web\app.js: state.passJob=await api("/api/ui/pass/status");

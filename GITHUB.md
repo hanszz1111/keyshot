@@ -166,6 +166,59 @@ git push -u origin main --force
 须在弹出的窗口里完成浏览器登录 / Token 授权；授权成功后凭证会缓存，后续推送不再询问。
 在无图形交互的自动化会话里，该弹窗会让命令一直挂起 —— 所以推送要放到后台跑，用户手动完成授权。
 
+### 7.4 ★ `.bat` / `.ps1` 的换行符与编码（跨平台必读）
+
+本仓库有 8 个 `.bat` 和 2 个 `.ps1`，它们**必须**满足特定格式才能正确执行。
+`.gitattributes` 已**显式锁定换行符**，与操作系统无关：
+
+| 文件类型 | 换行符 | 编码 | 由谁保证 |
+|---|---|---|---|
+| `*.bat` / `*.cmd` | **CRLF** | **cp936，无 BOM** | `.gitattributes` 锁定 CRLF；编码靠人工 |
+| `*.ps1` | **CRLF** | **UTF-8，必须有 BOM** | `.gitattributes` 锁定 CRLF；编码靠人工 |
+
+**为什么需要 `.gitattributes`**：仅靠 `core.autocrlf` 不可靠 ——
+Windows 上通常是 `true`（存储归一 LF、检出还原 CRLF ✅），
+而 macOS/Linux 通常是 `input`（**检出仍是 LF ❌**，`.bat` 会变 LF 结尾）。
+`.gitattributes` 的 `eol=crlf` 优先级更高，两端一致。
+
+**为什么 `.ps1` 必须有 BOM**：PowerShell 5.1 遇到**无 BOM** 的 `.ps1` 会按 cp936 解析，
+字符串里的中文变乱码。**只有注释里有中文时是侥幸能用**，要打印中文就必须带 BOM。
+
+**验证方法**：
+
+```bash
+# 1) 换行符：必须 CRLF，裸 LF 数应为 0
+python -c "
+import pathlib
+for p in ['启动全部.bat','停止服务.bat','scripts/start_all.ps1']:
+    b = pathlib.Path(p).read_bytes()
+    print(p, '裸LF=', b.replace(b'\r\n', b'').count(b'\n'), 'BOM=', b[:3]==b'\xef\xbb\xbf')
+"
+
+# 2) 编码：.bat 应能按 cp936 解码，.ps1 应能按 utf-8-sig 解码
+python -c "
+import pathlib
+b = pathlib.Path('启动全部.bat').read_bytes(); b.decode('cp936'); print('bat cp936 OK')
+b = pathlib.Path('scripts/start_all.ps1').read_bytes(); b.decode('utf-8-sig'); print('ps1 utf-8 OK')
+"
+
+# 3) 查看 Git 给某文件判定的属性
+git check-attr text eol -- 启动全部.bat
+# 期望：eol: crlf
+```
+
+### 7.5 换行符导致的"字节数不一致"（正常现象，别慌）
+
+用 GitHub API 看 `.bat` 的 `size` 会比本地小几十字节，差值 **正好等于行数**：
+
+| 文件 | Git 内 | 工作区 | 差 | 行数 |
+|---|---|---|---|---|
+| `启动ComfyUI.bat` | 1501 B | 1550 B | 49 | 49 |
+| `启动控制台.bat` | 2360 B | 2447 B | 87 | 87 |
+
+**原因**：Git 按 `.gitattributes` 以 LF 存储（每行省 1 字节），检出时还原为 CRLF。
+**不是数据损坏**，文件内容完全一致。
+
 ---
 
 ## 七、日常维护

@@ -1,9 +1,22 @@
+> # ⚠️ 已归档 · 请勿直接照此执行
+>
+> **本文是 Mac 侧历史平行方案（v0.4，2026-09-21），已于 2026-09-27 归档。**
+>
+> | 本文写的 | 当前实际 |
+> |---|---|
+> | 项目路径 `/Users/a/Desktop/ai渲染` | 真实项目根 `D:\Dsektop\AI渲染\AI渲染` |
+> | “本文件是本项目唯一的方案与过程主记录” | **唯一权威文档是根目录 `00-AI白模渲染器-过程文档.md`（SSOT）** |
+> | 第 12 节追加登记 | SSOT 的 **§2 变更记录表** 才是登记处 |
+> | 各种“尚未安装/未实测”表述 | 属 9-21 当时状态，多数已完成，以 SSOT 为准 |
+>
+> **保留原因**：其 15 项逐项裁决的原始出处（SSOT v1.7 第十六章引用）。归档文档，仅供追溯。
+
 # 产品白模 AI 渲染器：方案与过程记录
 
-版本：v0.8（新增独立新版 UI 导航与实施记录）  
+版本：v0.4（加入 Windows 详细执行手册）  
 创建日期：2026-09-19，时区 Asia/Shanghai  
 项目目录：`/Users/a/Desktop/ai渲染`  
-本文件保留早期方案与过程记录，后续变更仍在第 12 节追加登记。**现有 Windows 程序已落在 `AI渲染/` 子目录，其当前权威执行记录是 [AI白模渲染器过程文档](AI渲染/00-AI白模渲染器-过程文档.md)；本文件的“尚未安装/未实测”等旧表述属于当时历史状态，不代表现状。**独立新版界面入口：[ui/README.md](ui/README.md)；UI 评估与升级记录：[界面与使用体验评估及升级大纲](AI渲染/优化/界面与使用体验评估及升级大纲.md)。原方案总纲：[AI渲染器_设计优化总纲.md](AI渲染器_设计优化总纲.md)。
+本文件是本项目唯一的方案与过程主记录，后续需求、设计、代码、配置、工作流、模型版本和验证结果的修改均须在第 12 节追加登记。
 
 ## 1. 需求与当前交付边界
 
@@ -285,12 +298,11 @@ OpenAI 官方图像指南给出的 GPT-Image-2 示例输出价约为：1024×102
 
 ## 10. 计划目录与后续工作规范
 
-当前实际创建主文档、设计优化总纲与 AGENTS.md；下列其他目录是未来实现结构，不代表已经存在：
+本次实际创建主文档与 AGENTS.md；下列其他目录是未来实现结构，不代表已经存在：
 
 ```text
 ai渲染/
   AI渲染器_方案与过程记录.md
-  AI渲染器_设计优化总纲.md
   AGENTS.md
   apps/web/
   services/api/
@@ -334,10 +346,6 @@ ai渲染/
 | R009 | 2026-09-21 | 记录 Codex with ChatGPT 最终验收 | 第 11–12 节、文档版本状态 | ChatGPT 复读完整 v0.2、执行摘要和检查结果后返回 `DONE / Accepted`；确认色彩空间、状态模型、P2 验收、指标与 R001–R008 通过 | 后续以真实白模启动 P0；本轮不实施代码 |
 | R010 | 2026-09-21 | 用户补充 RTX 4060 Ti 8 GB、i5-14600KF、32 GB 内存及 F/D 剩余空间，并要求评估本地模型、Nano/Image2 API 与更高级效果 | 版本升至 v0.3；第 1、9、11–12 节 | 完成资料级硬件适配判断；确定 L0 Blender、L1 本地 SDXL、L2 Nano Banana/GPT-Image-2 的混合架构；加入磁盘预算、中转安全边界和七路线 P0 对照矩阵。尚未安装、调用或测速 | 用户提供一个真实白模与参考图后执行 P0；核实中转 API 文档、实际模型 ID、数据政策与计费 |
 | R011 | 2026-09-21 | 用户要求在过程文档内补充 Windows 详细执行文档 | 版本升至 v0.4；新增第 13 节 | 已编写适配 RTX 4060 Ti 8 GB 的 Windows 分阶段安装、目录、启动、模型、API、P0 验收、安全、回滚与故障处理手册；仅完成文档检查，未在目标 Windows 主机执行 | 在目标机按 W0–W7 执行；每完成一阶段记录实际版本、命令、截图/日志和结果 |
-| R012 | 2026-09-24 | 用户要求去 GitHub 寻找优化方案 | 版本升至 v0.5；第 13.4、13.6、13.7 节与新增第 14 节 | 阅读 ComfyUI、BlenderAI、IPAdapter Plus、Impact Pack、LayerStyle、ControlNet Aux、SUPIR、productfix 的仓库说明；形成优先级与验证门槛。未下载、安装或在 4060 Ti 上测速 | W0 后按第 14 节先验证核心能力和 Blender 工件；再逐一引入参考图、局部细节等可选组件 |
-| R013 | 2026-09-26 | 用户要求把设计优化内容汇总为 Markdown 大纲 | 版本升至 v0.6；新增 `AI渲染器_设计优化总纲.md`，更新本文件导读和第 10、12 节 | 将目标/硬件、架构、GitHub 采纳、Windows W0–W7、P0 验收和当前状态汇为八部分；已核对大纲与主文档对应章节，未执行 Windows 实测 | 后续修改大纲时同步主文档并继续追加登记 |
-| R014 | 2026-09-26 | 用户要求对现有程序使用情况评分，并再次优化 UI 简化、中文翻译与 GitHub 参考的大纲 | 版本升至 v0.7；导航指向子目录当前过程文档与新增 `AI渲染/优化/界面与使用体验评估及升级大纲.md` | 静态可用性评分 53/100，列出 P0–P4 与 U0–U3；已在子目录过程文档 v1.9 登记。仅文档评估，未修改 UI 代码、未做本轮真人测试；Codex with ChatGPT 连接状态无法确认，未完成联合审阅 | 先落实 U0 正确性问题，再按相同量表复评 |
-| R015 | 2026-09-26 | 用户要求把简洁易用、体现现有功能的新版 UI 放入 `ui/` | 版本升至 v0.8；新增外层 `ui/` 独立入口；子目录总过程文档升至 v1.10 | 实现三步出图、结构图准备、受控生成闸门、逐张提交/轮询和真实结果展示；旧控制台不覆盖。完成语法检查和隔离 API 验证，未在 Windows 目标机复测 Blender/ComfyUI 真出图 | 用户在目标 Windows 机运行 `ui/启动新版UI.bat`，验证完整出图后按原量表复评 |
 
 后续登记模板：`编号 / 时间 / 用户要求或原因 / 修改内容 / 文件及版本 / 验证证据 / 结论 / 剩余风险与下一步`。
 
@@ -427,7 +435,7 @@ git config --global core.longpaths true
 
 #### Blender
 
-优先使用 Blender 官方 LTS 或团队锁定版本。安装到默认位置即可，并记录确切版本。若计划试用第 14 节的 ComfyUI-BlenderAI-node，必须先做该插件与目标 Blender 版本的兼容性测试；其 README 推荐版本为 3.5、3.6.x 或 4.0，不能将下面的 4.5 路径示例视为插件已兼容的证据：
+优先使用 Blender 官方 LTS 或团队锁定版本。安装到默认位置即可，并记录确切版本：
 
 ```powershell
 & "C:\Program Files\Blender Foundation\Blender 4.5\blender.exe" --version
@@ -480,7 +488,7 @@ scene_manifest.json
 
 ### 13.6 W3：安装并验证 ComfyUI
 
-此项目首选 ComfyUI 官方 Windows Portable NVIDIA 包，解压到 `F:\AI-Renderer\runtime\ComfyUI_windows_portable`，以便固定内嵌 Python、独立目录和任务脚本。ComfyUI 官方对普通用户更推荐 Desktop 版；如果先以 GUI 手工体验为主，可以选 Desktop，但后续自动化仍须固定 Core、Python、PyTorch 与节点版本。不要覆盖旧版本升级；新版本解压到带日期或版本的独立目录，验证后再切换启动快捷方式。
+首选 ComfyUI 官方 Windows Portable NVIDIA 包，解压到 `F:\AI-Renderer\runtime\ComfyUI_windows_portable`。不要覆盖旧版本升级；新版本解压到带日期或版本的独立目录，验证后再切换启动快捷方式。
 
 启动：
 
@@ -527,7 +535,7 @@ F:\AI-Renderer\models\
 
 1. `wf_01_sdxl_smoke.json`：纯 SDXL 文生图，确认核心推理。
 2. `wf_02_img2img.json`：输入 Blender Beauty，小幅 denoise。
-3. `wf_03_depth.json`：直接使用 Blender 同相机输出的几何深度，转换为目标控制模型要求的编码，再加入匹配的 Depth Control-LoRA 或 T2I-Adapter。已有真实几何时不先用照片深度估计器重猜深度。
+3. `wf_03_depth.json`：加入与目标模型家族匹配的 Depth Control-LoRA 或 T2I-Adapter。
 4. `wf_04_edge_mask.json`：加入 Edge 与产品 Mask，只编辑允许区域。
 5. `wf_05_product_final.json`：加入背景、局部 inpaint、可选 upscale 和结果元数据。
 
@@ -663,41 +671,3 @@ Get-FileHash "F:\AI-Renderer\models\checkpoints\model.safetensors" -Algorithm SH
 - 优先使用 `safetensors`；模型文件仍视为不可信外部输入。自定义节点代码必须记录 commit 并审查安装脚本。
 - 回滚是将启动路径切回已验证旧目录和旧 workflow，不删除失败的新版本；失败环境留到日志归档完成后再处理。
 - 每完成 W0–W7 的任一阶段，都在第 12 节追加一条新记录，写明真实命令、版本、验证文件、成功/失败结论和下一步。不得把“已写执行手册”登记为“已安装”或“已跑通”。
-
-## 14. GitHub 优化调研与采纳顺序（2026-09-24）
-
-本节依据项目维护者的 GitHub README 做资料级判断，目标是提高产品结构保真、最终画质和 8 GB 工作站上的稳定性。尚未在目标 Windows 主机下载、安装或测速；文中“采纳”表示写入待验证的技术路线，不表示已经跑通。第 6 节保留初次仓库调研历史，本节记录新的取舍。
-
-### 14.1 候选项目与具体收益
-
-| 优先级 | GitHub 项目 | 查到的能力 | 本项目的优化动作与边界 |
-|---|---|---|---|
-| P0 | [ComfyUI Core](https://github.com/Comfy-Org/ComfyUI) | 队列、局部图重算、显存/内存管理、模型卸载、量化模型、原生遮罩/合成、API 与工作流 JSON；当前还列出原生 SUPIR | 先用核心节点做输入、遮罩、合成、分块超分和 API 队列；只为缺失的功能加第三方节点。将每个工作流按核心版本固定，避免追随不稳定提交 |
-| P0 | [ComfyUI-BlenderAI-node](https://github.com/AIGODLIKE/ComfyUI-BlenderAI-node) | 从 Blender 渲染/视窗输入图像、相机投影生成遮罩、批量任务、材质纹理烘焙 | 先作为 Blender→ComfyUI 交互原型对照，提取相机/Mask/工件设计；产品化主链继续用 Blender 后台导出 + ComfyUI API。README 推荐 Blender 3.5、3.6.x、4.0，必须验证目标版本兼容性 |
-| P1 | [ComfyUI IPAdapter Plus](https://github.com/cubiq/ComfyUI_IPAdapter_plus) | 参考图的主体或风格条件，并提供 SDXL 对应权重和示例 | 只在“参考图仿照”路线加入；裁出材质/灯光参考区，单独调参考权重，逐项查结构漂移。维护者已声明 2025-04-14 起 maintenance only；固定可用版本，不作为基础依赖 |
-| P1 | [ComfyUI Impact Pack](https://github.com/ltdrdata/ComfyUI-Impact-Pack) | Mask→SEGS、局部 Detailer、遮罩局部重绘 | 当产品局部修复确实需要 SEGS/Detailer 时再装；先使用 Blender 部件 ID 生成 Mask。它的版本记录显示 Detailer 工作流曾有兼容变化，需固定节点版本和最小回归样例 |
-| P1 | [ComfyUI LayerStyle](https://github.com/chflame163/ComfyUI_LayerStyle) | 图层合成、Mask 缩放/羽化/边缘调整、细节合成 | 原生节点不足以处理玻璃边缘、Logo 回填或接触阴影时再试；检查 alpha 边缘、颜色空间和是否改变产品内部像素 |
-| P2 | [comfyui_controlnet_aux](https://github.com/Fannovel16/comfyui_controlnet_aux) | 从普通图像估计 Depth/Normal、边缘等控制输入 | “只有照片”或缺原始 3D 的入口再用；已有白模应直接输出真实几何深度/法线，以免估计误差破坏轮廓。具体预处理器与 Control 模型要逐一匹配 |
-| P2 | [ComfyUI-productfix](https://github.com/MiddleKD/ComfyUI-productfix) | Latent Injection、文字 Mask、产品细节保护 | 作为 Logo/铭牌保护对照实验；README 说明会临时接管 KSampler，且依赖多个节点与模型。先在隔离 ComfyUI 副本测兼容和失败恢复，生产主链仍以原像素回填为准 |
-| 暂缓 | [SUPIR 的 ComfyUI 包装节点](https://github.com/kijai/ComfyUI-SUPIR) | 高质量超分；维护者说明 SUPIR 已进 ComfyUI Core | 优先测核心实现。该仓库给出的显存实例为低于 10 GB、另一实例使用 10 GB GPU，不能由此推断 8 GB 必然可用；仅在核心版本缺功能时比较此包装节点 |
-
-### 14.2 方案层面的四项优化
-
-1. **结构工件直接由 Blender 产生。** Beauty、Alpha、线性深度、法线、对象 ID、阴影和反射来自同一相机与裁切。Depth/Normal 只做控制模型所需格式转换；禁止先把 Blender 深度转成展示图，再让 AI 重新估计一次。
-2. **将最终图拆成可审核图层。** `product_beauty`、`shadow/reflection`、`AI background`、`allowed_edit`、`logo/text overlay` 各自归档，最后用线性空间合成并输出 sRGB 成品。产品正式图保留原始产品像素；材质创意图单独标注为 AI 改写。玻璃、半透明材料和镜面反射要逐样品检查边缘及背景透射，不能套用普通不透明物体的简单 Mask。
-3. **在工作流层增加“停止条件”。** Blender 基线已满足质量时直接交付；局部问题优先修局部；只有需要高级场景气氛或参考图迁移才调用 API。生成 4 张本地候选后只送选中的 1–2 张到付费后端，避免每个组合全量调用。
-4. **少装节点，按需求扩展。** 首期仅固定 ComfyUI Core + 一个 SDXL checkpoint + 相匹配的控制权重。BlenderAI、IPAdapter、Impact Pack、LayerStyle、productfix 分别对应交互、参考、局部细节、合成、文字保护；各自通过单独实验门槛后才进入工作流注册表。
-
-### 14.3 在 Windows 手册中的落地顺序
-
-| 阶段 | 新增验证 | 决策门槛 |
-|---|---|---|
-| W2 | Blender 输出同相机的 Depth/Normal/Mask 与产品图，记录相机和色彩空间 | 不一致先修 Blender 工件契约，不进入 AI |
-| W3 | 用 ComfyUI 核心节点生成 768/1024 单图，测 VRAM 和启动稳定性 | 能连续完成最小任务，再添加第三方节点 |
-| W4-A | 直接导入 Blender Depth 与 Mask；本地 SDXL 受控候选 | 轮廓、按钮、Logo 审核通过后保存为基线 |
-| W4-B | 仅参考图项目对照 IPAdapter Plus 的 SDXL 版本 | 参考材质/灯光提升且产品形状不被替换才采纳 |
-| W4-C | 仅局部缺陷对照 Impact Pack 或 LayerStyle | 局部效果提升且未修改保护区、VRAM 可控才采纳 |
-| W5–W6 | API Hero 图 + Blender 原像素/Logo/阴影回填 | 成品视觉提升且结构 QA 通过；记录请求、费用和合成版本 |
-| W7 | 对照核心 SUPIR/普通分块超分与原生高分辨率 API | 在 8 GB 上测得质量、速度、显存、费用后决定保留哪条路线 |
-
-**P0 的最小可复现组合**：Blender 后台导出工件 → ComfyUI Core SDXL + 匹配 Depth 控制 → 本地 Mask 合成 → 可选 API Hero 图。额外节点每次只引入一个，固定仓库 commit、Python/torch/ComfyUI 版本、模型 SHA-256、最小工作流 JSON、成功图和失败图。速度与显存的结论以目标机器实测为准。

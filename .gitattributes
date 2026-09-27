@@ -1,0 +1,87 @@
+# Git 属性配置 —— 显式声明换行符与文本/二进制判定
+#
+# 为什么需要这个文件：
+#   本仓库核心资产是 Windows 批处理（.bat）与 PowerShell（.ps1）脚本，
+#   它们**必须**保持 CRLF 行尾 + cp936 编码，否则中文会乱码或执行异常。
+#
+#   仅靠 core.autocrlf 不够可靠：
+#     - Windows 上通常 autocrlf=true  → 存储归一化为 LF，检出还原 CRLF ✅
+#     - macOS/Linux 上通常 autocrlf=input → 检出仍是 LF ❌（.bat 会变 LF 结尾）
+#   所以这里用 .gitattributes 显式锁定，与操作系统无关。
+#
+# 依据：项目铁律 —— .bat 必须 CRLF + cp936，零裸 LF。
+
+# ─────────────────────────────────────────────────────────────────────────
+# 一、Windows 脚本：强制 CRLF
+# ─────────────────────────────────────────────────────────────────────────
+# 批处理与 PowerShell 脚本必须以 CRLF 检出：
+#   - .bat / .cmd : CMD 对 LF 行尾容忍度差，goto/label 解析可能出错
+#   - .ps1        : 见下方"编码"备注（本项目的 .ps1 另需 UTF-8 BOM）
+*.bat           text eol=crlf
+*.cmd           text eol=crlf
+*.ps1           text eol=crlf
+
+# ─────────────────────────────────────────────────────────────────────────
+# 二、文本文件：统一按 LF 存储（避免跨平台 diff 噪音）
+# ─────────────────────────────────────────────────────────────────────────
+*.py            text eol=lf
+*.js            text eol=lf
+*.css           text eol=lf
+*.html          text eol=lf
+*.json          text eol=lf
+*.md            text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf
+*.txt           text eol=lf
+*.gitignore     text eol=lf
+.gitattributes  text eol=lf
+
+# ─────────────────────────────────────────────────────────────────────────
+# 三、二进制资产：禁止任何换行符转换与文本 diff
+# ─────────────────────────────────────────────────────────────────────────
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.webp          binary
+*.gif           binary
+*.ico           binary
+*.pdf           binary
+*.exr           binary
+*.db            binary
+*.sqlite        binary
+*.7z            binary
+*.zip           binary
+
+# 3D 模型（虽然 assets/ 已被 .gitignore 排除，此处仍显式声明以防误入仓）
+*.stl           binary
+*.3dm           binary
+*.stp           binary
+*.step          binary
+*.obj           binary
+*.fbx           binary
+*.glb           binary
+*.gltf          binary
+*.ksp           binary
+*.blend         binary
+
+# 字体与模型权重
+*.ttf           binary
+*.otf           binary
+*.woff          binary
+*.woff2         binary
+*.safetensors   binary
+*.ckpt          binary
+*.pt            binary
+*.pth           binary
+
+# ─────────────────────────────────────────────────────────────────────────
+# 四、GitHub 语言统计：把归档文档排除在"文档语言"计数之外
+# ─────────────────────────────────────────────────────────────────────────
+# docs/archive/ 是历史归档，不应影响仓库的语言占比统计
+docs/archive/** linguist-documentation=true
+
+# ⚠️ 编码备注（Git 不管编码，需人工遵守）：
+#   - .bat : 必须 cp936（含 chcp 936），**不得有 BOM**
+#   - .ps1 : 必须 UTF-8 **带 BOM**（PowerShell 5.1 无 BOM 会按 cp936 解析 → 中文乱码）
+#   - .md/.py/.js/.json : UTF-8 无 BOM
+#   验证方法见 GITHUB.md

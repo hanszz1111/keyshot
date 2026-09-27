@@ -144,15 +144,11 @@ def main():
     check("DELETE /api/card", json.loads(body).get("ok") is True)
     check("参数卡文件已移除", not os.path.isfile(S.card_path(TEST_SKU)))
 
-    # ---- 清理测试任务 ----
-    con = sqlite3.connect(S.DB_FILE)
-    con.execute("DELETE FROM tasks WHERE sku=?", (TEST_SKU,))
-    con.commit()
-    con.close()
-    con = sqlite3.connect(S.DB_FILE)
-    left = con.execute("SELECT COUNT(*) FROM tasks WHERE sku=?", (TEST_SKU,)).fetchone()[0]
-    con.close()
-    check("测试任务已清理", left == 0)
+    # ---- 清理测试任务并验证 ----
+    # 清理动作在此显式执行一次以验证有效性；外层 run() 的 finally 会再执行一次，
+    # 保证进程被中断（管道 SIGPIPE / Ctrl+C / 超时）时也不会留下 _selftest 残留。
+    _cleanup_selftest()
+    check("测试任务已清理", _count_selftest_tasks() == 0)
 
     httpd.shutdown()
 
@@ -164,5 +160,47 @@ def main():
     return 0 if not FAIL else 1
 
 
+def _count_selftest_tasks():
+    """统计遗留的 _selftest 任务条数。"""
+    con = sqlite3.connect(S.DB_FILE)
+    try:
+        return con.execute("SELECT COUNT(*) FROM tasks WHERE sku=?", (TEST_SKU,)).fetchone()[0]
+    finally:
+        con.close()
+
+
+def _cleanup_selftest():
+    """删除本次自检写入的 _selftest 任务与参数卡。
+
+    设计为幂等且不抛异常：即使自检中途失败也要执行，
+    避免残留的 4 条测试任务让下一次运行断言失败（造成“越跑越坏”的假故障）。
+    """
+    try:
+        con = sqlite3.connect(S.DB_FILE)
+        try:
+            con.execute("DELETE FROM tasks WHERE sku=?", (TEST_SKU,))
+            con.commit()
+        finally:
+            con.close()
+    except Exception as e:
+        print(f"  [警告] 清理自检任务失败：{e}")
+    try:
+        p = S.card_path(TEST_SKU)
+        if os.path.isfile(p):
+            os.remove(p)
+    except Exception as e:
+        print(f"  [警告] 清理自检参数卡失败：{e}")
+
+
+def run():
+    """包裹 main()，确保无论成功、失败还是被中断都执行清理。"""
+    try:
+        return main()
+    finally:
+        _cleanup_selftest()
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    # 入口先清一次历史残留，再跑；结束时（含被中断）再清一次。
+    _cleanup_selftest()
+    sys.exit(run())

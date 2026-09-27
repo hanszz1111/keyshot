@@ -22,8 +22,11 @@ AI 白模渲染器 · OPT-01  Blender 确定性基线 pass 渲染器
 自检（不需要任何模型，内置几何跑通全链路）：
     blender.exe -b -P blender_pass.py -- --self-test --out D:\\tmp\\passtest
 
-支持导入：.blend .glb .gltf .obj .stl .fbx；安装 import_3dm 插件后支持 .3dm。
-STEP/STP 由服务端先用 FreeCAD 转为网格；.ksp/.c4d/.max/.rhi 仍需手动导出。
+支持导入：.blend .glb .gltf .obj .stl .fbx
+          .3dm 需 Blender 扩展 import_3dm（Blender 4.2+ 装成 bl_ext.user_default.import_3dm）
+          .stp/.step 优先用 STEPper 插件自带 OCC 内核直接读；插件缺失时
+          由服务端先用 FreeCAD 转成缓存 STL 再送进来。
+          .ksp/.c4d/.max/.rhi 仍需手动导出（KeyShot 导 GLB，C4D/Max 导 GLB/OBJ）。
 """
 import argparse
 import json
@@ -36,15 +39,22 @@ import mathutils
 
 # ---------------------------------------------------------------- 常量
 
-SUPPORTED = {".blend", ".glb", ".gltf", ".obj", ".stl", ".fbx", ".3dm"}
+SUPPORTED = {".blend", ".glb", ".gltf", ".obj", ".stl", ".fbx", ".3dm",
+             ".stp", ".step"}
 NEED_CONVERT = {
     ".ksp": "KeyShot 工程 —— 请在 KeyShot 中 文件 → 导出 → glTF(.glb)",
-    ".stp": "STEP 工程图需由服务端通过 FreeCAD 转换，再交给 Blender",
-    ".step": "STEP 工程图需由服务端通过 FreeCAD 转换，再交给 Blender",
     ".c4d": "Cinema 4D —— 请导出 .glb / .obj",
     ".max": "3ds Max —— 请导出 .glb / .obj",
     ".rhi": "Rhino 历史文件 —— 请导出 .glb / .obj",
 }
+
+# STEP/STP 直接由 Blender 侧导入：
+#   首选 STEPper 插件（自带 OCC 内核，无需外部依赖）；
+#   插件缺失时，服务端会先用 FreeCAD 转成缓存 STL 再送进来。
+STEPPER_MODULES = ("STEPper",)
+# Rhino .3dm 导入器的模块名。Blender 4.2+ 把扩展装到带命名空间的
+# bl_ext.<repo>.<id> 下，所以扩展形式要排前面（实测裸名 import_3dm 找不到）。
+THREEDM_MODULES = ("bl_ext.user_default.import_3dm", "import_3dm")
 
 # 机位别名（与 web/index.html 的机位词表保持一致）
 VIEW_ALIAS = {
@@ -108,7 +118,78 @@ def parse_args():
 # ---------------------------------------------------------------- 场景准备
 
 def reset_scene():
-    bpy.ops.wm.read_factory_settings(use_empty=True)
+    """清空场景里的数据块，但**不重置用户偏好**。
+
+    不能用 bpy.ops.wm.read_factory_settings —— 它会把已启用的插件一并卸载，
+    而 STEPper 重新启用的时机若晚于清场，它的 Scene PointerProperty
+    （scene.stepper）就挂不上，后续导入会 KeyError。这里手工删数据块即可。
+    """
+    for ob in list(bpy.data.objects):
+        bpy.data.objects.remove(ob, do_unlink=True)
+    for coll in list(bpy.data.collections):
+        bpy.data.collections.remove(coll)
+    for me in list(bpy.data.meshes):
+        if me.users == 0:
+            bpy.data.meshes.remove(me)
+
+
+def _enable_addon(name):
+    """启用插件，返回是否真的可用。
+
+    ★ 必须用 bpy.ops.preferences.addon_enable，不能用 addon_utils.enable。
+    两者差别很大：addon_utils.enable 在 --background 下会因为
+    bpy.context.preferences.addons 尚未就绪而抛 KeyError，插件类虽然注册了，
+    但 Scene 上的 PointerProperty（如 STEPper 的 scene.stepper）没挂上，
+    随后算子内部取该属性就崩。用 bpy.ops 走正常启用路径才拿得到完整上下文。
+    """
+    if _addon_active(name):
+        return True
+    try:
+        bpy.ops.preferences.addon_enable(module=name)
+    except Exception as exc:
+        log(f"  启用 {name} 失败：{exc}")
+        return False
+    return _addon_active(name)
+
+
+def _addon_active(name):
+    """插件是否已启用（兼容 Blender 4.2+ 扩展命名空间 bl_ext.*）。"""
+    prefs = bpy.context.preferences.addons
+    for key in (name, f"bl_ext.user_default.{name}", f"bl_ext.blender_org.{name}"):
+        if key in prefs:
+            return True
+    return False
+
+
+def _enable_first(addon_names):
+    """按顺序尝试启用插件，返回真正启用成功的模块名；都失败返回 None。"""
+    for name in addon_names:
+        if _enable_addon(name):
+            return name
+    return None
+
+
+def _import_stepper(path):
+    """用 STEPper 直接读 .stp/.step（插件自带 OCC 内核，不依赖 FreeCAD）。
+
+    注意：STEPper 的 filepath 只被当作所在目录，真正的目标文件必须走
+    override_file 传完整路径，否则报「未选择任何STEP文件」。
+    """
+    mod = _enable_first(STEPPER_MODULES)
+    if not mod:
+        raise SystemExit(
+            "[pass] STEP/STP 需要 Blender 的 STEPper 插件（或在服务端配置 FreeCAD）。"
+            "请在 Blender 中安装并启用 STEPper 后重试。")
+    if not hasattr(bpy.ops.import_scene, "occ_import_step"):
+        raise SystemExit("[pass] STEPper 已装但未注册 occ_import_step 算子，请重启 Blender 后再试。")
+    try:
+        bpy.ops.import_scene.occ_import_step(
+            filepath=path, override_file=path,
+            lin_deflection=0.8, ang_deflection=0.5, hierarchy_types="FLAT")
+    except Exception as exc:
+        raise SystemExit(f"[pass] STEP 导入失败：{exc}") from exc
+    if not any(ob.type == "MESH" for ob in bpy.data.objects):
+        raise SystemExit("[pass] STEP 文件里没有可渲染的网格（可能只含曲线或曲面未生成网格）。")
 
 
 def import_model(path):
@@ -131,14 +212,19 @@ def import_model(path):
         bpy.ops.wm.stl_import(filepath=path)
     elif ext == ".fbx":
         bpy.ops.import_scene.fbx(filepath=path)
+    elif ext in (".stp", ".step"):
+        _import_stepper(path)
     elif ext == ".3dm":
+        mod = _enable_first(THREEDM_MODULES)
+        if not mod:
+            raise SystemExit(
+                "[pass] Rhino .3dm 导入失败：请在 Blender 中安装并启用 "
+                "jesterKing/import_3dm 扩展及其 rhino3dm 依赖；"
+                "或先在 Rhino 里导出 GLB/OBJ 再导入。")
         try:
-            import addon_utils
-            addon_utils.enable("import_3dm", default_set=False, persistent=False)
             bpy.ops.import_3dm.some_data(filepath=path)
         except Exception as exc:
-            raise SystemExit("[pass] Rhino .3dm 导入失败：请在 Blender 中安装并启用 "
-                             "jesterKing/import_3dm 插件及其 rhino3dm 依赖；" + str(exc)) from exc
+            raise SystemExit(f"[pass] Rhino .3dm 导入失败（{mod}）：{exc}") from exc
         if not any(ob.type == "MESH" for ob in bpy.data.objects):
             raise SystemExit("[pass] .3dm 中没有可渲染网格。请在 Rhino 先生成渲染网格，或导出 GLB/OBJ。")
 

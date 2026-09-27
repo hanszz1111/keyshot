@@ -13,6 +13,7 @@ AI 白模渲染器 · 控制台后端
 """
 
 import json
+import glob
 import hashlib
 import mimetypes
 import os
@@ -1277,9 +1278,8 @@ def freecad_cmd_executable():
     if found:
         return found
     if os.name == "nt":
-        import glob as _glob
         pf = os.environ.get("ProgramFiles", r"C:\Program Files")
-        for cand in sorted(_glob.glob(os.path.join(pf, "FreeCAD*", "bin", "FreeCADCmd.exe")), reverse=True):
+        for cand in sorted(glob.glob(os.path.join(pf, "FreeCAD*", "bin", "FreeCADCmd.exe")), reverse=True):
             return cand
     return None
 
@@ -1291,11 +1291,47 @@ def converted_step_path(source):
     return os.path.join(ASSETS, "_转换缓存", digest + ".stl")
 
 
+# Blender 侧的 STEPper 插件目录名。装在用户扩展目录或程序内置目录都算数。
+STEPPER_DIR_NAMES = ("STEPper",)
+
+
+def blender_has_stepper():
+    """探测 Blender 是否装了 STEPper（能直接读 .stp/.step，就不必用 FreeCAD）。
+
+    只看文件系统，不启动 Blender —— 这个判断在每次出 pass 前都会跑，必须便宜。
+    """
+    roots = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        roots.append(os.path.join(appdata, "Blender Foundation", "Blender"))
+    exe = blender_executable()
+    if exe:
+        roots.append(os.path.join(os.path.dirname(exe), "4.5"))
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for name in STEPPER_DIR_NAMES:
+            for pat in (os.path.join(root, "*", "scripts", "addons", name),
+                        os.path.join(root, "*", "extensions", "*", name),
+                        os.path.join(root, "scripts", "addons", name),
+                        os.path.join(root, "extensions", "*", name)):
+                if glob.glob(pat):
+                    return True
+    return False
+
+
 def convert_step(source):
-    """Create a cached STL using FreeCAD; never alter the source STEP file."""
+    """Create a cached STL using FreeCAD; never alter the source STEP file.
+
+    这是 .stp/.step 的**回退通道**：Blender 侧若装了 STEPper 插件就能直接读
+    STEP，根本不会走到这里。只有 STEPper 缺失时才需要 FreeCAD。
+    """
     exe = freecad_cmd_executable()
     if not exe:
-        raise ValueError("STEP/STP 需要 FreeCAD 命令行转换器。请安装 FreeCAD，或设置 FREECAD_CMD 为 FreeCADCmd.exe 的完整路径")
+        raise ValueError(
+            "STEP/STP 需要 Blender 的 STEPper 插件，或 FreeCAD 命令行转换器。"
+            "推荐在 Blender 里安装并启用 STEPper（自带 OCC 内核，无需额外依赖）；"
+            "或安装 FreeCAD 并将 FREECAD_CMD 设为 FreeCADCmd.exe 的完整路径")
     if not os.path.isfile(STEP_CONVERTER):
         raise ValueError("缺少 scripts/step_to_stl_freecad.py")
     dest = converted_step_path(source)
@@ -1342,8 +1378,8 @@ def start_pass(sku, view, model_rel=""):
         raise ValueError("未找到 Blender。请安装 Blender，或设置环境变量 BLENDER_EXE 指向 blender.exe")
     if not os.path.isfile(BLENDER_SCRIPT):
         raise ValueError("缺少 scripts/blender_pass.py")
-    if os.path.splitext(src)[1].lower() in (".stp", ".step") and not freecad_cmd_executable():
-        raise ValueError("STEP/STP 需要 FreeCAD。请安装 FreeCAD，或设置 FREECAD_CMD 指向 FreeCADCmd.exe")
+    # .stp/.step 不再强制要求 FreeCAD：Blender 侧若装了 STEPper 会直接读 STEP，
+    # 只有 STEPper 缺失时才会回退到「先转缓存 STL」，那时 convert_step 再报错。
 
     with _pass_lock:
         if _pass_state["status"] == "running":
@@ -1357,7 +1393,11 @@ def start_pass(sku, view, model_rel=""):
     def worker():
         global _pass_state
         try:
-            render_src = convert_step(src) if os.path.splitext(src)[1].lower() in (".stp", ".step") else src
+            # .stp/.step 优先原样交给 Blender（STEPper 直接读），
+            # 只有 STEPper 缺失、且本机装了 FreeCAD 时才转成缓存 STL 兜底。
+            render_src = src
+            if os.path.splitext(src)[1].lower() in (".stp", ".step") and not blender_has_stepper():
+                render_src = convert_step(src)
             args = [exe, "-b", "-P", BLENDER_SCRIPT, "--",
                     "--model", render_src, "--sku", sku, "--view", view]
             proc = subprocess.run(args, capture_output=True, text=True,

@@ -30,7 +30,11 @@
 
 ## 出一张图
 
-1. 在网页“选择产品”中导入 `.blend`、`.glb`、`.gltf`、`.obj`、`.stl` 或 `.fbx` 白模，可直接生成结构图。`.stp/.step` 可自动经 FreeCAD 转为网格；先安装 FreeCAD，若网页未识别，设置 `FREECAD_CMD` 为 `FreeCADCmd.exe` 完整路径并重启网页服务。Rhino `.3dm` 可由 Blender 的 [import_3dm 插件](https://github.com/jesterKing/import_3dm)导入，需在实际执行结构图的 Blender 中安装插件及 `rhino3dm` 依赖；该插件主要读取文件中的渲染网格，纯 NURBS/曲面文件可能需要先在 Rhino 中生成渲染网格或导出 GLB/OBJ。`.ksp/.c4d/.max/.rhi` 仍需手动导出为 GLB/OBJ。上传的原文件不会因转换被修改，转换网格缓存在 `assets/_转换缓存/`。
+1. 在网页“选择产品”中导入 `.blend`、`.glb`、`.gltf`、`.obj`、`.stl`、`.fbx`、`.stp`、`.step` 或 `.3dm` 白模，可直接生成结构图。
+   - **`.stp/.step`**：首选 Blender 的 **STEPper** 插件（自带 OpenCASCADE 内核，**无需安装 FreeCAD**），在 Blender 首选项里启用即可；插件缺失时才回退到「先用 FreeCAD 转缓存网格」，此时需安装 FreeCAD，若网页未识别则设置 `FREECAD_CMD` 为 `FreeCADCmd.exe` 完整路径并重启服务。
+   - **`.3dm`（Rhino）**：装 Blender 的 [import_3dm 扩展](https://github.com/jesterKing/import_3dm)（v0.0.18 起自带 `rhino3dm` 依赖，装完即用）。Blender 4.2+ 的命令行安装方式：`blender.exe --command extension install-file -r user_default -e import_3dm-<版本>-windows_x64.zip`。该扩展主要读取文件里的渲染网格，纯 NURBS/曲面文件可能需先在 Rhino 中生成渲染网格或导出 GLB/OBJ。
+   - `.ksp/.c4d/.max/.rhi` 仍需手动导出为 GLB/OBJ。
+   - 上传的原文件不会因转换被修改；仅 FreeCAD 回退路径会产生缓存，位于 `assets/_转换缓存/`。
 2. 在“任务”中为目标视角生成或上传深度图。结构约束模式缺少深度图时会阻止出图，不会悄悄降级为纯文字生成。
 3. 写下材质、配色、灯光和细节要求；可上传参考图。界面会说明参考图当前是作为图像条件参与生成，还是只提取颜色和影调。
 4. 选“仅预览视角”或“4 个标准视角”，再选每个视角的候选张数（1/2/4/15/30/50），检查提示后开始生成。四视角选 50 张会创建 200 个任务，逐张执行，需保持网页和服务运行；中断后可在任务列表续跑。结果保存在 `outputs/<产品编号>/<视角>/`。

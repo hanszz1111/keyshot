@@ -1,5 +1,26 @@
 # GitHub 参考项目调研
 
+> # ⚠️ 已归档 · 调研快照（2026-09-19）
+>
+> **本文是项目启动期的开源项目调研记录，结论未经验证，且部分项目最终未采用。**
+> 保留它是为了记录当时的选型依据。**以下条目已确认与最终方案不符：**
+>
+> | 本文推荐 | 实际结果 |
+> |---|---|
+> | `IC-Light` / `ComfyUI-IC-Light` | ❌ **未采用** |
+> | `AdvancedRefluxControl` / `Flux Style Adjust` / `Nunchaku` | ❌ **未采用**（未走 FLUX 路线） |
+> | `ComfyAPI` | ❌ 未用 —— 后端 `web/server.py` 是**零第三方依赖**自研 |
+> | `BlenderProc` | ❌ 未用 —— 直接用 Blender headless |
+> | `ComfyUI-Manager` | ⚠️ 未安装（本项目手动管理插件） |
+> | `IPAdapter Plus` | ✅ **已采用**（v1.11） |
+> | `ControlNet Aux` | ✅ 已采用（`controlnet-union-sdxl-1.0-promax`） |
+> | `DLR-RM/BlenderProc`、`OpenX-Inc/clay` | 📌 仅作参考，未集成 |
+>
+> **许可与星标以仓库当前页面为准** —— 本文写于 2026-09-19，链接与许可状态可能已变。
+> 商用前请重新核对（尤其 GPL 系）。**本页仅作历史记录保留。**
+>
+> ---
+
 > 调研时间：2026-09-19
 > 目的：找出可直接复用 / 可参考架构的开源项目，避免重复造轮子。
 > 所有链接均为 GitHub 仓库地址。许可与星标以仓库当前页面为准，落地前请再核一次（尤其商用）。

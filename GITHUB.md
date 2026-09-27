@@ -158,7 +158,7 @@ git fetch origin main
 git merge origin/main --allow-unrelated-histories -X ours -m "合并远程占位 README"
 git push -u origin main
 
-# 做法 B：干脆不要远程那条历史（未采用）
+# 做法 B：历史风险示例（未采用，双机协作时禁止执行）
 git push -u origin main --force
 ```
 
@@ -166,7 +166,7 @@ git push -u origin main --force
 须在弹出的窗口里完成浏览器登录 / Token 授权；授权成功后凭证会缓存，后续推送不再询问。
 在无图形交互的自动化会话里，该弹窗会让命令一直挂起 —— 所以推送要放到后台跑，用户手动完成授权。
 
-### 7.4 ★ `.bat` / `.ps1` 的换行符与编码（跨平台必读）
+### ★ `.bat` / `.ps1` 的换行符与编码（跨平台必读）
 
 本仓库有 8 个 `.bat` 和 2 个 `.ps1`，它们**必须**满足特定格式才能正确执行。
 `.gitattributes` 已**显式锁定换行符**，与操作系统无关：
@@ -207,7 +207,7 @@ git check-attr text eol -- 启动全部.bat
 # 期望：eol: crlf
 ```
 
-### 7.5 换行符导致的"字节数不一致"（正常现象，别慌）
+### 换行符导致的"字节数不一致"（正常现象，别慌）
 
 用 GitHub API 看 `.bat` 的 `size` 会比本地小几十字节，差值 **正好等于行数**：
 
@@ -221,17 +221,25 @@ git check-attr text eol -- 启动全部.bat
 
 ---
 
-## 七、日常维护
+## 七、日常维护（双机协作）
+
+以下以 R1 文档复审为例。先确认 `main` 已同步且工作区无未提交改动，再从最新 `main` 建本轮分支；有改动时先检查并保存，不要用重置命令清空。
 
 ```bash
 cd "D:\Dsektop\AI渲染\AI渲染"
 
-git status                    # 看改动
-git add -A                    # 暂存（.gitignore 会自动挡掉资产）
-git diff --cached --name-only | grep -E "^(assets|outputs|_隔离区)/"   # 复查有无资产混入
-git commit -m "..."
-git push                      # 已设置 upstream，无需再写 origin main
+git status                    # 先确认当前分支和本地改动
+git fetch origin
+git switch main
+git pull --ff-only origin main
+git switch -c codex/本轮任务名
+git add AI/REVIEW.md          # 只暂存本轮负责的文件；Windows 按实际任务替换路径
+git diff --cached --name-only # 逐项确认无素材、密钥、数据库或非本轮文件
+git commit -m "docs: 记录本轮复审"
+git push -u origin codex/本轮任务名
 ```
+
+推送后在 GitHub 创建指向 `main` 的 PR，另一台电脑核对代码/证据基线与文件范围后再合并。**不要在两台电脑上直接推 `main`，也不要以 `.gitignore` 代替暂存清单检查。**具体字段和 R1 文件归属见 [AI/README.md](AI/README.md)。
 
 > 中文路径下 `git diff --cached --name-only | grep "\.png$"` 会因秒字符转义而**误报为空**。
 > 本仓库已设 `core.quotepath false` 规避；换机器克隆后建议同样设置一次。

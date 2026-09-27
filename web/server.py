@@ -13,6 +13,7 @@ AI 白模渲染器 · 控制台后端
 """
 
 import json
+import hashlib
 import mimetypes
 import os
 import re
@@ -475,7 +476,8 @@ def plan_upload(rel, fb_sku="", fb_view="", overwrite=False):
     ext = os.path.splitext(name)[1].lower()
 
     if kind == "model":
-        dest = os.path.join(MODELS_DIR, name)
+        # 新上传模型按 SKU 分目录；重复文件仍留在同一 SKU 下，不会因 _2 后缀变成新产品。
+        dest = os.path.join(MODELS_DIR, safe_file(sku), name)
     elif kind == "pass":
         dest = os.path.join(PASSES_DIR, sku, view, role + (ext or ".png"))
     elif kind == "pass_noview":
@@ -491,25 +493,33 @@ def scan_models():
     out = []
     if not os.path.isdir(MODELS_DIR):
         return out
-    for fn in sorted(os.listdir(MODELS_DIR)):
-        p = os.path.join(MODELS_DIR, fn)
-        if not os.path.isfile(p):
-            continue
-        ext = os.path.splitext(fn)[1].lower()
-        if ext not in MODEL_EXTS:
-            continue
-        size = os.path.getsize(p)
-        stem = os.path.splitext(fn)[0]
-        _, sku, _, _ = parse_asset_rel(fn, is_model=True)
-        out.append({
-            "file": fn,
-            "path": p.replace("\\", "/"),
-            "ext": ext.lstrip("."),
-            "size": size,
-            "size_h": human_size(size),
-            "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(p))),
-            "sku": sku or stem,
-        })
+    for folder, dirs, files in os.walk(MODELS_DIR):
+        dirs[:] = [] if folder != MODELS_DIR else [d for d in dirs if not d.startswith("_")]
+        for fn in files:
+            p = os.path.join(folder, fn)
+            ext = os.path.splitext(fn)[1].lower()
+            if ext not in MODEL_EXTS or not os.path.isfile(p):
+                continue
+            size = os.path.getsize(p)
+            if size == 0:
+                continue
+            stem = os.path.splitext(fn)[0]
+            if folder == MODELS_DIR:  # 兼容历史平铺模型
+                _, sku, _, _ = parse_asset_rel(fn, is_model=True)
+            else:
+                sku = os.path.basename(folder)
+            out.append({
+                "file": fn,
+                "rel": os.path.relpath(p, ASSETS).replace("\\", "/"),
+                "path": p.replace("\\", "/"),
+                "ext": ext.lstrip("."),
+                "size": size,
+                "size_h": human_size(size),
+                "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getmtime(p))),
+                "mtime_ns": os.stat(p).st_mtime_ns,
+                "sku": sku or stem,
+            })
+    out.sort(key=lambda m: (m["mtime_ns"], m["rel"]), reverse=True)
     return out
 
 
@@ -714,19 +724,21 @@ def list_tasks(limit=2000):
 
 
 def insert_tasks(items):
-    n = 0
+    if not isinstance(items, list) or not 1 <= len(items) <= 200:
+        raise ValueError("每批任务须为 1–200 张")
+    ids = []
     with DB_LOCK, db() as con:
         for t in items:
-            con.execute(
+            cur = con.execute(
                 "INSERT INTO tasks (sku, view, variant, positive, negative, payload, status) "
                 "VALUES (?,?,?,?,?,?,'pending')",
                 (t.get("sku"), t.get("view"), t.get("variant", 0),
                  t.get("positive", ""), t.get("negative", ""),
                  json.dumps(t.get("payload", {}), ensure_ascii=False)),
             )
-            n += 1
+            ids.append(cur.lastrowid)
         con.commit()
-    return n
+    return ids
 
 
 def update_task(tid, status=None, output=None, err=None, retry=None):
@@ -1225,8 +1237,9 @@ def comfy_poll(tid):
 #       2026-09-27 起不再是运行入口）里以子类方式实现，现合并进唯一后端，
 #       让界面只有一套服务；同时修掉原实现的 Blender 探测缺口（本机 Blender 装在 D 盘而非 Program Files）。
 # =========================================================
-PASS_MODEL_EXTS = {".blend", ".glb", ".gltf", ".obj", ".stl", ".fbx"}
+PASS_MODEL_EXTS = {".blend", ".glb", ".gltf", ".obj", ".stl", ".fbx", ".stp", ".step", ".3dm"}
 BLENDER_SCRIPT = os.path.join(ROOT, "scripts", "blender_pass.py")
+STEP_CONVERTER = os.path.join(ROOT, "scripts", "step_to_stl_freecad.py")
 BLENDER_HINTS = [
     r"D:\Dsektop\blender-4.5.0-windows-x64\blender.exe",
 ]
@@ -1255,30 +1268,82 @@ def blender_executable():
     return None
 
 
+def freecad_cmd_executable():
+    """FreeCADCmd is used only for STEP tessellation; Blender remains the renderer."""
+    custom = (os.environ.get("FREECAD_CMD") or "").strip().strip('"')
+    if custom and os.path.isfile(custom):
+        return custom
+    found = shutil.which("FreeCADCmd") or shutil.which("freecadcmd")
+    if found:
+        return found
+    if os.name == "nt":
+        import glob as _glob
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        for cand in sorted(_glob.glob(os.path.join(pf, "FreeCAD*", "bin", "FreeCADCmd.exe")), reverse=True):
+            return cand
+    return None
+
+
+def converted_step_path(source):
+    stat = os.stat(source)
+    marker = "%s|%s|%s" % (os.path.abspath(source), stat.st_size, stat.st_mtime_ns)
+    digest = hashlib.sha256(marker.encode("utf-8")).hexdigest()[:20]
+    return os.path.join(ASSETS, "_转换缓存", digest + ".stl")
+
+
+def convert_step(source):
+    """Create a cached STL using FreeCAD; never alter the source STEP file."""
+    exe = freecad_cmd_executable()
+    if not exe:
+        raise ValueError("STEP/STP 需要 FreeCAD 命令行转换器。请安装 FreeCAD，或设置 FREECAD_CMD 为 FreeCADCmd.exe 的完整路径")
+    if not os.path.isfile(STEP_CONVERTER):
+        raise ValueError("缺少 scripts/step_to_stl_freecad.py")
+    dest = converted_step_path(source)
+    if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+        return dest
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    temp = dest + "." + uuid.uuid4().hex + ".part.stl"
+    env = os.environ.copy()
+    env.update(AI_RENDER_CAD_SOURCE=source, AI_RENDER_CAD_OUTPUT=temp)
+    try:
+        proc = subprocess.run([exe, STEP_CONVERTER], capture_output=True, text=True,
+                              errors="replace", timeout=900, env=env)
+        if proc.returncode != 0 or not os.path.isfile(temp) or os.path.getsize(temp) == 0:
+            tail = (proc.stdout + "\n" + proc.stderr).strip()[-1000:]
+            raise ValueError("STEP 转换失败：" + (tail or "FreeCAD 未输出网格"))
+        os.replace(temp, dest)
+        return dest
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+
+
 def pass_status():
     with _pass_lock:
         return dict(_pass_state)
 
 
-def start_pass(sku, view):
+def start_pass(sku, view, model_rel=""):
     """后台用 Blender 给某个 SKU 的某个机位出结构 pass（clay/alpha/depth/normal/objectid）。"""
     global _pass_state
     if view not in VIEW_KEYS:
         raise ValueError("不支持的机位：%s" % view)
-    model = next((m for m in scan_models() if m["sku"] == sku), None)
+    model = next((m for m in scan_models() if m["sku"] == sku and
+                  (not model_rel or m["rel"] == model_rel)), None)
     if not model:
         raise ValueError("投放区里没有 %s 的白模文件，请先导入" % sku)
     src = os.path.abspath(model["path"])
-    if not src.startswith(os.path.abspath(MODELS_DIR)) or not os.path.isfile(src):
+    if os.path.commonpath((os.path.abspath(MODELS_DIR), src)) != os.path.abspath(MODELS_DIR) or not os.path.isfile(src):
         raise ValueError("白模路径不在项目投放区内")
     if os.path.splitext(src)[1].lower() not in PASS_MODEL_EXTS:
-        raise ValueError("这个格式不能直接出结构图（Blender 只能读 .blend/.glb/.gltf/.obj/.stl/.fbx），"
-                         "请先在原软件导出 GLB 或 OBJ")
+        raise ValueError("这个格式不能自动生成结构图；支持 BLEND/GLB/GLTF/OBJ/STL/FBX/STEP/STP/3DM")
     exe = blender_executable()
     if not exe:
         raise ValueError("未找到 Blender。请安装 Blender，或设置环境变量 BLENDER_EXE 指向 blender.exe")
     if not os.path.isfile(BLENDER_SCRIPT):
         raise ValueError("缺少 scripts/blender_pass.py")
+    if os.path.splitext(src)[1].lower() in (".stp", ".step") and not freecad_cmd_executable():
+        raise ValueError("STEP/STP 需要 FreeCAD。请安装 FreeCAD，或设置 FREECAD_CMD 指向 FreeCADCmd.exe")
 
     with _pass_lock:
         if _pass_state["status"] == "running":
@@ -1291,9 +1356,10 @@ def start_pass(sku, view):
 
     def worker():
         global _pass_state
-        args = [exe, "-b", "-P", BLENDER_SCRIPT, "--",
-                "--model", src, "--sku", sku, "--view", view]
         try:
+            render_src = convert_step(src) if os.path.splitext(src)[1].lower() in (".stp", ".step") else src
+            args = [exe, "-b", "-P", BLENDER_SCRIPT, "--",
+                    "--model", render_src, "--sku", sku, "--view", view]
             proc = subprocess.run(args, capture_output=True, text=True,
                                   errors="replace", timeout=1800)
             tail = (proc.stdout + "\n" + proc.stderr).strip()[-1500:]
@@ -1416,17 +1482,27 @@ class Handler(SimpleHTTPRequestHandler):
         """裸二进制上传：分块写盘，避免大模型文件把内存顶爆。"""
         n = int(self.headers.get("Content-Length") or 0)
         dest, kind, meta = plan_upload(rel, fb_sku, fb_view, overwrite)
+        if n <= 0:
+            return self.send_json({"error": "文件为空或未提供长度，未保存"}, 400)
+        if n > (2 * 1024 * 1024 * 1024 if kind == "model" else 100 * 1024 * 1024):
+            return self.send_json({"error": "文件过大，模型上限 2 GB、结构图上限 100 MB"}, 400)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
         left = n
-        tmp = dest + ".part"
-        with open(tmp, "wb") as f:
-            while left > 0:
-                chunk = self.rfile.read(min(262144, left))
-                if not chunk:
-                    break
-                f.write(chunk)
-                left -= len(chunk)
-        os.replace(tmp, dest)
+        tmp = dest + "." + uuid.uuid4().hex + ".part"
+        try:
+            with open(tmp, "wb") as f:
+                while left > 0:
+                    chunk = self.rfile.read(min(262144, left))
+                    if not chunk:
+                        raise ValueError("上传中断：文件未接收完整，原文件未改变")
+                    f.write(chunk)
+                    left -= len(chunk)
+            os.replace(tmp, dest)
+        except ValueError as exc:
+            return self.send_json({"error": str(exc)}, 400)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
         return self.send_json({
             "ok": True, "kind": kind,
             "saved": os.path.relpath(dest, ASSETS).replace("\\", "/"),
@@ -1536,6 +1612,7 @@ class Handler(SimpleHTTPRequestHandler):
             if p == "/api/ui/info":
                 exe = blender_executable()
                 return self.send_json({"blender": bool(exe), "blender_path": exe or "",
+                                       "freecad_cmd": freecad_cmd_executable() or "",
                                        "blender_script": os.path.isfile(BLENDER_SCRIPT),
                                        "project": ROOT, "ui": "2.0"})
             if p == "/api/ui/pass/status":
@@ -1592,7 +1669,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(comfy_submit(int((body or {}).get("id"))))
             if p == "/api/ui/pass/start":
                 try:
-                    start_pass(str((body or {}).get("sku", "")), str((body or {}).get("view", "")))
+                    start_pass(str((body or {}).get("sku", "")), str((body or {}).get("view", "")),
+                               str((body or {}).get("model", "")))
                     return self.send_json({"ok": True, "status": "running"})
                 except ValueError as exc:
                     return self.send_json({"error": str(exc)}, 400)
@@ -1602,7 +1680,11 @@ class Handler(SimpleHTTPRequestHandler):
                 except (ValueError, TypeError) as exc:
                     return self.send_json({"error": str(exc)}, 400)
             if p == "/api/tasks":
-                return self.send_json({"ok": True, "inserted": insert_tasks(body.get("tasks", []))})
+                try:
+                    ids = insert_tasks((body or {}).get("tasks", []))
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                return self.send_json({"ok": True, "inserted": len(ids), "ids": ids})
             if p == "/api/tasks/clear":
                 clear_tasks()
                 return self.send_json({"ok": True})

@@ -25,7 +25,7 @@ const NEGATIVE = "blurry, low quality, warped geometry, extra parts, distorted p
 const NEGATIVE_CLAY = ", white unpainted plastic, bare grey model, clay render, untextured surface, flat unlit shading, raw 3D viewport screenshot, no material";
 
 const ACCEPT_PASS = new Set(["png","jpg","jpeg","webp","bmp"]);
-const ACCEPT_MODEL = new Set(["blend","glb","gltf","obj","stl","fbx"]);
+const ACCEPT_MODEL = new Set(["blend","glb","gltf","obj","stl","fbx","stp","step","3dm"]);
 const STANDARD_VIEWS = ["front","3q4_left","3q4_right","side"];
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -179,6 +179,8 @@ function renderPreflight(){
     if(weak.length)messages.push(`${weak.map(view=>VIEW_ZH[view]).join("、")}缺少法线图：仍可出图，但细节约束较弱。`);
   }
   if(item&&mode==="explore")messages.push("外观探索只使用文字；可能改变产品形状、孔位和细节。");
+  const batchCount=Number($("countSelect").value)*views.length;
+  if(batchCount>=15)messages.push(`本次共 ${batchCount} 张，逐张生成；可能耗时较长，请保持网页与渲染服务运行。任务会保存，可在任务列表续跑。`);
   const refOn=!!(state.ref.strength&&state.ref.rel&&(state.ref.palette||[]).length);
   if(refOn){
     const iadapterOn=!!(state.comfy&&state.comfy.ipadapter_ok);
@@ -190,7 +192,7 @@ function renderPreflight(){
   if(ready&&mode==="image")messages.unshift(`产品图片已就绪 · ${state.sourceSize.width} × ${state.sourceSize.height}。`);
   box.className="preflight "+(ready?(mode==="controlled"||mode==="image"?"is-good":"is-warn"):(item?"is-warn":""));
   box.replaceChildren(...messages.map(message=>text("p",message)));
-  const count=Number($("countSelect").value)*views.length;
+  const count=batchCount;
   button.textContent=state.running?`正在生成 ${state.runCount} 张…`:`开始生成 ${count} 张`;
   button.disabled=!ready||state.running;
   $("stageBadge").textContent=!item?"等待导入":mode==="image"?(ready?"图片已就绪":"等待图片"):mode==="explore"?"外观探索":ready?"结构图就绪":"结构图待准备";
@@ -206,9 +208,12 @@ function renderPassReadiness(){
   for(const [role,label] of [["clay","白模预览"],["depth","深度图"],["normal","法线图"]]){
     box.append(text("p",`${label}：${isUsablePass(row?.files?.[role])?"已就绪":"缺失"}`));
   }
-  $("makePassButton").disabled=!item.model||!ACCEPT_MODEL.has((item.model.ext||"").toLowerCase())||!state.ui.blender||state.passJob?.status==="running";
+  const modelExt=(item.model?.ext||"").toLowerCase();
+  $("makePassButton").disabled=!item.model||!ACCEPT_MODEL.has(modelExt)||!state.ui.blender||(["stp","step"].includes(modelExt)&&!state.ui.freecad_cmd)||state.passJob?.status==="running";
   $("uploadPassButton").disabled=!item;
   if(!state.ui.blender)$("passJobStatus").textContent="未找到 Blender；可先在 Windows 安装 Blender 或上传已有结构图。";
+  else if(["stp","step"].includes(modelExt)&&!state.ui.freecad_cmd)$("passJobStatus").textContent="STEP/STP 已保存；安装 FreeCAD 或配置 FREECAD_CMD 后可生成结构图。";
+  else if(modelExt==="3dm")$("passJobStatus").textContent="Rhino .3dm 需要 Blender 的 import_3dm 插件；导入失败时会显示原因。";
 }
 function renderHero(){
   const item=selectedItem(),row=viewInfo();const image=$("heroImage"),empty=$("heroEmpty");
@@ -343,12 +348,12 @@ function buildPayload(sku,view,variant,mode){
 async function generate(){
   renderPreflight();if($("generateButton").disabled)return;
   const sku=state.sku,views=renderViews(),perView=Number($("countSelect").value),count=perView*views.length,mode=getMode();
-  const before=Math.max(0,...state.tasks.map(t=>Number(t.id)||0));
   const tasks=views.flatMap(view=>Array.from({length:perView},(_,variant)=>{const payload=buildPayload(sku,view,variant,mode);return{sku,view,variant,positive:payload.positive,negative:payload.negative,payload};}));
   state.running=true;state.runCount=count;renderPreflight();announce(`正在加入并生成 ${count} 张图片`);
   try{
-    await post("/api/tasks",{tasks});await refreshTasks();
-    const created=state.tasks.filter(t=>t.id>before&&t.sku===sku&&views.includes(t.view)).sort((a,b)=>a.id-b.id).slice(0,count);
+    const inserted=await post("/api/tasks",{tasks});await refreshTasks();
+    const ids=new Set(inserted.ids||[]);
+    const created=state.tasks.filter(t=>ids.has(t.id)).sort((a,b)=>a.id-b.id);
     if(created.length!==count)throw new Error("任务已入队，但无法准确识别新任务。请在任务抽屉检查。 ");
     for(let i=0;i<created.length;i++){
       state.runCount=count-i;renderPreflight();
@@ -453,10 +458,13 @@ async function uploadModel(file){
     const stem=file.name.replace(/\.[^.]+$/,"");
     const result=await api(`/api/assets/upload?rel=${encodeURIComponent(file.name)}&sku=${encodeURIComponent(stem)}`,{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:file});
     await refreshAssets();
-    const imported=state.assets.models.find(m=>m.file===result.saved.split("/").pop());
+    const imported=state.assets.models.find(m=>m.rel===result.saved);
     state.sku=imported?.sku||result.sku||stem;
-    renderAll();announce(`${file.name} 已导入。请选择视角并生成结构图。`);
-    if(!ACCEPT_MODEL.has(ext))announce(`${file.name} 已保存，但 ${ext.toUpperCase()} 需先转换为 GLB 或 OBJ，才能自动生成结构图。`);
+    renderAll();
+    if(["stp","step"].includes(ext))announce(`${file.name} 已保存。安装 FreeCAD 后可自动转换并生成结构图。`);
+    else if(ext==="3dm")announce(`${file.name} 已保存。Blender 安装 import_3dm 插件后可生成结构图；仅有 NURBS 而无渲染网格时请先在 Rhino 导出 GLB/OBJ。`);
+    else if(!ACCEPT_MODEL.has(ext))announce(`${file.name} 已保存，但 ${ext.toUpperCase()} 需先转换为 GLB 或 OBJ，才能自动生成结构图。`);
+    else announce(`${file.name} 已导入。请选择视角并生成结构图。`);
   }catch(error){announce("导入失败："+errorMessage(error));}
   finally{setBusy($("chooseModelButton"),false,"导入白模文件");$("modelFile").value="";}
 }
@@ -492,7 +500,7 @@ async function uploadPass(files){
   finally{setBusy(button,false,"上传选定类型");$("passFiles").value="";}
 }
 async function makePass(){
-  try{await post("/api/ui/pass/start",{sku:state.sku,view:selectedView()});announce("Blender 正在生成结构图。 ");await refreshPassJob();}
+  try{await post("/api/ui/pass/start",{sku:state.sku,view:selectedView(),model:selectedItem()?.model?.rel||""});announce("正在生成结构图。 ");await refreshPassJob();}
   catch(error){announce("无法生成结构图："+errorMessage(error));}
 }
 async function refreshPassJob(){

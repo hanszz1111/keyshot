@@ -40,7 +40,7 @@
             <div id="modelSummary" class="model-summary">还没有选择产品。</div>
             <button type="button" class="line-button" id="chooseModelButton">导入白模文件</button>
             <input id="modelFile" type="file" accept=".blend,.glb,.gltf,.obj,.stl,.fbx,.ksp,.stp,.step,.3dm,.c4d,.max,.rhi" hidden>
-            <p class="field-help">GLB、OBJ、STL、FBX、BLEND 可直接出结构图；其他格式需先转换。</p>
+            <p class="field-help">GLB/GLTF、OBJ、STL、FBX、BLEND 可直接生成结构图；STEP/STP 需安装 FreeCAD，Rhino .3dm 需安装 Blender 的 import_3dm 插件。其他格式请先导出 GLB/OBJ。</p>
           </div>
           <div id="imageSourcePanel" hidden>
             <div id="imageSummary" class="model-summary">上传一张产品照片或已有渲染图。</div>
@@ -108,7 +108,7 @@
           <div class="image-settings" id="imageSettings" hidden><label for="imageStrength" class="field-label">改动幅度 <output id="imageStrengthValue" for="imageStrength">85%</output></label><input id="imageStrength" name="strength" type="range" min="55" max="95" step="5" value="85"><p class="field-help">白模/灰模截图建议 <b>85%</b>：低于 55% 在 8–12 步底模下几乎不生效（等于原样返回）。形状由原图边缘约束守住，因此可以放心用高幅度彻底换材质。</p></div>
           <div class="row-fields">
             <div id="viewField"><label for="viewSelect" class="field-label">预览视角</label><select id="viewSelect" name="view"><option value="front">正面</option><option value="3q4_left">左前 3/4</option><option value="3q4_right">右前 3/4</option><option value="side">侧面</option><option value="top">俯视</option><option value="detail_keypad">按键特写</option><option value="detail_window">透明件特写</option></select></div>
-            <div><label for="countSelect" class="field-label">候选张数</label><select id="countSelect" name="count"><option value="1">1 张</option><option value="2">2 张</option><option value="4" selected>4 张</option></select></div>
+            <div><label for="countSelect" class="field-label">每视角候选张数</label><select id="countSelect" name="count"><option value="1">1 张</option><option value="2">2 张</option><option value="4" selected>4 张</option><option value="15">15 张</option><option value="30">30 张</option><option value="50">50 张</option></select></div>
           </div>
           <div class="batch-field" id="batchField"><label for="viewBatchSelect" class="field-label">出图范围</label><select id="viewBatchSelect" name="scope"><option value="current">仅预览视角</option><option value="standard">4 个标准视角：正面、左前、右前、侧面</option></select><p class="field-help">候选张数按每个视角计算。批量出图前会逐一检查结构图。</p></div>
           <div id="preflight" class="preflight" role="status" aria-live="polite">正在检查白模、结构图与渲染服务…</div>

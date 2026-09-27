@@ -22,8 +22,8 @@ AI 白模渲染器 · OPT-01  Blender 确定性基线 pass 渲染器
 自检（不需要任何模型，内置几何跑通全链路）：
     blender.exe -b -P blender_pass.py -- --self-test --out D:\\tmp\\passtest
 
-支持导入：.blend .glb .gltf .obj .stl .fbx
-不支持：.ksp(KeyShot) .stp/.step .3dm(Rhino) .c4d .max .rhi —— 请先在原软件里导出为 .glb 或 .obj
+支持导入：.blend .glb .gltf .obj .stl .fbx；安装 import_3dm 插件后支持 .3dm。
+STEP/STP 由服务端先用 FreeCAD 转为网格；.ksp/.c4d/.max/.rhi 仍需手动导出。
 """
 import argparse
 import json
@@ -36,12 +36,11 @@ import mathutils
 
 # ---------------------------------------------------------------- 常量
 
-SUPPORTED = {".blend", ".glb", ".gltf", ".obj", ".stl", ".fbx"}
+SUPPORTED = {".blend", ".glb", ".gltf", ".obj", ".stl", ".fbx", ".3dm"}
 NEED_CONVERT = {
     ".ksp": "KeyShot 工程 —— 请在 KeyShot 中 文件 → 导出 → glTF(.glb)",
-    ".stp": "STEP 工程图 —— 请在 CAD/Rhino 中导出 .glb 或 .obj（Blender 无原生 STEP 导入）",
-    ".step": "STEP 工程图 —— 同上",
-    ".3dm": "Rhino 工程 —— 请在 Rhino 中 导出 → glTF(.glb)",
+    ".stp": "STEP 工程图需由服务端通过 FreeCAD 转换，再交给 Blender",
+    ".step": "STEP 工程图需由服务端通过 FreeCAD 转换，再交给 Blender",
     ".c4d": "Cinema 4D —— 请导出 .glb / .obj",
     ".max": "3ds Max —— 请导出 .glb / .obj",
     ".rhi": "Rhino 历史文件 —— 请导出 .glb / .obj",
@@ -83,7 +82,7 @@ def parse_args():
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
     ap = argparse.ArgumentParser(prog="blender_pass.py", add_help=True)
-    ap.add_argument("--model", help="3D 模型路径（.blend/.glb/.gltf/.obj/.stl/.fbx）")
+    ap.add_argument("--model", help="3D 模型路径（.blend/.glb/.gltf/.obj/.stl/.fbx/.3dm）")
     ap.add_argument("--sku", default="TEST", help="SKU，用于落盘目录名")
     ap.add_argument("--view", default="front", help="机位名（中文别名会自动归一）")
     ap.add_argument("--out", default=None,
@@ -132,6 +131,16 @@ def import_model(path):
         bpy.ops.wm.stl_import(filepath=path)
     elif ext == ".fbx":
         bpy.ops.import_scene.fbx(filepath=path)
+    elif ext == ".3dm":
+        try:
+            import addon_utils
+            addon_utils.enable("import_3dm", default_set=False, persistent=False)
+            bpy.ops.import_3dm.some_data(filepath=path)
+        except Exception as exc:
+            raise SystemExit("[pass] Rhino .3dm 导入失败：请在 Blender 中安装并启用 "
+                             "jesterKing/import_3dm 插件及其 rhino3dm 依赖；" + str(exc)) from exc
+        if not any(ob.type == "MESH" for ob in bpy.data.objects):
+            raise SystemExit("[pass] .3dm 中没有可渲染网格。请在 Rhino 先生成渲染网格，或导出 GLB/OBJ。")
 
 
 def build_self_test():

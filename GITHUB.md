@@ -115,7 +115,54 @@ git ls-files | grep -E "^(assets|outputs|_隔离区)/" && echo "⚠️ 有资产
 |---|---|
 | 本地仓库 | ✅ 已 `git init`（分支 `main`） |
 | `.gitignore` | ✅ 已配置并验证 |
-| 首次提交 | ⏳ 待执行（需要先配置 `user.name` / `user.email`） |
-| 远程仓库 | ⏳ 未创建（GitHub 仓库名与可见性待定） |
+| 首次提交 | ✅ 已完成（97 文件 / 20,209 行） |
+| 远程仓库 | ✅ <https://github.com/hanszz1111/keyshot>（**public**，默认分支 `main`） |
+| 推送 | ✅ 已推送，本地与远程 SHA 一致 |
 
-> 配置提交身份：`git config user.name "你的名字"` 与 `git config user.email "你的邮箱"`
+提交记录：
+
+| SHA | 提交信息 |
+|---|---|
+| `3479598` | 合并远程占位 README（保留本地项目说明） |
+| `edd899f` | 初始提交：AI 白模渲染器（形照工作台 + ComfyUI 出图链路） |
+| `efb8a95` | Initial commit（GitHub 建仓时自动生成，仅含 2 行占位 README） |
+
+> 本仓库提交身份为本仓库级配置（未改动全局）：
+> `user.name=hanszz1111`、`user.email=hanszz1111@users.noreply.github.com`。
+
+### 建仓时踩过的坑
+
+**remote 已含「Initial commit」导致首次 push 被拒**（`! [rejected] ... (fetch first)`）。
+在 GitHub 网页建仓时若勾选了 *Add a README file*，远程会先有一条与本地**无共同祖先**的提交，
+直接 `git push` 必被拒。两种处理：
+
+```bash
+# 做法 A：保留本地 README（推荐，本项目采用的）
+git fetch origin main
+git merge origin/main --allow-unrelated-histories -X ours -m "合并远程占位 README"
+git push -u origin main
+
+# 做法 B：干脆不要远程那条历史（未采用）
+git push -u origin main --force
+```
+
+另：首次推送会弹出 Git Credential Manager 的 **「Connect to GitHub」** 授权窗口，
+须在弹出的窗口里完成浏览器登录 / Token 授权；授权成功后凭证会缓存，后续推送不再询问。
+在无图形交互的自动化会话里，该弹窗会让命令一直挂起 —— 所以推送要放到后台跑，用户手动完成授权。
+
+---
+
+## 七、日常维护
+
+```bash
+cd "D:\Dsektop\AI渲染\AI渲染"
+
+git status                    # 看改动
+git add -A                    # 暂存（.gitignore 会自动挡掉资产）
+git diff --cached --name-only | grep -E "^(assets|outputs|_隔离区)/"   # 复查有无资产混入
+git commit -m "..."
+git push                      # 已设置 upstream，无需再写 origin main
+```
+
+> 中文路径下 `git diff --cached --name-only | grep "\.png$"` 会因秒字符转义而**误报为空**。
+> 本仓库已设 `core.quotepath false` 规避；换机器克隆后建议同样设置一次。

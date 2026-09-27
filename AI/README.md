@@ -1,6 +1,6 @@
 # AI/｜Mac 与 Windows 双机协作协议
 
-> 2026-09-27 提案；R1 复审依据 `ecd40dc5b364118edb0a0c9e506dc521cc020ed7`，本次协作文件合入基线为 `1c90f1f0622c7e476cee50c1326c0dda7d0ed462`。合并前须重新检查远端是否已有 Windows 新提交。
+> 2026-09-27 提案；R1 复审依据 `ecd40dc5b364118edb0a0c9e506dc521cc020ed7`，协作分支最初从 `1c90f1f0622c7e476cee50c1326c0dda7d0ed462` 建立，随后并入 `main` 的 v2.6 更新（`36fe5d4`）。合并 PR 前仍须重新检查远端是否有 Windows 新提交。
 > GitHub 仓库：[hanszz1111/keyshot](https://github.com/hanszz1111/keyshot)。当前仓库为**公开**，不要提交产品源图、模型、客户资料、密钥或运行态数据库。
 
 ## 这六个文件各做什么
@@ -9,8 +9,8 @@
 |---|---|
 | `MASTER_CONTEXT.md` | 经过核对的项目概况、架构、已知局限；Windows 提供实机数据，Mac 可通过 PR 提议修正。不是原始证据库。 |
 | `DECISIONS.md` | 已接受的 ADR 与仍待验证的假设；重大路线变化须有证据、代价和用户确认。 |
-| `TASK.md` | **当前轮**目标、问题、范围、验收标准、基础 commit；由发起该轮的一台电脑维护。R1 由 Windows 发起。 |
-| `RESULT.md` | 执行方写本轮的命令、版本、数据、失败与证据索引。Windows GPU 测试由 Windows 端签收；Mac 不能代签。 |
+| `TASK.md` | **当前轮**目标、问题、范围、验收标准、基础 commit；由发起该轮的一台电脑维护。R1 由 Windows 发起，旧稿缺少部分元数据，见下方例外。 |
+| `RESULT.md` | 执行方写本轮的命令、版本、数据、失败与证据索引。Windows GPU 测试由 Windows 端签收；Mac 不能代签。R1 旧稿尚未标明实际运行 commit。 |
 | `REVIEW.md` | 另一台电脑的独立复审：结论、证据、无法验证的部分、下一轮动作。R1 由 Mac 端填写。 |
 | `README.md` | 本协议，不承载动态实验结论。 |
 
@@ -20,7 +20,7 @@
 
 1. **先同步，再开始**：各端在自己的 Git 克隆中读取 `main` 的最新提交，确认 `git status`。如果有未提交改动，先保留并检查，不用强制重置。Mac 桌面若只是普通文件夹、没有 `.git`，不得把它当作 Git 克隆推送。
 2. **一个轮次、一个基线**：发起人在 `TASK.md` 写 `R编号`、`base_commit`、状态、执行端、复审端、目标/不做事项和通过条件。`RESULT.md` 引用实际运行代码的 commit、测试环境与证据路径。任何结果若来自未提交改动，须明确列出文件和差异，不能只写 `main`。
-3. **各写各的文件**：R1 中 Windows 维护 `TASK.md` / `RESULT.md`；Mac 维护 `REVIEW.md`。复审期间不并行改同一文件。`MASTER_CONTEXT.md` / `DECISIONS.md` 只在结论接受后合并修改提案。新轮次换角色也要先在 `TASK.md` 写明。
+3. **各写各的文件**：R1 中 Windows 维护 `TASK.md` / `RESULT.md`；Mac 维护 `REVIEW.md`。复审期间不并行改同一文件。`MASTER_CONTEXT.md` / `DECISIONS.md` 的措辞修正可以随复审分支提出，**在 Windows 确认并合并前只是提案，不代表旧结论已获批准**。新轮次换角色也要先在 `TASK.md` 写明。
 4. **通过分支或 PR 交接**：每台电脑从最新 `main` 新建自己的 `codex/` 分支，提交自己负责的文件，发 PR；另一端在 GitHub 上核对文件与基础 commit 后再合并。若 GitHub 连接暂时只有读取权限，先输出可审查的本地待合并文件，**不宣称已同步**。禁止 `push --force`、直接覆盖对方文件或自动解决冲突。
 5. **复审不等于批准**：`REVIEW.md` 标记 `通过 / 需修订 / 证据不足`。执行方逐条在下一轮 `RESULT.md` 记录“接受/拒绝及理由”，必要时修改代码并复测。只有验收条件实际满足，才把新结论写进过程文档并将当前轮标为关闭。
 6. **关闭后留痕**：把已完成轮次的五份快照放到 `AI/history/R编号/`（仅文本与非敏感证据索引），再清理活跃 `TASK/RESULT/REVIEW` 开始下一轮；不要直接抹掉历史判断。
@@ -32,6 +32,7 @@
 - 主题：v2.4 的 Canny 图生图、IoU 口径与路线取舍。Windows 的任务和结果已在 `TASK.md`、`RESULT.md`；Mac 的意见见 `REVIEW.md`。
 - Mac 只能核对 GitHub 上的文本、配置、脚本和已提交的证据数据；`assets/`、`outputs/` 与产品对照图未入公开仓库，无法独立确认视觉保形与显存/耗时。Windows 应在下一轮补充脱敏证据、盲评或人工标注结果。
 - R1 未被执行方逐条回应前，`DECISIONS.md` 中“Canny 已锁形”“IoU 主因已确定”之类强表述应视为**待复核假设**，不直接升级为量产承诺。
+- **旧轮次例外**：Windows 原稿 `TASK.md` 未写 `base_commit` / 流程状态，`RESULT.md` 未写实际运行代码 commit；Mac 以当时可见的 `ecd40dc5` 代码和已入仓证据复审，不能据此断言 Windows 实测一定运行在该 commit 上。请 Windows 在 R1 回复中补确认；R2 起严格使用本协议字段。
 
 ## 防冲突与隐私检查
 

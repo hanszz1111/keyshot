@@ -117,10 +117,12 @@ cd keyshot
 
 ```bash
 cd <已有的项目目录>
+git rev-parse --is-inside-work-tree # 必须先确认这是 Git 克隆
 git remote -v                     # 看有没有配 remote
 ```
 
-- **没配** → `git remote add origin git@github.com:hanszz1111/keyshot.git`
+- **没有 `.git` 或上述检查失败** → 它只是普通文件夹，**不要**直接 `git pull` 或 `git remote add`；另选新目录克隆，再对照迁移需要的文件。
+- **已有 Git 历史但没配 remote** → 先确认与远端是同一历史，再考虑 `git remote add origin git@github.com:hanszz1111/keyshot.git`。
 - **配的是 HTTPS 想改 SSH** → `git remote set-url origin git@github.com:hanszz1111/keyshot.git`
 
 然后拉：
@@ -135,15 +137,24 @@ git pull origin main
 
 ---
 
-## 五、日常使用（三条命令）
+## 五、日常使用（分支交接）
+
+两台电脑可用同一个 GitHub 账号，但仍须按 [AI/README.md](../AI/README.md) 分工；一轮一个分支和基线，另一端通过 PR 审核。以下例子只提交 R1 的复审文件：
 
 ```bash
-git pull                     # ① 动手前先拉
-# ... 改文件 ...
-git add -A
-git commit -m "说明改了什么"
-git push                     # ② 改完就推
+git status                   # 若有未提交改动，先检查并保留
+git fetch origin
+git switch main
+git pull --ff-only origin main
+git switch -c codex/ai-r1-review
+# ... 只改本轮负责的文件 ...
+git add AI/REVIEW.md
+git diff --cached --name-only # 核对暂存范围
+git commit -m "docs(ai): review R1"
+git push -u origin codex/ai-r1-review
 ```
+
+> `codex/ai-r1-review` 在当前仓库**已经存在**，上述名称仅为示例；新轮次必须换新的分支名，不得照抄创建同名分支。推送后创建指向 `main` 的 PR，审核通过再合并；不要直接推 `main` 或 `git add -A`。
 
 **冲突了怎么办？** 先看是哪些文件：
 
@@ -151,8 +162,7 @@ git push                     # ② 改完就推
 git status
 ```
 
-最简单稳妥的做法：`git stash` 把自己的改动暂存 → `git pull` → `git stash pop`，
-再手动处理冲突标记。**搞不定就把 `git status` 的输出贴给我**，别硬来。
+先停止推送，核对冲突双方的修改和本轮文件归属；不要自动选择某一端覆盖，也不要用 `push --force`。**搞不定就把 `git status` 的输出贴给我**，别硬来。
 
 ---
 

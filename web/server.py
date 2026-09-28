@@ -2121,7 +2121,16 @@ class Handler(SimpleHTTPRequestHandler):
                     subprocess.Popen(["xdg-open" if sys.platform != "darwin" else "open", target])
                 return self.send_json({"ok": True, "opened": target.replace("\\", "/")})
             if p == "/api/comfy/submit":
-                return self.send_json(comfy_submit(int((body or {}).get("id"))))
+                # R1 复审指出：这里原来无条件直连 comfy_submit()，等于留了一条
+                # 「绕过 guarded_submit 结构图/模式校验」的旁路，而网页链路也在用它。
+                # 现在默认走受控提交；实验脚本若确需旁路，必须显式写 ?unsafe=1 ——
+                # 让旁路成为「可审计的显式选择」，而不是默认行为。
+                try:
+                    tid = int((body or {}).get("id"))
+                    unsafe = q.get("unsafe", ["0"])[0] in ("1", "true", "yes")
+                    return self.send_json(comfy_submit(tid) if unsafe else guarded_submit(tid))
+                except (ValueError, RuntimeError, TypeError) as exc:
+                    return self.send_json({"error": str(exc)}, 400)
             if p == "/api/ui/pass/start":
                 try:
                     start_pass(str((body or {}).get("sku", "")), str((body or {}).get("view", "")),
@@ -2138,7 +2147,9 @@ class Handler(SimpleHTTPRequestHandler):
             if p == "/api/ui/comfy/submit":
                 try:
                     return self.send_json(guarded_submit(int((body or {}).get("id"))))
-                except (ValueError, TypeError) as exc:
+                except (ValueError, RuntimeError, TypeError) as exc:
+                    # RuntimeError 是 guarded_submit 的受控拒绝（缺深度图等），
+                    # 属于用户可修正的输入问题 → 400，不是 500。
                     return self.send_json({"error": str(exc)}, 400)
             if p == "/api/tasks":
                 try:

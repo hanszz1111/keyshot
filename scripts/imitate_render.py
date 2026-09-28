@@ -4,7 +4,8 @@
 AI 白模渲染器 · 仿图 Runner
 ================================
 用投放区里的结构 pass（clay/depth/normal）出图，走【控制台 API】——与网页界面完全是同一条链路：
-    入队任务 → /api/comfy/submit → 轮询 /api/comfy/poll → 结果落 outputs/<SKU>/<机位>/
+    入队任务 → /api/ui/comfy/submit（与网页同一个端点，经 guarded_submit 受控校验）
+              → 轮询 /api/comfy/poll → 结果落 outputs/<SKU>/<机位>/
 
 ★ 提示词纪律：默认模板【不写形状词】。形状只能来自结构 pass（否则测的就不是锁形能力了，见 P0 协议）。
 
@@ -133,6 +134,9 @@ def main():
             "depth_img": "%s/%s/depth.png" % (args.sku, args.view),
             "normal_img": "%s/%s/normal.png" % (args.sku, args.view),
             "depth_w": args.depth_w, "normal_w": args.normal_w,
+            # ★ 显式声明受控模式：这个任务带 depth/normal，本质就是结构约束出图。
+            #   不写的话 mode=None，会绕过 guarded_submit 的「缺深度图不许降级」校验。
+            "_meta": {"mode": "controlled"},
         }
         if args.steps is not None:
             payload["steps"] = args.steps
@@ -156,7 +160,7 @@ def main():
     for tid in myids:
         t0 = time.time()
         try:
-            sub = call("/api/comfy/submit", {"id": tid})
+            sub = call("/api/ui/comfy/submit", {"id": tid})
         except urllib.error.HTTPError as e:
             print("  ❌ #%s 提交失败：%s" % (tid, e.read().decode("utf-8", "ignore")[:300]))
             continue

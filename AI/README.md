@@ -27,12 +27,28 @@
 
 状态只用：`DRAFT → READY_FOR_REVIEW → REVIEWED → ACCEPTED / REWORK → CLOSED`。`REVIEWED` 仅表示有人完成复审，**不表示产品质量或实机测试通过**。如果复审依据的代码或证据 commit 在复审期间变化，必须标记该复审已过期并补审差异。
 
-## 当前轮 R1（不要重置）
+## 当前轮 R2（不要重置）
 
-- 主题：v2.4 的 Canny 图生图、IoU 口径与路线取舍。Windows 的任务和结果已在 `TASK.md`、`RESULT.md`；Mac 的意见见 `REVIEW.md`。
-- Mac 只能核对 GitHub 上的文本、配置、脚本和已提交的证据数据；`assets/`、`outputs/` 与产品对照图未入公开仓库，无法独立确认视觉保形与显存/耗时。Windows 应在下一轮补充脱敏证据、盲评或人工标注结果。
-- R1 未被执行方逐条回应前，`DECISIONS.md` 中“Canny 已锁形”“IoU 主因已确定”之类强表述应视为**待复核假设**，不直接升级为量产承诺。
-- **旧轮次例外**：Windows 原稿 `TASK.md` 未写 `base_commit` / 流程状态，`RESULT.md` 未写实际运行代码 commit；Mac 以当时可见的 `ecd40dc5` 代码和已入仓证据复审，不能据此断言 Windows 实测一定运行在该 commit 上。请 Windows 在 R1 回复中补确认；R2 起严格使用本协议字段。
+- 主题：**CAD 导入链路打通与加固 + 3D 自由旋转预览 + 材质扩充**。
+  Windows 的任务与结果在 `TASK.md` / `RESULT.md`；Mac 的意见写进 `REVIEW.md`。
+- `base_commit` = `fd870cb`，`result_commit` = `7ac3995`，状态 `READY_FOR_REVIEW`。
+- **R2 起已严格按协议填写字段**（`base_commit` / 状态 / 执行端 / 复审端 / 通过条件）。
+- Mac 只能核对 GitHub 上的文本、配置与脚本；`assets/`、`outputs/`、
+  预览 GLB 与截图未入公开仓库，无法独立确认视觉结果与耗时。
+- **R2 不宣称任何形准/保形结论**，与 R1 的图生图议题基本正交；
+  仅在「可绕过受控校验的入口」这一条上承接了 R1 的风险项（已整改，见 `RESULT.md` §10）。
+- R2 请在 `REVIEW.md` 里回答 `TASK.md` 第 5 节的 5 个问题，其中问题 1（根因归因）
+  与问题 3（Z-up 启发式是否安全）是我自己最不确定的两处。
+
+## 已归档轮次
+
+- **R1**（2026-09-27；主题：v2.4 的 Canny 图生图、IoU 口径与路线取舍）：
+  快照在 `AI/history/R1/`（`TASK.md` / `RESULT.md` / `REVIEW.md`）。
+  Mac 的复审结论是**需修订**（不通过"已证明保形/可量产"，但不否认已跑通一次真实出图）。
+  **R1 的保形证据链尚未闭环，我方尚未逐条回应**；
+  过程文档与 `DECISIONS.md` 中"Canny 已锁形""IoU 主因已确定"之类强表述
+  在闭环前应视为**待复核假设**，不升级为量产承诺。
+  R1 原稿的字段例外（未写 `base_commit`、未写实际运行 commit）不再延续 —— R2 已按协议补全。
 
 ## 防冲突与隐私检查
 

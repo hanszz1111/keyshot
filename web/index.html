@@ -111,12 +111,12 @@
           </fieldset>
           <div class="image-settings" id="imageSettings" hidden><label for="imageStrength" class="field-label">改动幅度 <output id="imageStrengthValue" for="imageStrength">85%</output></label><input id="imageStrength" name="strength" type="range" min="55" max="95" step="5" value="85"><p class="field-help">白模/灰模截图建议 <b>85%</b>：低于 55% 在 8–12 步底模下几乎不生效（等于原样返回）。形状由原图边缘约束守住，因此可以放心用高幅度彻底换材质。</p></div>
           <div class="row-fields">
-            <div id="viewField"><label for="viewSelect" class="field-label">预览视角</label><select id="viewSelect" name="view"><option value="front">正面</option><option value="3q4_left">左前 3/4</option><option value="3q4_right">右前 3/4</option><option value="side">侧面</option><option value="top">俯视</option><option value="bottom">仰视</option><option value="back">背面</option><option value="detail_keypad">按键特写</option><option value="detail_window">透明件特写</option></select></div>
+            <div id="viewField"><label for="viewSelect" class="field-label">预览视角</label><select id="viewSelect" name="view"><optgroup label="六视图"><option value="front">正面</option><option value="back">背面</option><option value="side">右侧</option><option value="side_left">左侧</option><option value="top">俯视</option><option value="bottom">仰视</option></optgroup><optgroup label="3/4 视角"><option value="3q4_left">左前 3/4</option><option value="3q4_right">右前 3/4</option></optgroup><optgroup label="特写"><option value="detail_keypad">按键特写</option><option value="detail_window">透明件特写</option></optgroup></select></div>
             <div><label for="countSelect" class="field-label">每视角候选张数</label><select id="countSelect" name="count"><option value="1">1 张</option><option value="2">2 张</option><option value="4" selected>4 张</option><option value="15">15 张</option><option value="30">30 张</option><option value="50">50 张</option></select></div>
           </div>
           <div class="row-fields">
             <div><label for="sizeSelect" class="field-label">出图尺寸</label><select id="sizeSelect" name="size"><option value="auto" selected>跟随结构图（推荐）</option><option value="1232x752">1232 × 752</option><option value="1024x1024">1024 × 1024 方形</option><option value="1344x768">1344 × 768 宽幅</option><option value="1536x1024">1536 × 1024 高分辨率</option><option value="768x768">768 × 768 快速</option><option value="custom">自定义…</option></select></div>
-            <div><label for="qualitySelect" class="field-label">渲染质量</label><select id="qualitySelect" name="quality"><option value="draft">草稿 · 8 步</option><option value="standard" selected>标准 · 12 步</option><option value="fine">精细 · 24 步（约 2× 时间）</option><option value="max">最高 · 40 步（约 4× 时间）</option></select></div>
+            <div><label for="qualitySelect" class="field-label">渲染质量</label><select id="qualitySelect" name="quality"><option value="draft">草稿 · 8 步</option><option value="standard" selected>标准 · 12 步</option><option value="fine">精细 · 20 步（约 2× 时间）</option><option value="max">最高 · 32 步（约 4× 时间）</option></select></div>
           </div>
           <div id="sizeCustomField" hidden>
             <label for="sizeCustom" class="field-label">自定义尺寸（宽 x 高）</label>
@@ -124,7 +124,7 @@
             <p class="field-help" id="sizeHint">宽高建议为 8 的倍数；<b>与结构图同比例</b>才不会把产品拉变形。</p>
           </div>
           <div class="batch-field" id="batchField">
-            <div class="batch-head"><span class="field-label">出图视角（可多选）</span><span class="batch-actions"><button type="button" class="mini-button" id="viewPickPreview">仅预览视角</button><button type="button" class="mini-button" id="viewPickStandard">4 标准</button><button type="button" class="mini-button" id="viewPickAll">全选</button><button type="button" class="mini-button" id="viewPickNone">清空</button></span></div>
+            <div class="batch-head"><span class="field-label">出图视角（可多选）</span><span class="batch-actions"><button type="button" class="mini-button" id="viewPickPreview">仅预览视角</button><button type="button" class="mini-button" id="viewPickStandard">4 标准</button><button type="button" class="mini-button" id="viewPickAll">全选</button><button type="button" class="mini-button" id="viewPickNone">清空</button><button type="button" class="mini-button" id="passSixButton">出六视图结构图</button></span></div>
             <div class="view-checks" id="viewChecks"></div>
             <p class="field-help" id="batchHint">候选张数按每个视角计算。批量出图前会逐一检查该机位的结构图。</p>
           </div>

@@ -378,8 +378,50 @@ def probe_model_file(path):
             return True, ""
     return False, ("文件内容与 %s 格式不符（可能改了扩展名，或文件损坏/未传完）" % ext)
 
-VIEW_KEYS = ["front", "back", "side", "side_left", "top", "bottom",
-             "3q4_left", "3q4_right", "detail_keypad", "detail_window"]
+# ---- 机位表（大纲 P0-1）：config/view_presets.json 是唯一权威源 ----
+# 服务端据此做权威校验，并把方位角/仰角**显式**传给 Blender（blender_pass.py
+# 内部的 VIEW_ANGLES 退化为回退/自检表）。改机位只改 JSON，不改代码。
+VIEW_PRESETS_PATH = os.path.join(ROOT, "config", "view_presets.json")
+
+
+def load_view_presets():
+    """读机位表；文件缺失或损坏时退回内置默认，保证服务照常启动。"""
+    fallback = [
+        {"key": "front",         "label": "正面",       "azimuth": 0.0,   "elevation": 8.0,   "group": "six",     "renderable": True},
+        {"key": "back",          "label": "背面",       "azimuth": 180.0, "elevation": 8.0,   "group": "six",     "renderable": True},
+        {"key": "side",          "label": "右侧",       "azimuth": 90.0,  "elevation": 8.0,   "group": "six",     "renderable": True},
+        {"key": "side_left",     "label": "左侧",       "azimuth": -90.0, "elevation": 8.0,   "group": "six",     "renderable": True},
+        {"key": "top",           "label": "俯视",       "azimuth": 0.0,   "elevation": 80.0,  "group": "six",     "renderable": True},
+        {"key": "bottom",        "label": "仰视",       "azimuth": 0.0,   "elevation": -25.0, "group": "six",     "renderable": True},
+        {"key": "3q4_left",      "label": "左前 3/4",   "azimuth": -45.0, "elevation": 15.0,  "group": "quarter", "renderable": True},
+        {"key": "3q4_right",     "label": "右前 3/4",   "azimuth": 45.0,  "elevation": 15.0,  "group": "quarter", "renderable": True},
+        {"key": "detail_keypad", "label": "按键特写",   "azimuth": -30.0, "elevation": 35.0,  "group": "detail",  "renderable": True},
+        {"key": "detail_window", "label": "透明件特写", "azimuth": 30.0,  "elevation": 30.0,  "group": "detail",  "renderable": True},
+    ]
+    try:
+        with open(VIEW_PRESETS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        presets = data.get("presets") or []
+        if not presets:
+            raise ValueError("presets 为空")
+        keys = [p.get("key") for p in presets]
+        if len(keys) != len(set(keys)):
+            raise ValueError("机位 key 重复: %s" % keys)
+        for p in presets:
+            float(p["azimuth"]); float(p["elevation"])
+        return presets
+    except (OSError, ValueError, KeyError) as exc:
+        sys.stderr.write("[warn] view_presets.json 不可用（%s），退回内置机位表\n" % exc)
+        return fallback
+
+
+VIEW_PRESETS = load_view_presets()
+VIEW_KEYS = [p["key"] for p in VIEW_PRESETS if p.get("renderable", True)]
+
+
+def view_preset(key):
+    """查机位预设；没有则 None。"""
+    return next((p for p in VIEW_PRESETS if p["key"] == key), None)
 
 # 机位别名（中英混写、常见简写都吃）
 # ★ 注意：别名不能重复占用 —— "left" 历史上归 3q4_left，
@@ -400,6 +442,11 @@ VIEW_ALIASES = {
     "detail_window": ["detail_window", "window", "透明件", "视窗", "窗口",
                       "镜片", "detailwindow"],
 }
+
+# 一致性自检：机位表里每个可渲染机位都应有别名，否则中文/简称识别不到
+_missing_alias = [k for k in VIEW_KEYS if k not in VIEW_ALIASES]
+if _missing_alias:
+    sys.stderr.write("[warn] 机位 %s 没有配置别名，中文/简称将无法识别\n" % _missing_alias)
 
 # 通道别名 → 标准名（标准名即落盘文件名，与 web/index.html 的 payload 对应）
 ROLE_KEYS = ["clay", "depth", "normal", "alpha"]
@@ -1755,11 +1802,8 @@ def pass_status():
         return dict(_pass_state)
 
 
-def start_pass(sku, view, model_rel=""):
-    """后台用 Blender 给某个 SKU 的某个机位出结构 pass（clay/alpha/depth/normal/objectid）。"""
-    global _pass_state
-    if view not in VIEW_KEYS:
-        raise ValueError("不支持的机位：%s" % view)
+def _resolve_pass_model(sku, model_rel=""):
+    """校验 SKU/白模/Blender 可用性，返回 (模型绝对路径, blender.exe)。单机位与批量共用。"""
     model = next((m for m in scan_models() if m["sku"] == sku and
                   (not model_rel or m["rel"] == model_rel)), None)
     if not model:
@@ -1774,8 +1818,45 @@ def start_pass(sku, view, model_rel=""):
         raise ValueError("未找到 Blender。请安装 Blender，或设置环境变量 BLENDER_EXE 指向 blender.exe")
     if not os.path.isfile(BLENDER_SCRIPT):
         raise ValueError("缺少 scripts/blender_pass.py")
-    # .stp/.step 不再强制要求 FreeCAD：Blender 侧若装了 STEPper 会直接读 STEP，
-    # 只有 STEPper 缺失时才会回退到「先转缓存 STL」，那时 convert_step 再报错。
+    return src, exe
+
+
+def _run_pass_once(sku, view, src, exe):
+    """同步跑一个机位并校验产物，返回 (ok, reason)。单机位与批量队列共用。"""
+    render_src = src
+    # .stp/.step 优先原样交给 Blender（STEPper 直接读），STEPper 缺失且有 FreeCAD 才转缓存 STL
+    if os.path.splitext(src)[1].lower() in (".stp", ".step") and not blender_has_stepper():
+        render_src = convert_step(src)
+    args = [exe, "-b", "-P", BLENDER_SCRIPT, "--",
+            "--model", render_src, "--sku", sku, "--view", view]
+    # ★ 大纲 P0-1：方位角/仰角由服务端机位表**显式**下发 —— 三份定义里 server 是权威，
+    #   blender_pass.py 的内部表退化为回退/自检。
+    preset = view_preset(view)
+    if preset:
+        args += ["--azimuth", str(preset["azimuth"]),
+                 "--elevation", str(preset["elevation"])]
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True,
+                              errors="replace", timeout=1800)
+    except subprocess.TimeoutExpired:
+        return False, "生成超过 30 分钟，请检查模型与 Blender 日志"
+    tail = (proc.stdout + "\n" + proc.stderr).strip()[-1500:]
+    ok = proc.returncode == 0
+    reason = ""
+    if ok:
+        # 退出码 0 不等于产物可用：逐项校验通道齐全、体积非零、尺寸一致
+        ok, reason = verify_pass_outputs(sku, view)
+    if not ok and not reason:
+        reason = tail or "Blender 执行失败"
+    return ok, reason
+
+
+def start_pass(sku, view, model_rel=""):
+    """后台用 Blender 给某个 SKU 的某个机位出结构 pass（clay/alpha/depth/normal/objectid）。"""
+    global _pass_state
+    if view not in VIEW_KEYS:
+        raise ValueError("不支持的机位：%s" % view)
+    src, exe = _resolve_pass_model(sku, model_rel)
 
     with _pass_lock:
         if _pass_state["status"] == "running":
@@ -1789,40 +1870,93 @@ def start_pass(sku, view, model_rel=""):
     def worker():
         global _pass_state
         try:
-            # .stp/.step 优先原样交给 Blender（STEPper 直接读），
-            # 只有 STEPper 缺失、且本机装了 FreeCAD 时才转成缓存 STL 兜底。
-            render_src = src
-            if os.path.splitext(src)[1].lower() in (".stp", ".step") and not blender_has_stepper():
-                render_src = convert_step(src)
-            args = [exe, "-b", "-P", BLENDER_SCRIPT, "--",
-                    "--model", render_src, "--sku", sku, "--view", view]
-            proc = subprocess.run(args, capture_output=True, text=True,
-                                  errors="replace", timeout=1800)
-            tail = (proc.stdout + "\n" + proc.stderr).strip()[-1500:]
-            ok = proc.returncode == 0
-            reason = ""
-            if ok:
-                # 退出码 0 不等于产物可用：逐项校验通道齐全、体积非零、尺寸一致
-                ok, reason = verify_pass_outputs(sku, view)
+            ok, reason = _run_pass_once(sku, view, src, exe)
             with _pass_lock:
                 _pass_state = {"status": "done" if ok else "failed",
                                "sku": sku, "view": view,
                                "message": ("结构图已生成（clay / 深度 / 法线 三通道已校验）" if ok
-                                           else (reason or tail or "Blender 执行失败")),
-                               "returncode": proc.returncode,
-                               "started_at": _pass_state.get("started_at"),
-                               "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
-        except subprocess.TimeoutExpired:
-            with _pass_lock:
-                _pass_state = {"status": "failed", "sku": sku, "view": view,
-                               "message": "生成超过 30 分钟，请检查模型与 Blender 日志",
-                               "returncode": None,
+                                           else (reason or "Blender 执行失败")),
+                               "returncode": 0 if ok else 1,
                                "started_at": _pass_state.get("started_at"),
                                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
         except Exception as exc:
             with _pass_lock:
                 _pass_state = {"status": "failed", "sku": sku, "view": view,
                                "message": str(exc), "returncode": None,
+                               "started_at": _pass_state.get("started_at"),
+                               "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def start_pass_batch(sku, model_rel="", views=None):
+    """批量出结构图：**顺序**执行每个机位（大纲 P0-1）。
+
+    8GB 显卡上同时开多个 Blender 会抢显存，所以这里是一个后台线程逐个跑，
+    每个机位独立出图 + 独立 verify_pass_outputs()；部分失败不影响其余机位，
+    结束后 batch.done/batch.failed 里能看清哪个成了哪个败。
+    """
+    global _pass_state
+    views = [v for v in (views or []) if v]
+    if not views:
+        raise ValueError("没有指定机位")
+    bad = [v for v in views if v not in VIEW_KEYS]
+    if bad:
+        raise ValueError("不支持的机位：%s" % ", ".join(bad))
+    if len(views) != len(set(views)):
+        raise ValueError("机位列表有重复")
+    src, exe = _resolve_pass_model(sku, model_rel)
+
+    total = len(views)
+    views_label = "批量(%s)" % "、".join(views)
+    with _pass_lock:
+        if _pass_state["status"] == "running":
+            raise ValueError("已有结构图任务在运行，请等它完成")
+        _pass_state = {"status": "running", "sku": sku, "view": views_label,
+                       "message": "准备批量生成 %d 个机位的结构图…" % total,
+                       "returncode": None,
+                       "batch": {"total": total, "index": 0, "done": [], "failed": []},
+                       "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                       "finished_at": None}
+
+    def worker():
+        global _pass_state
+        results = []
+        try:
+            for i, view in enumerate(views):
+                with _pass_lock:
+                    if not isinstance(_pass_state.get("batch"), dict):
+                        _pass_state["batch"] = {"total": total, "index": 0, "done": [], "failed": []}
+                    _pass_state["batch"]["index"] = i
+                    _pass_state["message"] = "正在生成第 %d/%d 个机位：%s" % (i + 1, total, view)
+                try:
+                    ok, reason = _run_pass_once(sku, view, src, exe)
+                except Exception as exc:
+                    ok, reason = False, str(exc)
+                results.append({"view": view, "ok": ok, "reason": reason})
+            with _pass_lock:
+                failed = [r for r in results if not r["ok"]]
+                _pass_state = {
+                    "status": "done" if not failed else "failed",
+                    "sku": sku, "view": views_label,
+                    "message": ("%d 个机位结构图全部生成并校验通过" % total) if not failed else
+                               ("完成 %d/%d 个机位；失败：%s" % (
+                                   total - len(failed), total,
+                                   "；".join("%s（%s）" % (r["view"], (r["reason"] or "失败")[:90])
+                                             for r in failed))),
+                    "returncode": 0 if not failed else 1,
+                    "batch": {"total": total, "index": total,
+                              "done": [r["view"] for r in results if r["ok"]],
+                              "failed": failed},
+                    "started_at": _pass_state.get("started_at"),
+                    "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        except Exception as exc:
+            with _pass_lock:
+                _pass_state = {"status": "failed", "sku": sku, "view": views_label,
+                               "message": str(exc), "returncode": None,
+                               "batch": {"total": total, "index": len(results),
+                                         "done": [r["view"] for r in results if r["ok"]],
+                                         "failed": results},
                                "started_at": _pass_state.get("started_at"),
                                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
@@ -2120,6 +2254,15 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"items": scan_refs(q.get("sku", [""])[0])})
             if p == "/api/assets":
                 return self.send_json(asset_report())
+            if p == "/api/views":
+                # 机位表（大纲 P0-1）：前端视角下拉与六视图按钮都从这里读，
+                # 不再各自硬编码一份
+                return self.send_json({
+                    "presets": VIEW_PRESETS,
+                    "renderable": VIEW_KEYS,
+                    "six": [p["key"] for p in VIEW_PRESETS
+                            if p.get("group") == "six" and p.get("renderable", True)],
+                })
             if p == "/api/assets/file":
                 return self.serve_asset(q.get("rel", [""])[0])
             if p == "/api/changelog":
@@ -2223,6 +2366,18 @@ class Handler(SimpleHTTPRequestHandler):
                 try:
                     start_pass(str((body or {}).get("sku", "")), str((body or {}).get("view", "")),
                                str((body or {}).get("model", "")))
+                    return self.send_json({"ok": True, "status": "running"})
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+            if p == "/api/ui/pass/batch":
+                # 大纲 P0-1：一次提交多个机位，后端**顺序**执行（避免多 Blender 抢显存）
+                try:
+                    views = (body or {}).get("views") or []
+                    if isinstance(views, str):
+                        views = [v.strip() for v in views.split(",") if v.strip()]
+                    start_pass_batch(str((body or {}).get("sku", "")),
+                                     str((body or {}).get("model", "")),
+                                     [str(v) for v in views])
                     return self.send_json({"ok": True, "status": "running"})
                 except ValueError as exc:
                     return self.send_json({"error": str(exc)}, 400)

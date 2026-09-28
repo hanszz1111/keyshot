@@ -7,7 +7,9 @@ const VIEW_EN = {photo:"same view as input image",front:"front view",back:"rear 
 // 所以「3D 里看的角度」和「结构图/出图拿到的角度」是同一个。
 const SIX_VIEWS = ["front","back","side","side_left","top","bottom"];
 // 与 scripts/blender_pass.py 的 VIEW_ANGLES 一一对应（同一机位 = 同一角度），
-// 所以「3D 里转到的角度」和「出结构图/出图拿到的角度」是同一件事。
+// ★ 大纲 P0-2 措辞修正：这只是「方向预置」—— 视角的**方位/仰角**与结构图机位一致，
+//   但 Three.js 预览与 Blender pass 各有自己的镜头/取景/缩放，像素构图并不逐点相同。
+//   所以「点六视图」意味着「用该预置方向出图」，不等于「所见画面原样出图」。
 const VIEW_ANGLES_3D = {
   front:      [0,     8],
   back:       [180,   8],
@@ -275,8 +277,8 @@ async function loadPartsIndex(sku){
 /* Blender 的 az/el 是 Z-up 约定，glTF/three.js 是 Y-up。
    轴向转换 (x,y,z)_blender → (x,z,-y)_gltf，于是方向向量：
      dir_three = ( sin(az)cos(el), sin(el), cos(az)cos(el) )
-   这样 front(0,8) 落在 +Z、side(90,8) 落在 +X —— 与结构图的机位一一对应，
-   用户在 3D 里摆好的角度，出结构图时就是同一个角度。 */
+   这样 front(0,8) 落在 +Z、side(90,8) 落在 +X —— 与结构图机位是同一套「方向预置」
+   （注意：预览镜头与 Blender 镜头各自取景，像素构图不逐点相同）。 */
 function blenderDir(THREE,azDeg,elDeg){
   const az=azDeg*Math.PI/180,el=elDeg*Math.PI/180;
   return new THREE.Vector3(Math.sin(az)*Math.cos(el),Math.sin(el),Math.cos(az)*Math.cos(el)).normalize();
@@ -304,6 +306,16 @@ function setCameraToView(key){
   hero3d.controls.update();
   markActiveCam(key==="reset"?"3q4_left":key);
   updateCamReadout();
+  // ★ 大纲 P0-1：六视图按钮写入 cameraViewKey 并**同步视角下拉** ——
+  //   修掉「点了六视图，但『生成此视角结构图』仍取旧下拉值」的断链。
+  //   isometric/reset 这类纯预览动作不在下拉里，跳过同步。
+  const camKey=key==="reset"?"3q4_left":key;
+  const sel=$("viewSelect");
+  if(sel&&[...sel.options].some(o=>o.value===camKey)&&sel.value!==camKey){
+    sel.value=camKey;
+    state.selectedTask=null;
+    renderPassReadiness();renderPreflight();renderResults();
+  }
 }
 function toggleSpin(){
   if(!hero3d.controls)return;
@@ -484,6 +496,8 @@ function renderPassReadiness(){
   const stepReady=Boolean(state.ui.stepper||state.ui.freecad_cmd);
   const dmReady=Boolean(state.ui.import3dm);
   $("makePassButton").disabled=!item.model||!ACCEPT_MODEL.has(modelExt)||!state.ui.blender||(["stp","step"].includes(modelExt)&&!stepReady)||(modelExt==="3dm"&&!dmReady)||state.passJob?.status==="running";
+  const six=$("passSixButton");   // 大纲 P0-1：批量按钮与单机位按钮同一套可用性
+  if(six)six.disabled=!item?.model||!state.ui.blender||state.passJob?.status==="running";
   $("uploadPassButton").disabled=!item;
   if(!state.ui.blender)$("passJobStatus").textContent="未找到 Blender；可先在 Windows 安装 Blender 或上传已有结构图。";
   else if(["stp","step"].includes(modelExt)&&!stepReady)$("passJobStatus").textContent="STEP/STP 已保存；需要在 Blender 中启用 STEPper 插件（或安装 FreeCAD 并配置 FREECAD_CMD）才能生成结构图。";
@@ -650,6 +664,9 @@ function buildPayload(sku,view,variant,mode){
     _meta:{sku,view,variant,mode,ui_version:"2.0",style:state.style,description,
       output:{width:dim.width,height:dim.height,source:dim.source},
       quality:qualityKey,
+      // ★ 大纲 P0-2：把最终生效的采样参数也写进任务，日志里可复现；
+      //   仅结构约束模式覆盖，img2img 用它自己的 img2img 专参
+      sampling:mode==="controlled"?{steps:q.steps,cfg:q.cfg}:null,
       reference:useRef?{image:state.ref.rel,strength:state.ref.strength,palette:state.ref.palette.slice(0,4).map(p=>p.hex),applied:refApplied}:null}};
   // 质量档只作用于「结构约束出图」；图片改图有意保留它自己的 img2img 专参
   // （那套 denoise/steps 是配着 Canny 链路调出来的，不该被这里覆盖）。
@@ -842,12 +859,36 @@ async function makePass(){
   try{await post("/api/ui/pass/start",{sku:state.sku,view:selectedView(),model:selectedItem()?.model?.rel||""});announce("正在生成结构图。 ");await refreshPassJob();}
   catch(error){announce("无法生成结构图："+errorMessage(error));}
 }
+/* 大纲 P0-1：一次提交六视图，后端顺序执行，避免多个 Blender 抢 8GB 显存 */
+async function makePassSix(){
+  if(!state.sku){announce("请先选择产品。");return;}
+  try{
+    await post("/api/ui/pass/batch",{sku:state.sku,model:selectedItem()?.model?.rel||"",views:SIX_VIEWS});
+    announce("已开始批量生成六视图结构图（后端逐个机位执行，约几分钟）。");
+    await refreshPassJob();
+  }catch(error){announce("无法开始批量生成："+errorMessage(error));}
+}
+$("passSixButton").addEventListener("click",makePassSix);
 async function refreshPassJob(){
   try{
     state.passJob=await api("/api/ui/pass/status");
-    if(state.passJob.status==="running"){$("passJobStatus").textContent=`${state.passJob.sku} · ${VIEW_ZH[state.passJob.view]}：正在生成结构图…`;setTimeout(refreshPassJob,2500);}
-    else if(state.passJob.status==="done"){$("passJobStatus").textContent="结构图已生成。";await refreshAssets();}
-    else if(state.passJob.status==="failed"){$("passJobStatus").textContent="结构图生成失败："+state.passJob.message;}
+    const b=state.passJob.batch;
+    if(state.passJob.status==="running"){
+      $("passJobStatus").textContent=b
+        ? `${state.passJob.sku} · 批量出结构图 ${Math.min((b.index||0)+1,b.total)}/${b.total}：已完成 ${b.done.length}、失败 ${b.failed.length}…`
+        : `${state.passJob.sku} · ${VIEW_ZH[state.passJob.view]||state.passJob.view||""}：正在生成结构图…`;
+      setTimeout(refreshPassJob,2500);
+    }
+    else if(state.passJob.status==="done"){
+      $("passJobStatus").textContent=b
+        ? `批量结构图完成：${(b.done||[]).length}/${b.total} 个机位成功。`
+        : "结构图已生成。";
+      await refreshAssets();
+    }
+    else if(state.passJob.status==="failed"){
+      $("passJobStatus").textContent=(b?"批量结构图未全部成功：":"结构图生成失败：")+state.passJob.message;
+      if(b)await refreshAssets();   // 部分成功的机位也要刷新出来
+    }
     renderPassReadiness();
   }catch(error){$("passJobStatus").textContent="无法读取结构图任务状态："+errorMessage(error);}
 }

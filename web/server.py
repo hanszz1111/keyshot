@@ -378,18 +378,23 @@ def probe_model_file(path):
             return True, ""
     return False, ("文件内容与 %s 格式不符（可能改了扩展名，或文件损坏/未传完）" % ext)
 
-VIEW_KEYS = ["front", "3q4_left", "3q4_right", "side", "top",
-             "detail_keypad", "detail_window"]
+VIEW_KEYS = ["front", "back", "side", "side_left", "top", "bottom",
+             "3q4_left", "3q4_right", "detail_keypad", "detail_window"]
 
 # 机位别名（中英混写、常见简写都吃）
+# ★ 注意：别名不能重复占用 —— "left" 历史上归 3q4_left，
+#   所以 side_left 只用「左侧/左视」这类不会撞车的写法。
 VIEW_ALIASES = {
     "front": ["front", "正面", "正视图", "前视", "主视", "正", "frontview"],
+    "back": ["back", "背面", "后视", "背", "rear", "backview"],
     "3q4_left": ["3q4_left", "left", "leftfront", "左前", "左45", "左三四",
                  "四分之三左", "3q4l", "左前三四"],
     "3q4_right": ["3q4_right", "right", "rightfront", "右前", "右45", "右三四",
                   "四分之三右", "3q4r", "右前三四"],
     "side": ["side", "profile", "侧面", "侧视", "侧", "sideview"],
+    "side_left": ["side_left", "左侧", "左视", "左边", "sideleft"],
     "top": ["top", "topdown", "俯视", "顶视", "正俯", "上视", "topview"],
+    "bottom": ["bottom", "仰视", "底部", "底视", "下视", "bottomview"],
     "detail_keypad": ["detail_keypad", "keypad", "按键", "键盘", "面板",
                       "特写按键", "局部按键", "detailkeypad"],
     "detail_window": ["detail_window", "window", "透明件", "视窗", "窗口",
@@ -743,9 +748,23 @@ def asset_report():
             roles = views[v]
             files = {r: pick(v2) for r, v2 in roles.items()}
             missing = [r for r in ("clay", "depth", "normal") if r not in files]
+            # 通道的像素尺寸。**出图必须与结构图同尺寸** —— 否则 ComfyUI 会把
+            # 深度/法线图缩放去适配请求尺寸，比例一变产品就被拉变形
+            # （曾出现：结构图 1232×752，而前端请求 1024×1024）。
+            px = None
+            for role in ("depth", "clay", "normal"):
+                rel = files.get(role)
+                if not rel:
+                    continue
+                p = _asset_path(rel)
+                if p:
+                    px = _png_size(p)
+                    if px:
+                        break
             rows.append({
                 "view": v,
                 "files": files,
+                "size": {"width": px[0], "height": px[1]} if px else None,
                 "extra": sorted(r for r in roles if r not in ("clay", "depth", "normal")),
                 "missing": missing,
                 "ok": not missing,

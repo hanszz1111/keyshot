@@ -1,8 +1,33 @@
 "use strict";
 
 const $ = id => document.getElementById(id);
-const VIEW_ZH = {photo:"原图视角",front:"正面","3q4_left":"左前 3/4","3q4_right":"右前 3/4",side:"侧面",top:"俯视",detail_keypad:"按键特写",detail_window:"透明件特写"};
-const VIEW_EN = {photo:"same view as input image",front:"front view","3q4_left":"left three-quarter view","3q4_right":"right three-quarter view",side:"side view",top:"top-down view",detail_keypad:"keypad detail view",detail_window:"transparent window detail view"};
+const VIEW_ZH = {photo:"原图视角",front:"正面",back:"背面","3q4_left":"左前 3/4","3q4_right":"右前 3/4",side:"右侧",side_left:"左侧",top:"俯视",bottom:"仰视",detail_keypad:"按键特写",detail_window:"透明件特写"};
+const VIEW_EN = {photo:"same view as input image",front:"front view",back:"rear view","3q4_left":"left three-quarter view","3q4_right":"right three-quarter view",side:"right side view",side_left:"left side view",top:"top-down view",bottom:"bottom-up view",detail_keypad:"keypad detail view",detail_window:"transparent window detail view"};
+// 6 视图 = 正交六面。角度与 scripts/blender_pass.py 的 VIEW_ANGLES 一一对应，
+// 所以「3D 里看的角度」和「结构图/出图拿到的角度」是同一个。
+const SIX_VIEWS = ["front","back","side","side_left","top","bottom"];
+// 与 scripts/blender_pass.py 的 VIEW_ANGLES 一一对应（同一机位 = 同一角度），
+// 所以「3D 里转到的角度」和「出结构图/出图拿到的角度」是同一件事。
+const VIEW_ANGLES_3D = {
+  front:      [0,     8],
+  back:       [180,   8],
+  "3q4_left": [-45,  15],
+  "3q4_right":[45,   15],
+  side:       [90,    8],
+  side_left:  [-90,   8],
+  top:        [0,    80],
+  bottom:     [0,   -25],
+  isometric:  [-45,  35]
+};
+const ALL_VIEWS = ["front","back","side","side_left","top","bottom","3q4_left","3q4_right","detail_keypad","detail_window"];
+// 渲染质量档。★ 注意：默认底模是 Lightning 蒸馏模型，步数超 ~20 收益递减、
+// 甚至可能过饱和；**提高分辨率对精度的收益通常大于堆步数**。
+const QUALITY = {
+  draft:    {steps:8,  cfg:2.0},
+  standard: {steps:12, cfg:3.0},
+  fine:     {steps:20, cfg:3.5},
+  max:      {steps:32, cfg:4.0}
+};
 const STYLE = {
   studio:{label:"浅灰影棚",background:"gradient_gray",text:"clean light-gray gradient studio background"},
   white:{label:"纯白主图",background:"pure_white",text:"seamless pure-white e-commerce background"},
@@ -44,7 +69,14 @@ function announce(message){$("statusMessage").textContent=message;}
 function getMode(){return state.sourceType==="image"?"image":document.querySelector('input[name="mode"]:checked').value;}
 function selectedItem(){return state.assets.items.find(item=>item.sku===state.sku)||null;}
 function selectedView(){return state.sourceType==="image"?"photo":$("viewSelect").value;}
-function renderViews(){return state.sourceType==="image"?["photo"]:$("viewBatchSelect").value==="standard"?STANDARD_VIEWS:[selectedView()];}
+function selectedViews(){
+  const box=$("viewChecks");
+  if(!box)return [selectedView()];
+  const picked=[...box.querySelectorAll('input[type="checkbox"]')].filter(el=>el.checked).map(el=>el.dataset.view);
+  // 一个都没勾时退回「预览视角」，避免计算出 0 张让人以为坏了
+  return picked.length?picked:[selectedView()];
+}
+function renderViews(){return state.sourceType==="image"?["photo"]:selectedViews();}
 function sourceSize(){
   const size=state.sourceSize;if(!size)return null;
   const scale=Math.min(1,1024/Math.max(size.width,size.height));
@@ -133,7 +165,7 @@ async function refreshServices(){
 async function refreshAssets(){
   state.assets=await api("/api/assets");renderProductSelect();renderSource();renderPassReadiness();renderHero();renderPreflight();renderAssetMatrix();
 }
-function renderAll(){renderProductSelect();renderSource();renderService();renderPassReadiness();renderPreflight();renderTasks();renderResults();renderHero();renderAssetMatrix();renderServiceBox();renderRefPanel();}
+function renderAll(){renderProductSelect();renderSource();renderService();renderPassReadiness();renderPreflight();renderTasks();renderResults();renderHero();renderAssetMatrix();renderServiceBox();renderRefPanel();updateSizeHint();}
 
 function renderProductSelect(){
   const select=$("productSelect");const existing=state.sku;clear(select);
@@ -160,7 +192,8 @@ function loadModelThumb(item,attempt){
    网页只读后端已三角化、已验证的 GLB，原始 STEP/3DM 不直接喂浏览器。
    three.js 放在 web/vendor/，不走 CDN：本机网络对境外 CDN 不稳，
    预览器不该因为拉不到库就整个不可用。 */
-const hero3d={renderer:null,scene:null,camera:null,controls:null,model:null,sku:"",raf:0,lib:null,loading:null,homeDist:4.2};
+const hero3d={renderer:null,scene:null,camera:null,controls:null,model:null,sku:"",raf:0,lib:null,loading:null,homeDist:4.2,bbox:null};
+window.__hero3d=hero3d;   // 调试出口：可在控制台检查包围盒/姿态
 
 async function loadThree(){
   if(hero3d.lib)return hero3d.lib;
@@ -185,12 +218,52 @@ function resize3D(){
   hero3d.camera.updateProjectionMatrix();
 }
 function stop3D(){if(hero3d.raf){cancelAnimationFrame(hero3d.raf);hero3d.raf=0;}}
+/* Blender 的 az/el 是 Z-up 约定，glTF/three.js 是 Y-up。
+   轴向转换 (x,y,z)_blender → (x,z,-y)_gltf，于是方向向量：
+     dir_three = ( sin(az)cos(el), sin(el), cos(az)cos(el) )
+   这样 front(0,8) 落在 +Z、side(90,8) 落在 +X —— 与结构图的机位一一对应，
+   用户在 3D 里摆好的角度，出结构图时就是同一个角度。 */
+function blenderDir(THREE,azDeg,elDeg){
+  const az=azDeg*Math.PI/180,el=elDeg*Math.PI/180;
+  return new THREE.Vector3(Math.sin(az)*Math.cos(el),Math.sin(el),Math.cos(az)*Math.cos(el)).normalize();
+}
+function markActiveCam(key){
+  for(const b of document.querySelectorAll("[data-cam]"))b.classList.toggle("is-active",b.dataset.cam===key);
+}
+function updateCamReadout(){
+  const el=$("view3dReadout");if(!el||!hero3d.camera)return;
+  const p=hero3d.camera.position;
+  const r=Math.hypot(p.x,p.y,p.z)||1;
+  const elev=Math.asin(Math.max(-1,Math.min(1,p.y/r)))*180/Math.PI;
+  let az=Math.atan2(p.x,p.z)*180/Math.PI;
+  if(az<0)az+=360;
+  el.textContent=`方位 ${az.toFixed(0)}° · 仰角 ${elev.toFixed(0)}°`;
+}
+function setCameraToView(key){
+  if(!hero3d.lib||!hero3d.camera)return;
+  const {THREE}=hero3d.lib;
+  const d=hero3d.homeDist||4.2;
+  const a=VIEW_ANGLES_3D[key==="reset"?"3q4_left":key];
+  if(!a)return;
+  hero3d.camera.position.copy(blenderDir(THREE,a[0],a[1]).multiplyScalar(d));
+  hero3d.controls.target.set(0,0,0);
+  hero3d.controls.update();
+  markActiveCam(key==="reset"?"3q4_left":key);
+  updateCamReadout();
+}
+function toggleSpin(){
+  if(!hero3d.controls)return;
+  hero3d.controls.autoRotate=!hero3d.controls.autoRotate;
+  hero3d.controls.autoRotateSpeed=1.6;
+  $("camSpinButton").classList.toggle("is-active",hero3d.controls.autoRotate);
+}
 function tick3D(){
   const canvas=$("heroCanvas");
   if(!hero3d.renderer||canvas.hidden)return;
   hero3d.raf=requestAnimationFrame(tick3D);
   hero3d.controls.update();
   hero3d.renderer.render(hero3d.scene,hero3d.camera);
+  updateCamReadout();
 }
 async function showModel3D(sku){
   const canvas=$("heroCanvas");
@@ -235,6 +308,7 @@ async function showModel3D(sku){
     const center=box.getCenter(new THREE.Vector3());
     const maxDim=Math.max(size.x,size.y,size.z)||1;
     const s=2.2/maxDim;
+    hero3d.bbox={raw:[+size.x.toFixed(4),+size.y.toFixed(4),+size.z.toFixed(4)],rotatedX:false};
     // ★ 必须用 Group 承载，不能直接给 root 同时设 scale 和 position：
     //   矩阵是 T(position)·S(scale)，顶点先缩放再平移，拿「未缩放的世界坐标 center」
     //   当 position 会把模型整个推出画面（表现为 canvas 一片空白）。
@@ -252,10 +326,12 @@ async function showModel3D(sku){
     const holder=new THREE.Group();
     holder.add(root);
     holder.scale.setScalar(s);
-    // ★ Blender 是 Z-up，glTF/three.js 是 Y-up。若导出时未做轴向转换，
-    //   模型在网页里会「躺下」。按包围盒判断：最长边落在 Z 轴上就说明还是
-    //   Blender 的 Z-up 姿态，绕 X 轴 -90° 把它扶正。
-    if(size.z>size.y*1.25&&size.z>size.x*1.25)holder.rotation.x=-Math.PI/2;
+    // ★ 这里**故意不做**任何「Z-up → Y-up」的启发式旋转。
+    //   blender_pass.py 导出用的是 export_yup=True，模型已经是正确的 Y-up；
+    //   再按包围盒最长边判断「要不要扶正」会把本来正确的模型转倒
+    //   （实测：加了那句判断后，3D 里的姿态与 Blender 渲染的缩略图对不上）。
+    //   判断姿态正确与否，只能拿「同一机位的 Blender 渲染图」对比，不能凭感觉。
+    hero3d.bbox.reversed=false;
     hero3d.scene.add(holder);
     hero3d.model=holder;
     hero3d.sku=sku;
@@ -263,9 +339,7 @@ async function showModel3D(sku){
     const radius=0.5*Math.hypot(size.x,size.y,size.z)*s;
     const dist=radius/Math.sin(THREE.MathUtils.degToRad(35/2))*1.15;
     hero3d.homeDist=dist;
-    hero3d.controls.target.set(0,0,0);
-    hero3d.camera.position.set(1.7,1.1,2.2).normalize().multiplyScalar(dist);
-    hero3d.controls.update();
+    setCameraToView("3q4_left");   // 默认与缩略图同角度，观感一致
   }
   resize3D();stop3D();tick3D();
   return true;
@@ -367,17 +441,20 @@ function renderHero(){
   // ---- 3D 自由旋转档位：不吃 clay.png，直接用 GLB 在浏览器里转 ----
   if(state.preview==="model3d"){
     image.hidden=true;$("heroCaption").textContent="3D 自由旋转";
+    $("view3dBar").hidden=false;
     if(item?.model){
       empty.hidden=true;
-      $("previewNote").textContent=`${item.sku} · 拖动旋转 · 滚轮缩放 · 双击复位`;
+      $("previewNote").textContent=`${item.sku} · 拖动旋转 · 滚轮缩放 · 点下方按钮切 6 视图`;
       showModel3D(item.sku).catch(()=>{});
     }else{
       if(canvas){canvas.hidden=true;stop3D();}
       empty.hidden=false;
+      $("view3dBar").hidden=true;
       $("previewNote").textContent="上传白模后可 3D 预览";
     }
     return;
   }
+  $("view3dBar").hidden=true;
   if(canvas&&!canvas.hidden){canvas.hidden=true;stop3D();}
   // 图片模式没有白模可对比；成图与产品原图的比例通常不同，不提供像素级对比
   const compareAllowed=state.sourceType!=="image";
@@ -462,6 +539,37 @@ function renderTasks(){
   }
 }
 
+function resolveOutputSize(view){
+  const sel=$("sizeSelect")?$("sizeSelect").value:"auto";
+  if(sel==="custom"){
+    const m=/^\s*(\d{2,5})\s*[x×*,]\s*(\d{2,5})\s*$/i.exec(($("sizeCustom")||{}).value||"");
+    if(m){
+      // 对齐到 8 的倍数（扩散模型的 VAE 下采样要求），并限幅避免显存爆
+      const w=Math.min(4096,Math.max(256,Math.round(Number(m[1])/8)*8));
+      const h=Math.min(4096,Math.max(256,Math.round(Number(m[2])/8)*8));
+      return {width:w,height:h,source:"custom"};
+    }
+    // 自定义没填对 → 不报错，静默退回跟随结构图
+  }
+  if(sel&&sel!=="auto"&&sel!=="custom"){
+    const m=/^(\d+)x(\d+)$/.exec(sel);
+    if(m)return {width:Number(m[1]),height:Number(m[2]),source:"preset"};
+  }
+  // auto：用**该机位结构图的实际像素尺寸**。
+  // ★ 这一条很关键：曾经出图固定 1024×1024 而结构图是 1232×752，
+  //   ControlNet 会把深度图缩放变形，产品直接被拉长。
+  const row=(selectedItem()?.views||[]).find(v=>v.view===view);
+  if(row&&row.size&&row.size.width&&row.size.height){
+    return {width:row.size.width,height:row.size.height,source:"pass"};
+  }
+  return {width:1232,height:752,source:"fallback"};
+}
+function updateSizeHint(){
+  const el=$("sizeHint");if(!el)return;
+  const d=resolveOutputSize(selectedView());
+  const src={pass:"该机位结构图的实际尺寸",preset:"你选的固定预设",custom:"你的自定义值",fallback:"结构图缺失，暂用默认 1232×752"}[d.source]||"";
+  el.textContent=`本次实际出图 ${d.width} × ${d.height}（来源：${src}）。宽高会被对齐到 8 的倍数；与结构图同比例才不会把产品拉变形。`;
+}
 function buildPayload(sku,view,variant,mode){
   const description=$("description").value.trim();const style=STYLE[state.style],material=MATERIAL[$("materialSelect").value],lighting=LIGHT[$("lightSelect").value];
   const color=$("bodyColor").value;
@@ -476,9 +584,18 @@ function buildPayload(sku,view,variant,mode){
   ].filter(Boolean).join(" ");
   const iadapterOn=!!(state.comfy&&state.comfy.ipadapter_ok);
   const refApplied=useRef?(iadapterOn?"ipadapter+prompt":"prompt_palette_only"):null;
-  const payload={positive,negative:NEGATIVE,seed:(Math.floor(Date.now()/1000)+variant)%2147483647,width:1024,height:1024,
+  const dim=resolveOutputSize(view);
+  const qualityKey=($("qualitySelect")||{}).value||"standard";
+  const q=QUALITY[qualityKey]||QUALITY.standard;
+  const payload={positive,negative:NEGATIVE,seed:(Math.floor(Date.now()/1000)+variant)%2147483647,
+    width:dim.width,height:dim.height,
     _meta:{sku,view,variant,mode,ui_version:"2.0",style:state.style,description,
+      output:{width:dim.width,height:dim.height,source:dim.source},
+      quality:qualityKey,
       reference:useRef?{image:state.ref.rel,strength:state.ref.strength,palette:state.ref.palette.slice(0,4).map(p=>p.hex),applied:refApplied}:null}};
+  // 质量档只作用于「结构约束出图」；图片改图有意保留它自己的 img2img 专参
+  // （那套 denoise/steps 是配着 Canny 链路调出来的，不该被这里覆盖）。
+  if(mode==="controlled"){payload.steps=q.steps;payload.cfg=q.cfg;}
   if(useRef&&iadapterOn)payload.ref_img=state.ref.rel;   // 装了 IPAdapter 才把图片真正送进去
   if(mode==="image"){
     const source=selectedItem()?.source,dimensions=sourceSize();
@@ -682,16 +799,51 @@ document.querySelectorAll("[data-source]").forEach(el=>el.addEventListener("clic
 $("imageStrength").addEventListener("input",event=>{$("imageStrengthValue").value=event.target.value+"%";renderPreflight();});
 $("viewSelect").addEventListener("change",()=>{state.selectedTask=null;renderPassReadiness();renderPreflight();renderResults();renderHero();});
 $("countSelect").addEventListener("change",renderPreflight);
-$("viewBatchSelect").addEventListener("change",()=>{renderPreflight();renderResults();});
+$("sizeSelect").addEventListener("change",()=>{
+  const isCustom=$("sizeSelect").value==="custom";
+  $("sizeCustomField").hidden=!isCustom;
+  if(isCustom)$("sizeCustom").focus();
+  updateSizeHint();renderPreflight();
+});
+$("sizeCustom").addEventListener("input",()=>{updateSizeHint();renderPreflight();});
+$("qualitySelect").addEventListener("change",renderPreflight);
+/* ---- 出图视角：任意多选 ---- */
+function buildViewChecks(){
+  const box=$("viewChecks");if(!box||box.dataset.built==="1")return;
+  clear(box);
+  for(const v of ALL_VIEWS){
+    const label=document.createElement("label");
+    label.className="view-check";
+    const cb=document.createElement("input");
+    cb.type="checkbox";cb.dataset.view=v;cb.checked=(v==="front");
+    label.append(cb,document.createTextNode(VIEW_ZH[v]||v));
+    box.append(label);
+  }
+  box.dataset.built="1";
+  box.addEventListener("change",()=>{renderPreflight();renderResults();});
+}
+function setViewChecks(views){
+  const box=$("viewChecks");if(!box)return;
+  for(const cb of box.querySelectorAll('input[type="checkbox"]'))cb.checked=views.includes(cb.dataset.view);
+  renderPreflight();renderResults();
+}
+buildViewChecks();
+$("viewPickPreview").addEventListener("click",()=>setViewChecks([selectedView()]));
+$("viewPickStandard").addEventListener("click",()=>setViewChecks(STANDARD_VIEWS));
+$("viewPickAll").addEventListener("click",()=>setViewChecks(ALL_VIEWS));
+$("viewPickNone").addEventListener("click",()=>setViewChecks([]));
 document.querySelectorAll('input[name="mode"]').forEach(el=>el.addEventListener("change",renderPreflight));
 document.querySelectorAll("[data-style]").forEach(el=>el.addEventListener("click",()=>setStyle(el.dataset.style)));
 document.querySelectorAll("[data-preview]").forEach(el=>el.addEventListener("click",()=>setPreview(el.dataset.preview)));
 $("heroCanvas").addEventListener("dblclick",()=>{          // 双击复位视角
-  if(!hero3d.controls)return;
-  hero3d.camera.position.set(1.7,1.1,2.2).normalize().multiplyScalar(hero3d.homeDist||4.2);
-  hero3d.controls.target.set(0,0,0);
-  hero3d.controls.update();
+  setCameraToView("reset");
 });
+for(const b of document.querySelectorAll("[data-cam]")){
+  b.addEventListener("click",()=>{
+    if(b.dataset.cam==="spin"){toggleSpin();return;}
+    setCameraToView(b.dataset.cam);
+  });
+}
 window.addEventListener("resize",()=>{if(state.preview==="model3d")resize3D();});
 $("bodyColor").addEventListener("input",event=>{$("bodyColorValue").textContent=event.target.value.toUpperCase();});
 $("refreshButton").addEventListener("click",refreshAll);

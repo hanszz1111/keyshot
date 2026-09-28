@@ -111,10 +111,23 @@
           </fieldset>
           <div class="image-settings" id="imageSettings" hidden><label for="imageStrength" class="field-label">改动幅度 <output id="imageStrengthValue" for="imageStrength">85%</output></label><input id="imageStrength" name="strength" type="range" min="55" max="95" step="5" value="85"><p class="field-help">白模/灰模截图建议 <b>85%</b>：低于 55% 在 8–12 步底模下几乎不生效（等于原样返回）。形状由原图边缘约束守住，因此可以放心用高幅度彻底换材质。</p></div>
           <div class="row-fields">
-            <div id="viewField"><label for="viewSelect" class="field-label">预览视角</label><select id="viewSelect" name="view"><option value="front">正面</option><option value="3q4_left">左前 3/4</option><option value="3q4_right">右前 3/4</option><option value="side">侧面</option><option value="top">俯视</option><option value="detail_keypad">按键特写</option><option value="detail_window">透明件特写</option></select></div>
+            <div id="viewField"><label for="viewSelect" class="field-label">预览视角</label><select id="viewSelect" name="view"><option value="front">正面</option><option value="3q4_left">左前 3/4</option><option value="3q4_right">右前 3/4</option><option value="side">侧面</option><option value="top">俯视</option><option value="bottom">仰视</option><option value="back">背面</option><option value="detail_keypad">按键特写</option><option value="detail_window">透明件特写</option></select></div>
             <div><label for="countSelect" class="field-label">每视角候选张数</label><select id="countSelect" name="count"><option value="1">1 张</option><option value="2">2 张</option><option value="4" selected>4 张</option><option value="15">15 张</option><option value="30">30 张</option><option value="50">50 张</option></select></div>
           </div>
-          <div class="batch-field" id="batchField"><label for="viewBatchSelect" class="field-label">出图范围</label><select id="viewBatchSelect" name="scope"><option value="current">仅预览视角</option><option value="standard">4 个标准视角：正面、左前、右前、侧面</option></select><p class="field-help">候选张数按每个视角计算。批量出图前会逐一检查结构图。</p></div>
+          <div class="row-fields">
+            <div><label for="sizeSelect" class="field-label">出图尺寸</label><select id="sizeSelect" name="size"><option value="auto" selected>跟随结构图（推荐）</option><option value="1232x752">1232 × 752</option><option value="1024x1024">1024 × 1024 方形</option><option value="1344x768">1344 × 768 宽幅</option><option value="1536x1024">1536 × 1024 高分辨率</option><option value="768x768">768 × 768 快速</option><option value="custom">自定义…</option></select></div>
+            <div><label for="qualitySelect" class="field-label">渲染质量</label><select id="qualitySelect" name="quality"><option value="draft">草稿 · 8 步</option><option value="standard" selected>标准 · 12 步</option><option value="fine">精细 · 24 步（约 2× 时间）</option><option value="max">最高 · 40 步（约 4× 时间）</option></select></div>
+          </div>
+          <div id="sizeCustomField" hidden>
+            <label for="sizeCustom" class="field-label">自定义尺寸（宽 x 高）</label>
+            <input id="sizeCustom" name="sizeCustom" type="text" placeholder="例如 1232x752" autocomplete="off">
+            <p class="field-help" id="sizeHint">宽高建议为 8 的倍数；<b>与结构图同比例</b>才不会把产品拉变形。</p>
+          </div>
+          <div class="batch-field" id="batchField">
+            <div class="batch-head"><span class="field-label">出图视角（可多选）</span><span class="batch-actions"><button type="button" class="mini-button" id="viewPickPreview">仅预览视角</button><button type="button" class="mini-button" id="viewPickStandard">4 标准</button><button type="button" class="mini-button" id="viewPickAll">全选</button><button type="button" class="mini-button" id="viewPickNone">清空</button></span></div>
+            <div class="view-checks" id="viewChecks"></div>
+            <p class="field-help" id="batchHint">候选张数按每个视角计算。批量出图前会逐一检查该机位的结构图。</p>
+          </div>
           <div id="preflight" class="preflight" role="status" aria-live="polite">正在检查白模、结构图与渲染服务…</div>
           <button type="button" class="primary-button" id="generateButton" disabled>开始生成 4 张</button>
           <p class="field-help centered">生成结果会保存到现有项目的 outputs 文件夹。</p>
@@ -128,6 +141,19 @@
           <div class="hero-empty" id="heroEmpty"><div class="wire-product" aria-hidden="true"><span class="wire-ring"></span><span class="wire-body"></span><span class="wire-foot"></span></div><strong>你的产品，从这里开始</strong><p>导入白模，或选择已有产品。这里会显示结构预览与生成的图片。</p></div>
           <img id="heroImage" alt="当前产品预览" width="1232" height="752" hidden>
           <canvas id="heroCanvas" hidden aria-label="可自由旋转的白模预览"></canvas>
+          <div class="view-3d-bar" id="view3dBar" hidden role="group" aria-label="3D 视角">
+            <button type="button" data-cam="front">前</button>
+            <button type="button" data-cam="back">后</button>
+            <button type="button" data-cam="side_left">左</button>
+            <button type="button" data-cam="side">右</button>
+            <button type="button" data-cam="top">上</button>
+            <button type="button" data-cam="bottom">下</button>
+            <button type="button" data-cam="3q4_left">左前</button>
+            <button type="button" data-cam="isometric">等轴</button>
+            <button type="button" data-cam="reset">复位</button>
+            <button type="button" data-cam="spin" id="camSpinButton">自动转</button>
+            <span class="view-3d-readout" id="view3dReadout">—</span>
+          </div>
           <div id="compareLayer" class="compare-layer" hidden><img id="compareImage" alt="生成结果，用于与白模对比" width="1232" height="752"><span id="compareDivider" class="compare-divider" aria-hidden="true"></span><span class="compare-label compare-label-left">白模</span><span class="compare-label compare-label-right">成图</span></div>
           <div class="hero-caption" id="heroCaption">白模预览</div>
         </div>

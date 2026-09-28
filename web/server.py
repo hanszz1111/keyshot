@@ -275,9 +275,108 @@ def save_board(b):
 
 
 # ---------- 投放区：路径解析与扫描 ----------
+# 白模投放区接受的扩展名。
+# 注意 `.rhi` **故意不在列表里**：它是 Rhino 的插件安装包，不是模型文件。
+# 收下它只会让结构图按钮永远点不亮、用户也看不出为什么（见过程文档 7.2）。
 MODEL_EXTS = {".ksp", ".blend", ".glb", ".gltf", ".fbx", ".obj",
-              ".stp", ".step", ".3dm", ".c4d", ".max", ".rhi", ".stl"}
+              ".stp", ".step", ".3dm", ".c4d", ".max", ".stl"}
+
+# 这几个扩展名要**明确拒绝并给出可读原因**，而不是当成未知格式静默丢弃。
+NOT_A_MODEL = {
+    ".rhi": "Rhino 插件安装包（不是模型）",
+    ".rhp": "Rhino 插件（不是模型）",
+    ".yak": "Rhino 插件包（不是模型）",
+    ".3dmbak": "Rhino 备份文件（请在 Rhino 中另存为 .3dm）",
+}
+SUPPORTED_MODEL_HINT = "支持 .blend/.glb/.gltf/.obj/.stl/.fbx/.stp/.step/.3dm"
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp", ".exr"}
+
+# 各白模格式的文件头签名（实测校准，2026-09-28）。用于上传后立刻发现
+# 「改了扩展名骗过白名单」和「传了一半/已损坏」——这两类文件以前会静静躺在
+# 投放区里，等结构图任务跑完才失败，用户看不出为什么。
+# 没有把握的格式（.ksp/.c4d/.max）**故意不列**，一律放过：宁可漏判不可误杀。
+MODEL_MAGIC = {
+    ".stp":   (b"ISO-10303-21", b"ISO-10303"),
+    ".step":  (b"ISO-10303-21", b"ISO-10303"),
+    ".3dm":   (b"3D Geometry File Format",),
+    ".glb":   (b"glTF",),
+    ".fbx":   (b"Kaydara FBX Binary", b"; FBX"),
+    ".blend": (b"BLENDER", b"\x1f\x8b"),      # 未压缩 / gzip 压缩
+}
+# 二进制 STL 的硬约束：80 字节头 + 4 字节面数 + 每面 50 字节
+STL_HEADER, STL_FACET = 84, 50
+
+
+def _probe_stl(path, size):
+    """STL 校验。ASCII 看 facet 关键字；二进制用字节数硬约束核对。
+
+    注意 Rhino 导出的 STL 头部是 `Rhinoceros Binary STL (...)`，
+    既不是 ASCII 的 `solid`，也不是标准空头 —— 所以**不能只看文件头**。
+    """
+    with open(path, "rb") as f:
+        head = f.read(1024)
+    if head[:5] == b"solid" and (b"facet" in head or b"vertex" in head):
+        return True, ""
+    with open(path, "rb") as f:
+        f.seek(80)
+        raw = f.read(4)
+    if len(raw) < 4:
+        return False, "STL 文件不完整（读不到面数字段）"
+    faces = int.from_bytes(raw, "little")
+    if faces == 0:
+        return False, "STL 声明的面数为 0，没有可渲染的三角面"
+    expect = STL_HEADER + STL_FACET * faces
+    if size == expect:
+        return True, ""
+    return False, ("STL 结构不自洽：声明 %d 个面应有 %d 字节，实际 %d 字节"
+                   "（文件可能未传完或已损坏）" % (faces, expect, size))
+
+
+def probe_model_file(path):
+    """上传后的**轻量几何预检**，返回 (ok, reason)。
+
+    只做便宜的、能立刻发现问题的检查（不解析几何）：
+      · 非空、不小于最小体积
+      · 文件头与该扩展名的签名一致
+      · STL 额外核对字节数硬约束
+    真正的几何有效性（曲面数、三角面、包围盒、单位、可见性）由 Blender/FreeCAD
+    侧负责，本函数不做也不该做。
+
+    设计原则：**宁可漏判，不可误杀** —— 没把握的格式一律返回通过。
+    """
+    ext = os.path.splitext(path)[1].lower()
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return False, "文件不可读"
+    if size == 0:
+        return False, "文件是空的（0 字节）"
+    if size < STL_HEADER:
+        return False, "文件只有 %d 字节，不可能包含有效几何" % size
+
+    if ext == ".stl":
+        return _probe_stl(path, size)
+
+    with open(path, "rb") as f:
+        head = f.read(1024)
+
+    # 文本格式单独判断：它们没有固定魔数，只有内容特征
+    if ext == ".obj":
+        if any(k in head for k in (b"\nv ", b"\nf ", b"\r\nv ", b"\r\nf ")) or head.startswith(b"v "):
+            return True, ""
+        return False, "文件里找不到 OBJ 的顶点/面数据（可能改过扩展名，或文件损坏）"
+    if ext == ".gltf":
+        if head.lstrip()[:1] == b"{":
+            return True, ""
+        return False, "不是 glTF JSON（文件头应以 { 开头）"
+
+    sigs = MODEL_MAGIC.get(ext)
+    if not sigs:
+        return True, ""          # 无签名可查 → 放过
+    for sig in sigs:
+        if head.startswith(sig):
+            return True, ""
+    return False, ("文件内容与 %s 格式不符（可能改了扩展名，或文件损坏/未传完）" % ext)
 
 VIEW_KEYS = ["front", "3q4_left", "3q4_right", "side", "top",
              "detail_keypad", "detail_window"]
@@ -1354,6 +1453,61 @@ def convert_step(source):
             os.unlink(temp)
 
 
+# 一个机位要能跑 ControlNet，必须凑齐这三个通道（与 index.html 的 payload 对应）
+PASS_REQUIRED = ("clay.png", "depth.png", "normal.png")
+
+
+def _png_size(path):
+    """只读 PNG 头拿宽高，不解码整图。非 PNG 或读不出返回 None。"""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+    except OSError:
+        return None
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        return None
+    return (int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big"))
+
+
+def verify_pass_outputs(sku, view):
+    """校验结构图产物是否真的齐了。返回 (ok, reason)。
+
+    以前只认 Blender 的退出码：退出码 0 就算「结构图已生成」，可 Blender 完全
+    可能在某个通道写失败、或写出 0 字节文件的情况下退出码仍为 0 —— 界面照样
+    报成功，用户点「队列」出图才发现没有深度图。这里逐项核对：
+    文件存在 · 体积非零 · 三个通道尺寸一致（见过程文档 7.3 的 P0 项）。
+    """
+    # ★ 必须与 scripts/blender_pass.py 的 outdir 算法一致：那边是
+    # os.path.join(pass_root, args.sku, view) —— SKU **原样**拼目录，不做
+    # safe_file 转换。这里若擅自 sanitize，含特殊字符的 SKU 就永远找不到目录。
+    folder = os.path.abspath(os.path.join(PASSES_DIR, sku or "", view or ""))
+    root = os.path.abspath(PASSES_DIR)
+    if os.path.commonpath((root, folder)) != root:
+        return False, "SKU 或机位名非法，产物路径越出结构图目录"
+    missing, zero, dims = [], [], {}
+    for fn in PASS_REQUIRED:
+        p = os.path.join(folder, fn)
+        if not os.path.isfile(p):
+            missing.append(fn)
+        elif os.path.getsize(p) == 0:
+            zero.append(fn)
+        else:
+            size = _png_size(p)
+            if size:
+                dims[fn] = size
+    if missing:
+        return False, "结构图不完整，缺少：%s" % "、".join(missing)
+    if zero:
+        return False, "结构图有 0 字节文件：%s" % "、".join(zero)
+    if len(set(dims.values())) > 1:
+        return False, ("三个通道尺寸不一致，无法叠加出图：%s"
+                       % "、".join("%s=%s×%s" % (k, dims[k][0], dims[k][1])
+                                   for k in sorted(dims)))
+    if len(dims) < len(PASS_REQUIRED):
+        return False, "结构图里有文件不是有效 PNG，无法确认尺寸"
+    return True, ""
+
+
 def pass_status():
     with _pass_lock:
         return dict(_pass_state)
@@ -1404,10 +1558,15 @@ def start_pass(sku, view, model_rel=""):
                                   errors="replace", timeout=1800)
             tail = (proc.stdout + "\n" + proc.stderr).strip()[-1500:]
             ok = proc.returncode == 0
+            reason = ""
+            if ok:
+                # 退出码 0 不等于产物可用：逐项校验通道齐全、体积非零、尺寸一致
+                ok, reason = verify_pass_outputs(sku, view)
             with _pass_lock:
                 _pass_state = {"status": "done" if ok else "failed",
                                "sku": sku, "view": view,
-                               "message": "结构图已生成" if ok else (tail or "Blender 执行失败"),
+                               "message": ("结构图已生成（clay / 深度 / 法线 三通道已校验）" if ok
+                                           else (reason or tail or "Blender 执行失败")),
                                "returncode": proc.returncode,
                                "started_at": _pass_state.get("started_at"),
                                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -1519,8 +1678,19 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(data)
 
     def save_upload(self, rel, fb_sku, fb_view, overwrite=False):
-        """裸二进制上传：分块写盘，避免大模型文件把内存顶爆。"""
+        """裸二进制上传：分块写盘，避免大模型文件把内存顶爆。
+
+        写盘前后各有一道预检（见过程文档 7.3 的 P0 项）：
+          ① 格式分类 —— `.rhi`/`.rhp` 这类「不是模型」的文件明确拒绝并说明；
+          ② 几何预检 —— 改过扩展名、传了一半、损坏的文件当场拦下。
+        """
         n = int(self.headers.get("Content-Length") or 0)
+        plain = (rel or "").replace("\\", "/").rsplit("/", 1)[-1]
+        ext0 = os.path.splitext(plain)[1].lower()
+        if ext0 in NOT_A_MODEL:
+            return self.send_json(
+                {"error": "%s 不是可用的白模文件（%s）。%s。"
+                          % (ext0, NOT_A_MODEL[ext0], SUPPORTED_MODEL_HINT)}, 400)
         dest, kind, meta = plan_upload(rel, fb_sku, fb_view, overwrite)
         if n <= 0:
             return self.send_json({"error": "文件为空或未提供长度，未保存"}, 400)
@@ -1543,6 +1713,16 @@ class Handler(SimpleHTTPRequestHandler):
         finally:
             if os.path.exists(tmp):
                 os.unlink(tmp)
+        # 几何预检：不合格的文件当场删除，不留进投放区（否则会「看起来在、其实用不了」）
+        if kind == "model":
+            ok, reason = probe_model_file(dest)
+            if not ok:
+                try:
+                    os.unlink(dest)
+                except OSError:
+                    pass
+                return self.send_json(
+                    {"error": "%s 未通过导入预检：%s" % (meta.get("name") or "文件", reason)}, 400)
         return self.send_json({
             "ok": True, "kind": kind,
             "saved": os.path.relpath(dest, ASSETS).replace("\\", "/"),
@@ -1653,6 +1833,7 @@ class Handler(SimpleHTTPRequestHandler):
                 exe = blender_executable()
                 return self.send_json({"blender": bool(exe), "blender_path": exe or "",
                                        "freecad_cmd": freecad_cmd_executable() or "",
+                                       "stepper": blender_has_stepper(),
                                        "blender_script": os.path.isfile(BLENDER_SCRIPT),
                                        "project": ROOT, "ui": "2.0"})
             if p == "/api/ui/pass/status":

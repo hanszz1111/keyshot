@@ -33,7 +33,9 @@
 1. 在网页“选择产品”中导入 `.blend`、`.glb`、`.gltf`、`.obj`、`.stl`、`.fbx`、`.stp`、`.step` 或 `.3dm` 白模，可直接生成结构图。
    - **`.stp/.step`**：首选 Blender 的 **STEPper** 插件（自带 OpenCASCADE 内核，**无需安装 FreeCAD**），在 Blender 首选项里启用即可；插件缺失时才回退到「先用 FreeCAD 转缓存网格」，此时需安装 FreeCAD，若网页未识别则设置 `FREECAD_CMD` 为 `FreeCADCmd.exe` 完整路径并重启服务。
    - **`.3dm`（Rhino）**：装 Blender 的 [import_3dm 扩展](https://github.com/jesterKing/import_3dm)（v0.0.18 起自带 `rhino3dm` 依赖，装完即用）。Blender 4.2+ 的命令行安装方式：`blender.exe --command extension install-file -r user_default -e import_3dm-<版本>-windows_x64.zip`。该扩展主要读取文件里的渲染网格，纯 NURBS/曲面文件可能需先在 Rhino 中生成渲染网格或导出 GLB/OBJ。
-   - `.ksp/.c4d/.max/.rhi` 仍需手动导出为 GLB/OBJ。
+   - `.ksp/.c4d/.max` 仍需手动导出为 GLB/OBJ（KeyShot 导出 GLB，C4D/Max 导出 GLB 或 OBJ）。
+   - **`.rhi` / `.rhp` / `.yak` / `.3dmbak` 不是模型文件**（分别是 Rhino 插件安装包、插件、插件包、备份文件），上传时会被明确拒绝并提示改用 `.3dm` 或导出 GLB/OBJ。
+   - **上传有两道预检**：扩展名不在白名单会被拒；文件内容与扩展名不符（改过后缀、传了一半、已损坏）也会被当场拦下并说明原因，不会在投放区留下「看起来在、其实用不了」的文件。
    - 上传的原文件不会因转换被修改；仅 FreeCAD 回退路径会产生缓存，位于 `assets/_转换缓存/`。
 2. 在“任务”中为目标视角生成或上传深度图。结构约束模式缺少深度图时会阻止出图，不会悄悄降级为纯文字生成。
 3. 写下材质、配色、灯光和细节要求；可上传参考图。界面会说明参考图当前是作为图像条件参与生成，还是只提取颜色和影调。

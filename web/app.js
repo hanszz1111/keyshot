@@ -209,14 +209,16 @@ function renderPassReadiness(){
     box.append(text("p",`${label}：${isUsablePass(row?.files?.[role])?"已就绪":"缺失"}`));
   }
   const modelExt=(item.model?.ext||"").toLowerCase();
-  // STEP/STP 的首选是 Blender 的 STEPper 插件（自带 OCC 内核，不用装 FreeCAD）；
-  // 只有插件缺失时才回退到 FreeCAD。两者都没有才禁用按钮。
+  // STEP/STP 首选 Blender 的 STEPper 插件（自带 OCC 内核，不用装 FreeCAD），
+  // 插件缺失时才回退 FreeCAD；.3dm 靠 import_3dm 扩展。缺哪个才拦哪个。
   const stepReady=Boolean(state.ui.stepper||state.ui.freecad_cmd);
-  $("makePassButton").disabled=!item.model||!ACCEPT_MODEL.has(modelExt)||!state.ui.blender||(["stp","step"].includes(modelExt)&&!stepReady)||state.passJob?.status==="running";
+  const dmReady=Boolean(state.ui.import3dm);
+  $("makePassButton").disabled=!item.model||!ACCEPT_MODEL.has(modelExt)||!state.ui.blender||(["stp","step"].includes(modelExt)&&!stepReady)||(modelExt==="3dm"&&!dmReady)||state.passJob?.status==="running";
   $("uploadPassButton").disabled=!item;
   if(!state.ui.blender)$("passJobStatus").textContent="未找到 Blender；可先在 Windows 安装 Blender 或上传已有结构图。";
   else if(["stp","step"].includes(modelExt)&&!stepReady)$("passJobStatus").textContent="STEP/STP 已保存；需要在 Blender 中启用 STEPper 插件（或安装 FreeCAD 并配置 FREECAD_CMD）才能生成结构图。";
-  else if(modelExt==="3dm")$("passJobStatus").textContent="Rhino .3dm 需要 Blender 的 import_3dm 扩展（Blender 4.2+ 装成 bl_ext.user_default.import_3dm）；导入失败时会显示原因。";
+  else if(modelExt==="3dm"&&!dmReady)$("passJobStatus").textContent="Rhino .3dm 需要 Blender 的 import_3dm 扩展（Blender 4.2+ 装成 bl_ext.user_default.import_3dm）；装上后可直接生成结构图。";
+  else if(modelExt==="3dm")$("passJobStatus").textContent="Rhino .3dm 读取能力已就绪；若模型只有 NURBS 没有渲染网格，导入会失败并给出原因，此时请先在 Rhino 导出 GLB/OBJ。";
 }
 function renderHero(){
   const item=selectedItem(),row=viewInfo();const image=$("heroImage"),empty=$("heroEmpty");
@@ -466,7 +468,9 @@ async function uploadModel(file){
     state.sku=imported?.sku||result.sku||stem;
     renderAll();
     if(["stp","step"].includes(ext))announce(`${file.name} 已保存。${state.ui.stepper?"Blender 的 STEPper 插件已就绪，可直接生成结构图。":"需要在 Blender 中启用 STEPper 插件（或安装 FreeCAD）才能生成结构图。"}`);
-    else if(ext==="3dm")announce(`${file.name} 已保存。需要 Blender 的 import_3dm 扩展才能生成结构图；仅有 NURBS 而无渲染网格时请先在 Rhino 导出 GLB/OBJ。`);
+    else if(ext==="3dm")announce(state.ui.import3dm
+      ? `${file.name} 已导入。Rhino 读取能力已就绪，请选择视角并生成结构图。`
+      : `${file.name} 已保存，但还缺 3DM 读取能力：请在 Blender 中安装并启用 import_3dm 扩展（Blender 4.2+ 装成 bl_ext.user_default.import_3dm）。仅有 NURBS 而无渲染网格时，请先在 Rhino 导出 GLB/OBJ。`);
     else if(!ACCEPT_MODEL.has(ext))announce(`${file.name} 已保存，但 ${ext.toUpperCase()} 需先转换为 GLB 或 OBJ，才能自动生成结构图。`);
     else announce(`${file.name} 已导入。请选择视角并生成结构图。`);
   }catch(error){announce("导入失败："+errorMessage(error));}

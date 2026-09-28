@@ -1390,14 +1390,19 @@ def converted_step_path(source):
     return os.path.join(ASSETS, "_转换缓存", digest + ".stl")
 
 
-# Blender 侧的 STEPper 插件目录名。装在用户扩展目录或程序内置目录都算数。
-STEPPER_DIR_NAMES = ("STEPper",)
+# Blender 侧的插件目录名（按**目录名**探测，与模块名无关）。
+STEPPER_DIR_NAMES = ("STEPper",)          # 直读 .stp/.step（自带 OCC 内核）
+IMPORT_3DM_DIR_NAMES = ("import_3dm",)    # 读 Rhino .3dm 的渲染网格
 
 
-def blender_has_stepper():
-    """探测 Blender 是否装了 STEPper（能直接读 .stp/.step，就不必用 FreeCAD）。
+def _blender_addon_dir(dir_names):
+    """在 Blender 的插件/扩展目录里找指定名字的目录，返回命中路径或 None。
 
-    只看文件系统，不启动 Blender —— 这个判断在每次出 pass 前都会跑，必须便宜。
+    只看文件系统，不启动 Blender —— 界面每次读状态都会调，必须便宜。
+    同时覆盖三种安装位置：
+      · 用户 addons       <Blender>/<ver>/scripts/addons/<name>
+      · 用户 extensions   <Blender>/<ver>/extensions/<repo>/<name>    （4.2+ 新式扩展）
+      · 程序内置          <blender.exe 同级>/<ver>/scripts|extensions/…
     """
     roots = []
     appdata = os.environ.get("APPDATA")
@@ -1405,18 +1410,37 @@ def blender_has_stepper():
         roots.append(os.path.join(appdata, "Blender Foundation", "Blender"))
     exe = blender_executable()
     if exe:
-        roots.append(os.path.join(os.path.dirname(exe), "4.5"))
+        base = os.path.dirname(exe)
+        roots.extend((base, os.path.join(base, "4.5")))
+    seen = set()
     for root in roots:
-        if not os.path.isdir(root):
+        if not root or root in seen or not os.path.isdir(root):
             continue
-        for name in STEPPER_DIR_NAMES:
+        seen.add(root)
+        for name in dir_names:
             for pat in (os.path.join(root, "*", "scripts", "addons", name),
                         os.path.join(root, "*", "extensions", "*", name),
+                        os.path.join(root, "*", "extensions", "*", "*", name),
                         os.path.join(root, "scripts", "addons", name),
                         os.path.join(root, "extensions", "*", name)):
-                if glob.glob(pat):
-                    return True
-    return False
+                hit = glob.glob(pat)
+                if hit:
+                    return hit[0]
+    return None
+
+
+def blender_has_stepper():
+    """Blender 是否装了 STEPper —— 装了就能直读 .stp/.step，不必用 FreeCAD。"""
+    return bool(_blender_addon_dir(STEPPER_DIR_NAMES))
+
+
+def blender_has_import3dm():
+    """Blender 是否装了 import_3dm —— Rhino .3dm 靠它读渲染网格。
+
+    Blender 4.2+ 装成扩展时目录名仍是 import_3dm（只有**模块名**才带
+    bl_ext.<repo>. 前缀），所以这里按目录名探测。
+    """
+    return bool(_blender_addon_dir(IMPORT_3DM_DIR_NAMES))
 
 
 def convert_step(source):
@@ -1622,6 +1646,30 @@ class Handler(SimpleHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+    # 会随开发改动的静态资源。图片/字体一般不变，不在此列。
+    _CACHE_EXTS = (".html", ".js", ".css")
+
+    def send_head(self):
+        """静态资源补协商缓存头。
+
+        SimpleHTTPRequestHandler 默认只发 Last-Modified，浏览器对这类响应会做
+        「启发式缓存」——改完 app.js，用户界面还在跑旧版本，表现成「明明修好了，
+        界面还是老样子」。这里补 no-cache：**仍走 If-Modified-Since 协商**
+        （没改照样 304 省流量），只是不允许不询问就直接拿缓存。
+        """
+        path = self.translate_path(self.path)
+        if os.path.isfile(path) and os.path.splitext(path)[1].lower() in self._CACHE_EXTS:
+            self._negotiated_cache = True
+        return super().send_head()
+
+    def end_headers(self):
+        # 注入点必须在这里：send_head 内部就是靠调 end_headers 落盘的。
+        # send_json / serve_output 自己带了 no-store，不走上面的分支。
+        if getattr(self, "_negotiated_cache", False):
+            self.send_header("Cache-Control", "no-cache, must-revalidate")
+            self._negotiated_cache = False
+        super().end_headers()
 
     def read_json(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -1834,6 +1882,7 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"blender": bool(exe), "blender_path": exe or "",
                                        "freecad_cmd": freecad_cmd_executable() or "",
                                        "stepper": blender_has_stepper(),
+                                       "import3dm": blender_has_import3dm(),
                                        "blender_script": os.path.isfile(BLENDER_SCRIPT),
                                        "project": ROOT, "ui": "2.0"})
             if p == "/api/ui/pass/status":

@@ -911,6 +911,8 @@ OUTPUTS_DIR = os.path.join(ROOT, "outputs")
 WF_TXT2IMG = os.path.join(CONFIG_DIR, "comfy_workflow_sdxl.json")
 WF_CONTROLNET = os.path.join(CONFIG_DIR, "comfy_workflow_sdxl_cn.json")
 WF_IMG2IMG = os.path.join(CONFIG_DIR, "comfy_workflow_sdxl_img2img.json")
+# 局部重绘：以白模渲染图为底，只在掩膜区域内重绘材质；depth/normal 双 ControlNet 继续锁形。
+WF_INPAINT = os.path.join(CONFIG_DIR, "comfy_workflow_sdxl_inpaint.json")
 RENDER_DEFAULTS_FILE = os.path.join(CONFIG_DIR, "render_defaults.json")
 COMFY_INPUT_DIR = os.environ.get(
     "COMFY_INPUT_DIR",
@@ -942,6 +944,10 @@ SLOTS = {
     "canny_high": ("30", "high_threshold"),
     "canny_w":    ("20", "strength"),
     "redux_f":    ("30", "downsampling_factor"),
+    # 局部重绘（inpaint）专属：31=inpaint 底图（该机位的白模渲染图），
+    # 32=重绘掩膜（灰度 PNG，白=要重绘）。工作流里 LoadImage→ImageToMask→VAEEncodeForInpaint。
+    "base_img":   ("31", "image"),
+    "mask_img":   ("32", "image"),
     "steps":      ("3", "steps"),
     "cfg":        ("3", "cfg"),
     "sampler_name": ("3", "sampler_name"),
@@ -1033,8 +1039,11 @@ def comfy_status():
         return {"online": False, "url": COMFY, "error": str(e)}
 
 
-def load_workflow(use_cn, image_mode=False):
-    path = WF_IMG2IMG if image_mode else WF_CONTROLNET if use_cn else WF_TXT2IMG
+def load_workflow(use_cn, image_mode=False, inpaint_mode=False):
+    if inpaint_mode:
+        path = WF_INPAINT
+    else:
+        path = WF_IMG2IMG if image_mode else WF_CONTROLNET if use_cn else WF_TXT2IMG
     with open(path, "r", encoding="utf-8") as f:
         wf = json.load(f)
     out = {}
@@ -1202,7 +1211,17 @@ def comfy_submit(tid):
     use_cn = not image_mode and _pass_exists(d_rel)
     with_normal = use_cn and _pass_exists(n_rel)
 
-    wf = load_workflow(use_cn, image_mode)
+    # ---- 局部重绘（inpaint）----
+    # payload 带 mask_img（掩膜）且底图可用时，改走 inpaint 工作流：
+    # 以该机位的白模渲染图为底，只把掩膜区域送去重绘，depth/normal 继续锁形。
+    mask_rel = payload.get("mask_img") or ""
+    inpaint_mode = (not image_mode and bool(mask_rel) and _pass_exists(mask_rel)
+                    and _pass_exists(payload.get("base_img") or ""))
+    if mask_rel and not inpaint_mode and not image_mode:
+        raise RuntimeError(
+            "带 mask_img 但底图（base_img）不可用或掩膜文件缺失，已停止局部重绘任务。")
+
+    wf = load_workflow(use_cn, image_mode, inpaint_mode)
     if image_mode:
         source_rel = payload.get("source_img") or ""
         source_path = _asset_path(source_rel)
@@ -1247,6 +1266,12 @@ def comfy_submit(tid):
                 wf.pop(nid, None)
             wf["3"]["inputs"]["positive"] = ["20", 0]
             wf["3"]["inputs"]["negative"] = ["20", 1]
+
+    if inpaint_mode:
+        # 局部重绘：底图与掩膜都要先传给 ComfyUI（与 depth/normal 同一套上传机制）
+        payload = dict(payload)
+        payload["base_img"] = comfy_upload(payload.get("base_img") or "")
+        payload["mask_img"] = comfy_upload(mask_rel)
 
     # ---- 参考图（IPAdapter）：有图 + 装了插件才接，否则整条链摘掉，KSampler 退回裸底模 ----
     ref_rel = payload.get("ref_img") or ""

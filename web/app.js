@@ -133,6 +133,21 @@ function renderProductSelect(){
   for(const item of state.assets.items){select.add(new Option(item.sku,item.sku));}
   select.value=existing;
 }
+let _thumbTimer=null;
+function loadModelThumb(item,attempt){
+  attempt=attempt||0;
+  const box=$("modelThumb"),img=box&&box.querySelector("img");
+  if(!box||!img)return;
+  if(!item||!item.model){box.hidden=true;box.classList.remove("is-ready");return;}
+  if(attempt===0)box.hidden=false;
+  img.onload=()=>box.classList.add("is-ready");
+  img.onerror=()=>{
+    // 预览图是上传后由 Blender 在后台生成的，头几秒可能还没有 —— 退避重试几次
+    if(attempt<4){clearTimeout(_thumbTimer);_thumbTimer=setTimeout(()=>loadModelThumb(item,attempt+1),900*(attempt+1));}
+    else box.hidden=true;
+  };
+  img.src=`/api/model/thumb?sku=${encodeURIComponent(item.sku)}&r=${attempt}`;
+}
 function renderSource(){
   const item=selectedItem();const box=$("modelSummary");
   if(!item){box.textContent="还没有选择产品。";box.className="model-summary";$("imageSummary").textContent="上传一张产品照片或已有渲染图。";$("stageTitle").textContent="选择一个产品开始";state.sourceSize=null;state.sourceRelLoaded="";return;}
@@ -152,6 +167,7 @@ function renderSource(){
     };image.onerror=()=>{if(state.sourceRelLoaded===rel)announce("产品图片无法读取，请重新上传。");};image.src=passUrl(rel);}
   }
   $("stageTitle").textContent=item.sku;
+  if(state.thumbSku!==item.sku){state.thumbSku=item.sku;loadModelThumb(item,0);}
 }
 function renderService(){
   const el=$("serviceStatus");el.className="service-status "+(state.comfy.online?"is-ready":"is-warn");
@@ -463,6 +479,7 @@ async function uploadModel(file){
   try{
     const stem=file.name.replace(/\.[^.]+$/,"");
     const result=await api(`/api/assets/upload?rel=${encodeURIComponent(file.name)}&sku=${encodeURIComponent(stem)}`,{method:"POST",headers:{"Content-Type":"application/octet-stream"},body:file});
+    state.thumbSku="";   // 换了模型 → 强制重拉预览图（后端已在上传成功时起了生成任务）
     await refreshAssets();
     const imported=state.assets.models.find(m=>m.rel===result.saved);
     state.sku=imported?.sku||result.sku||stem;

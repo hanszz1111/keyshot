@@ -1532,6 +1532,116 @@ def verify_pass_outputs(sku, view):
     return True, ""
 
 
+# =========================================================
+# 模型缩略图 · 上传后立刻给一张预览
+# 解决「导入完了主画面还是空白、不知道到底读进来没有」。
+# 与正式结构图**共用相机方位 / 取景算法 / 轴向**（见 blender_pass.py 的 --thumb），
+# 所以缩略图里能看到的部位，正式机位一定也在画面内。
+# =========================================================
+THUMB_DIR = os.path.join(ASSETS, "_缩略图")
+THUMB_VIEW = "3q4_left"            # 比正视图更有立体感，适合当预览
+THUMB_W, THUMB_H = 616, 376        # 正式图 1232×752 的一半，比例保持一致
+_thumb_lock = threading.Lock()
+_thumb_state = {"status": "idle", "sku": "", "message": "",
+                "started_at": None, "finished_at": None}
+
+
+def thumb_path(sku):
+    return os.path.join(THUMB_DIR, safe_file(sku) + ".png")
+
+
+def thumb_is_fresh(sku, model_path):
+    """缩略图存在、非空，且**比模型文件新**，才算可用。
+
+    比模型旧就说明模型换过了，得重出 —— 否则会拿旧预览糊弄用户。
+    """
+    t = thumb_path(sku)
+    try:
+        if not os.path.isfile(t) or os.path.getsize(t) == 0:
+            return False
+        if model_path and os.path.isfile(model_path):
+            return os.path.getmtime(t) >= os.path.getmtime(model_path)
+        return True
+    except OSError:
+        return False
+
+
+def thumb_status():
+    with _thumb_lock:
+        return dict(_thumb_state)
+
+
+def start_thumb(sku, model_rel=""):
+    """后台用 Blender 出一张缩略图。
+
+    与「出结构图」互斥：两个 Blender 同时跑会抢显存，小任务应该让路。
+    """
+    global _thumb_state
+    model = next((m for m in scan_models() if m["sku"] == sku and
+                  (not model_rel or m["rel"] == model_rel)), None)
+    if not model:
+        raise ValueError("投放区里没有 %s 的白模文件" % sku)
+    src = os.path.abspath(model["path"])
+    if os.path.splitext(src)[1].lower() not in PASS_MODEL_EXTS:
+        raise ValueError("这个格式不能生成预览图；支持 BLEND/GLB/GLTF/OBJ/STL/FBX/STEP/STP/3DM")
+    exe = blender_executable()
+    if not exe:
+        raise ValueError("未找到 Blender，无法生成预览图")
+    if not os.path.isfile(BLENDER_SCRIPT):
+        raise ValueError("缺少 scripts/blender_pass.py")
+    if thumb_is_fresh(sku, src):
+        return {"ok": True, "skipped": True, "reason": "缩略图已是最新"}
+
+    with _thumb_lock:
+        if _thumb_state["status"] == "running":
+            return {"ok": True, "skipped": True, "reason": "已有缩略图任务在跑"}
+        if _pass_state["status"] == "running":
+            return {"ok": True, "skipped": True, "reason": "结构图任务占用中，稍后再出预览"}
+        _thumb_state = {"status": "running", "sku": sku, "message": "正在生成预览图…",
+                        "started_at": time.strftime("%Y-%m-%d %H:%M:%S"), "finished_at": None}
+
+    def worker():
+        global _thumb_state
+        dest = thumb_path(sku)
+        tmp = dest + "." + uuid.uuid4().hex + ".part.png"
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            args = [exe, "-b", "-P", BLENDER_SCRIPT, "--",
+                    "--model", src, "--sku", sku, "--view", THUMB_VIEW,
+                    "--width", str(THUMB_W), "--height", str(THUMB_H),
+                    "--samples", "32",          # 预览不需要高采样
+                    "--thumb", tmp]
+            proc = subprocess.run(args, capture_output=True, text=True,
+                                  errors="replace", timeout=900)
+            ok = (proc.returncode == 0 and os.path.isfile(tmp)
+                  and os.path.getsize(tmp) > 0)
+            if ok:
+                os.replace(tmp, dest)       # 原子发布，避免半成品被前端读到
+                tail = ""
+            else:
+                tail = (proc.stdout + "\n" + proc.stderr).strip()[-800:]
+            with _thumb_lock:
+                _thumb_state = {
+                    "status": "done" if ok else "failed", "sku": sku,
+                    "message": "预览图已生成" if ok else (tail or "Blender 执行失败"),
+                    "started_at": _thumb_state.get("started_at"),
+                    "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        except Exception as exc:
+            with _thumb_lock:
+                _thumb_state = {"status": "failed", "sku": sku, "message": str(exc),
+                                "started_at": _thumb_state.get("started_at"),
+                                "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+        finally:
+            if os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+    threading.Thread(target=worker, daemon=True).start()
+    return {"ok": True, "status": "running"}
+
+
 def pass_status():
     with _pass_lock:
         return dict(_pass_state)
@@ -1725,6 +1835,26 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def serve_thumb(self, sku):
+        """返回某 SKU 的缩略图。还没有就 404 —— 前端据此显示占位而不是破图。"""
+        if not sku:
+            return self.send_json({"error": "缺少 sku"}, 400)
+        path = thumb_path(sku)
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            return self.send_json({"error": "还没有预览图"}, 404)
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as exc:
+            return self.send_json({"error": "读取预览图失败：%s" % exc}, 500)
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(data)))
+        # 缩略图会随模型更新，用协商缓存（改了立刻能看到新的，没改走 304）
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
+        self.end_headers()
+        self.wfile.write(data)
+
     def save_upload(self, rel, fb_sku, fb_view, overwrite=False):
         """裸二进制上传：分块写盘，避免大模型文件把内存顶爆。
 
@@ -1771,6 +1901,13 @@ class Handler(SimpleHTTPRequestHandler):
                     pass
                 return self.send_json(
                     {"error": "%s 未通过导入预检：%s" % (meta.get("name") or "文件", reason)}, 400)
+            # 顺手起一个缩略图任务，让用户马上能看到「确实读进来了」。
+            # 失败不影响上传结果 —— 预览只是锦上添花，不该拖累主流程。
+            try:
+                start_thumb(str(meta.get("sku") or ""),
+                            os.path.relpath(dest, ASSETS).replace("\\", "/"))
+            except Exception:
+                pass
         return self.send_json({
             "ok": True, "kind": kind,
             "saved": os.path.relpath(dest, ASSETS).replace("\\", "/"),
@@ -1887,6 +2024,10 @@ class Handler(SimpleHTTPRequestHandler):
                                        "project": ROOT, "ui": "2.0"})
             if p == "/api/ui/pass/status":
                 return self.send_json(pass_status())
+            if p == "/api/ui/thumb/status":
+                return self.send_json(thumb_status())
+            if p == "/api/model/thumb":
+                return self.serve_thumb(q.get("sku", [""])[0])
             if p == "/api/health":
                 return self.send_json({"ok": True, "root": ROOT, "db": DB_FILE,
                                        "assets": ASSETS, "models": MODELS_DIR,
@@ -1942,6 +2083,12 @@ class Handler(SimpleHTTPRequestHandler):
                     start_pass(str((body or {}).get("sku", "")), str((body or {}).get("view", "")),
                                str((body or {}).get("model", "")))
                     return self.send_json({"ok": True, "status": "running"})
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+            if p == "/api/ui/thumb/start":
+                try:
+                    return self.send_json(start_thumb(str((body or {}).get("sku", "")),
+                                                      str((body or {}).get("model", ""))))
                 except ValueError as exc:
                     return self.send_json({"error": str(exc)}, 400)
             if p == "/api/ui/comfy/submit":

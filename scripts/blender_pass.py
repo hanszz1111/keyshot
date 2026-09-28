@@ -112,6 +112,10 @@ def parse_args():
                     help="不导入模型，用内置几何自检整条 pass 链路")
     ap.add_argument("--probe", action="store_true",
                     help="只导入并报告模型信息（包围盒/物体数/尺度），不渲染")
+    ap.add_argument("--thumb", default=None, metavar="PATH",
+                    help="只渲染一张缩略图到该路径，不产 pass。"
+                         "复用与正式结构图相同的相机方位、取景算法与轴向，"
+                         "所以缩略图里看得见的部位，正式机位一定也在画面内。")
     return ap.parse_args(argv)
 
 
@@ -568,6 +572,28 @@ def main():
         unit = "疑似毫米（STP/3dm 常见）" if m > 1000 else ("疑似米" if m < 1 else "量级正常")
         log(f"最大边长 {m:.2f} → {unit}")
         log(f"轴向估计：X={size.x:.2f} Y={size.y:.2f} Z={size.z:.2f}（长边通常为枪身/光轴方向）")
+        log("=" * 60)
+        return 0
+
+    if args.thumb:
+        # 缩略图模式：不产 pass，只出一张预览。
+        # 相机方位、取景算法、灯光、轴向与正式结构图**完全共用**，
+        # 所以不会出现「缩略图看得见、正式机位全在画面外」。
+        setup_world()
+        setup_lights(center, max(size.length / 2.0, 1e-3))
+        setup_camera(args, center, size)
+        setup_render(args)
+        dest = os.path.abspath(args.thumb)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        bpy.context.scene.render.filepath = dest
+        log("=" * 60)
+        log(f"缩略图模式：只渲染一张预览，不产 pass")
+        log(f"输出={dest}")
+        bpy.ops.render.render(write_still=True)
+        if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+            log(f"✅ 缩略图 {os.path.getsize(dest):,} B")
+        else:
+            raise SystemExit("[pass] 缩略图未产出")
         log("=" * 60)
         return 0
 

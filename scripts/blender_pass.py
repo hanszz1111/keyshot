@@ -513,14 +513,33 @@ def setup_compositor(outdir, do_demorm=True):
         [("depth", "Depth"), ("normal", "Normal")],
         "OPEN_EXR", "32", "exr_out")
 
-    for node, sockets in ((png_node, ["Image", "Alpha", "IndexOB"]),
+    for node, sockets in ((png_node, ["Image", "Alpha", None]),
                           (exr_node, ["Depth", "Normal"])):
         for i, s in enumerate(sockets):
+            if s is None:
+                continue          # objectid 单独接（见下），这里跳过
             src = rl.outputs.get(s)
             if src is None:
                 log(f"警告：Render Layers 没有 {s} 输出，跳过")
                 continue
             tree.links.new(src, node.inputs[i])
+
+    # ★ objectid 必须先除以 65535 再输出：
+    #   IndexOB 给的是**原始 ID 数值**（1.0, 2.0, … 2530.0），
+    #   而 PNG 16 位只能表示 0–1，直连会把所有 ID **饱和成 65535** ——
+    #   实测产物只剩 0 / 65535 两个值，等于 ID 信息全丢，只是一张前景掩膜。
+    #   压到 0–1 存下来，读取时再乘回 65535 即可还原真实部件号。
+    id_src = rl.outputs.get("IndexOB")
+    if id_src is None:
+        log("警告：Render Layers 没有 IndexOB 输出，objectid 无法生成")
+    else:
+        id_scale = tree.nodes.new("CompositorNodeMath")
+        id_scale.operation = "DIVIDE"
+        id_scale.inputs[1].default_value = 65535.0
+        id_scale.location = (-150, -250)
+        id_scale.label = "ID/65535"
+        tree.links.new(id_src, id_scale.inputs[0])
+        tree.links.new(id_scale.outputs[0], png_node.inputs[2])
 
     return tree
 

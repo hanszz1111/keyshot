@@ -116,6 +116,10 @@ def parse_args():
                     help="只渲染一张缩略图到该路径，不产 pass。"
                          "复用与正式结构图相同的相机方位、取景算法与轴向，"
                          "所以缩略图里看得见的部位，正式机位一定也在画面内。")
+    ap.add_argument("--export-glb", default=None, metavar="PATH",
+                    help="顺带把导入后的模型导出为 GLB，供网页 3D 预览使用。"
+                         "只导出几何（不含相机/灯光），源文件不被修改。"
+                         "网页只读这个已验证的 GLB，不直接读原始 STEP/3DM。")
     return ap.parse_args(argv)
 
 
@@ -231,6 +235,39 @@ def import_model(path):
             raise SystemExit(f"[pass] Rhino .3dm 导入失败（{mod}）：{exc}") from exc
         if not any(ob.type == "MESH" for ob in bpy.data.objects):
             raise SystemExit("[pass] .3dm 中没有可渲染网格。请在 Rhino 先生成渲染网格，或导出 GLB/OBJ。")
+
+
+def _export_glb(dest):
+    """把当前场景的网格导出成 GLB，给网页 3D 预览用。
+
+    只导几何：**显式关掉相机与灯光**，否则预览里会凭空多出一盏灯和一个相机。
+    导出的是「导入后」的网格（STEP/3DM 此时已三角化），源文件不受任何影响。
+    网页只读这个已验证的 GLB —— 原始 STEP/3DM 不直接喂浏览器。
+    """
+    dest = os.path.abspath(dest)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + ".part.glb"
+    try:
+        bpy.ops.export_scene.gltf(
+            filepath=tmp, export_format="GLB",
+            export_apply=True,          # 应用修改器
+            export_yup=True,            # 网页 3D 通用约定：Y 轴向上
+            export_cameras=False,
+            export_lights=False,
+            use_selection=False)
+        if os.path.isfile(tmp) and os.path.getsize(tmp) > 0:
+            os.replace(tmp, dest)       # 原子发布，前端不会读到半个文件
+            log(f"  ✅ 预览模型 {os.path.getsize(dest):,} B")
+        else:
+            log("  ⚠️ 预览模型未产出")
+    except Exception as exc:
+        log(f"  ⚠️ 预览模型导出失败：{exc}")
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def build_self_test():
@@ -579,6 +616,8 @@ def main():
         # 缩略图模式：不产 pass，只出一张预览。
         # 相机方位、取景算法、灯光、轴向与正式结构图**完全共用**，
         # 所以不会出现「缩略图看得见、正式机位全在画面外」。
+        if args.export_glb:
+            _export_glb(args.export_glb)   # 几何未受灯光影响，先导再布景
         setup_world()
         setup_lights(center, max(size.length / 2.0, 1e-3))
         setup_camera(args, center, size)

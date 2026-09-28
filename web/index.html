@@ -6,6 +6,9 @@
   <meta name="theme-color" content="#eef1f2">
   <title>形照 · 产品渲染工作台</title>
   <link rel="stylesheet" href="/styles.css">
+  <script type="importmap">
+  {"imports":{"three":"/vendor/three/three.module.js"}}
+  </script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -64,7 +67,7 @@
             <summary>细调材质和灯光</summary>
             <div class="details-body">
               <label for="materialSelect" class="field-label">主体材质</label>
-              <select id="materialSelect" name="material" autocomplete="off"><option value="matte_plastic">细磨砂塑料</option><option value="brushed_aluminum">拉丝铝</option><option value="polished_metal">抛光金属</option><option value="soft_touch">类肤涂层</option></select>
+              <select id="materialSelect" name="material" autocomplete="off"><optgroup label="塑料与涂层"><option value="matte_plastic">细磨砂塑料</option><option value="glossy_plastic">高光塑料</option><option value="soft_touch">类肤涂层</option></optgroup><optgroup label="金属"><option value="brushed_aluminum">拉丝铝</option><option value="sandblasted_metal">喷砂金属</option><option value="gunmetal">枪灰金属</option><option value="polished_metal">抛光不锈钢</option><option value="chrome">镜面镀铬</option></optgroup><optgroup label="其他材质"><option value="carbon_fiber">碳纤维</option><option value="rubber">哑光橡胶</option><option value="leather">皮革</option><option value="wood">木纹</option></optgroup></select>
               <label for="lightSelect" class="field-label">光照</label>
               <select id="lightSelect" name="lighting" autocomplete="off"><option value="soft">柔和影棚光</option><option value="top">顶部柔光</option><option value="dramatic">侧逆光</option><option value="natural">自然窗光</option></select>
               <label for="bodyColor" class="field-label">主体颜色</label>
@@ -124,10 +127,11 @@
           <div class="hero-grid" aria-hidden="true"></div>
           <div class="hero-empty" id="heroEmpty"><div class="wire-product" aria-hidden="true"><span class="wire-ring"></span><span class="wire-body"></span><span class="wire-foot"></span></div><strong>你的产品，从这里开始</strong><p>导入白模，或选择已有产品。这里会显示结构预览与生成的图片。</p></div>
           <img id="heroImage" alt="当前产品预览" width="1232" height="752" hidden>
+          <canvas id="heroCanvas" hidden aria-label="可自由旋转的白模预览"></canvas>
           <div id="compareLayer" class="compare-layer" hidden><img id="compareImage" alt="生成结果，用于与白模对比" width="1232" height="752"><span id="compareDivider" class="compare-divider" aria-hidden="true"></span><span class="compare-label compare-label-left">白模</span><span class="compare-label compare-label-right">成图</span></div>
           <div class="hero-caption" id="heroCaption">白模预览</div>
         </div>
-        <div class="stage-footer"><div class="view-switch" role="group" aria-label="预览类型"><button type="button" data-preview="clay" class="is-active" aria-pressed="true" id="sourcePreviewButton">白模</button><button type="button" data-preview="depth" aria-pressed="false" id="depthPreviewButton">深度</button><button type="button" data-preview="result" aria-pressed="false">成图</button><button type="button" data-preview="compare" aria-pressed="false">对比</button></div><span id="previewNote">上传白模后可生成结构预览</span></div>
+        <div class="stage-footer"><div class="view-switch" role="group" aria-label="预览类型"><button type="button" data-preview="clay" class="is-active" aria-pressed="true" id="sourcePreviewButton">白模</button><button type="button" data-preview="model3d" aria-pressed="false" id="model3dPreviewButton">3D 自由旋转</button><button type="button" data-preview="depth" aria-pressed="false" id="depthPreviewButton">深度</button><button type="button" data-preview="result" aria-pressed="false">成图</button><button type="button" data-preview="compare" aria-pressed="false">对比</button></div><span id="previewNote">上传白模后可生成结构预览</span></div>
         <div id="compareControls" class="compare-controls" hidden>
           <label for="compareRange">白模与成图对比</label>
           <input id="compareRange" type="range" min="5" max="95" value="50" aria-label="拖动分割线比较白模与成图">

@@ -10,9 +10,17 @@ const STYLE = {
 };
 const MATERIAL = {
   matte_plastic:"fine sandblasted matte plastic",
+  glossy_plastic:"high-gloss injection molded plastic with crisp specular highlights",
+  soft_touch:"soft-touch coated plastic",
   brushed_aluminum:"anodized brushed aluminum",
+  sandblasted_metal:"sandblasted anodized metal with even matte metallic grain",
+  gunmetal:"dark gunmetal grey with satin metallic sheen",
   polished_metal:"polished stainless steel",
-  soft_touch:"soft-touch coated plastic"
+  chrome:"mirror chrome with high reflectivity",
+  carbon_fiber:"carbon fiber weave under a clear gloss coat",
+  rubber:"matte black rubber with fine pebbled texture",
+  leather:"fine-grain leather with subtle natural sheen",
+  wood:"natural wood grain with satin varnish"
 };
 const LIGHT = {
   soft:"large softbox studio lighting, soft contact shadows",
@@ -148,6 +156,120 @@ function loadModelThumb(item,attempt){
   };
   img.src=`/api/model/thumb?sku=${encodeURIComponent(item.sku)}&r=${attempt}`;
 }
+/* ---------------- 3D 自由旋转预览（three.js 本地懒加载） ----------------
+   网页只读后端已三角化、已验证的 GLB，原始 STEP/3DM 不直接喂浏览器。
+   three.js 放在 web/vendor/，不走 CDN：本机网络对境外 CDN 不稳，
+   预览器不该因为拉不到库就整个不可用。 */
+const hero3d={renderer:null,scene:null,camera:null,controls:null,model:null,sku:"",raf:0,lib:null,loading:null,homeDist:4.2};
+
+async function loadThree(){
+  if(hero3d.lib)return hero3d.lib;
+  if(hero3d.loading)return hero3d.loading;
+  hero3d.loading=(async()=>{
+    const THREE=await import("/vendor/three/three.module.js");
+    const {OrbitControls}=await import("/vendor/three/jsm/controls/OrbitControls.js");
+    const {GLTFLoader}=await import("/vendor/three/jsm/loaders/GLTFLoader.js");
+    hero3d.lib={THREE,OrbitControls,GLTFLoader};
+    return hero3d.lib;
+  })().catch(error=>{hero3d.loading=null;throw error;});
+  return hero3d.loading;
+}
+function resize3D(){
+  const canvas=$("heroCanvas");
+  if(!hero3d.renderer||canvas.hidden)return;
+  const host=canvas.parentElement;
+  const w=host.clientWidth,h=host.clientHeight;
+  if(!w||!h)return;
+  hero3d.renderer.setSize(w,h,false);
+  hero3d.camera.aspect=w/h;
+  hero3d.camera.updateProjectionMatrix();
+}
+function stop3D(){if(hero3d.raf){cancelAnimationFrame(hero3d.raf);hero3d.raf=0;}}
+function tick3D(){
+  const canvas=$("heroCanvas");
+  if(!hero3d.renderer||canvas.hidden)return;
+  hero3d.raf=requestAnimationFrame(tick3D);
+  hero3d.controls.update();
+  hero3d.renderer.render(hero3d.scene,hero3d.camera);
+}
+async function showModel3D(sku){
+  const canvas=$("heroCanvas");
+  canvas.hidden=false;
+  let lib;
+  try{lib=await loadThree();}
+  catch(error){
+    canvas.hidden=true;
+    $("previewNote").textContent="3D 预览组件加载失败；已保留白模图档位。";
+    return false;
+  }
+  const {THREE,OrbitControls,GLTFLoader}=lib;
+  if(!hero3d.renderer){
+    hero3d.renderer=new THREE.WebGLRenderer({canvas,antialias:true,alpha:true});
+    hero3d.renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+    hero3d.scene=new THREE.Scene();
+    hero3d.camera=new THREE.PerspectiveCamera(35,1,0.01,5000);
+    hero3d.controls=new OrbitControls(hero3d.camera,canvas);
+    hero3d.controls.enableDamping=true;
+    hero3d.controls.dampingFactor=0.08;
+    hero3d.controls.enablePan=false;      // 只让用户转，不让它飘走
+    hero3d.controls.minDistance=0.5;
+    hero3d.controls.maxDistance=40;
+    // 三点光：半球环境 + 主光 + 补光，白模才有体积感
+    hero3d.scene.add(new THREE.HemisphereLight(0xffffff,0x9aa7ad,1.5));
+    const key=new THREE.DirectionalLight(0xffffff,2.1);key.position.set(3,5,4);hero3d.scene.add(key);
+    const fill=new THREE.DirectionalLight(0xffffff,0.85);fill.position.set(-4,-1,-3);hero3d.scene.add(fill);
+  }
+  if(hero3d.sku!==sku){
+    if(hero3d.model){hero3d.scene.remove(hero3d.model);hero3d.model=null;}
+    let gltf;
+    try{gltf=await new GLTFLoader().loadAsync(`/api/model/glb?sku=${encodeURIComponent(sku)}`);}
+    catch(error){
+      hero3d.sku="";
+      $("previewNote").textContent="预览模型还没准备好（后台正在转换），稍后重试或先看白模图。";
+      return false;
+    }
+    const root=gltf.scene;
+    // 自动取景：居中 + 归一化到统一尺度，任何尺寸的模型都刚好完整可见
+    const box=new THREE.Box3().setFromObject(root);
+    const size=box.getSize(new THREE.Vector3());
+    const center=box.getCenter(new THREE.Vector3());
+    const maxDim=Math.max(size.x,size.y,size.z)||1;
+    const s=2.2/maxDim;
+    // ★ 必须用 Group 承载，不能直接给 root 同时设 scale 和 position：
+    //   矩阵是 T(position)·S(scale)，顶点先缩放再平移，拿「未缩放的世界坐标 center」
+    //   当 position 会把模型整个推出画面（表现为 canvas 一片空白）。
+    //   放进 Group 后，root.position 是 Group 的局部坐标，缩放由 Group 统一施加。
+    root.position.sub(center);
+    // 统一换成本地白模材质：GLB 不带材质，用 three 默认材质既灰又暗；
+    // 更要紧的是**单面壳体**（STL/STEP 常见）在 FrontSide 下会「透视」成 X 光，
+    // 必须 DoubleSide 才能看到完整外形。
+    root.traverse(o=>{
+      if(o.isMesh){
+        o.material=new THREE.MeshStandardMaterial({
+          color:0xedeff0, roughness:0.58, metalness:0.03, side:THREE.DoubleSide});
+      }
+    });
+    const holder=new THREE.Group();
+    holder.add(root);
+    holder.scale.setScalar(s);
+    // ★ Blender 是 Z-up，glTF/three.js 是 Y-up。若导出时未做轴向转换，
+    //   模型在网页里会「躺下」。按包围盒判断：最长边落在 Z 轴上就说明还是
+    //   Blender 的 Z-up 姿态，绕 X 轴 -90° 把它扶正。
+    if(size.z>size.y*1.25&&size.z>size.x*1.25)holder.rotation.x=-Math.PI/2;
+    hero3d.scene.add(holder);
+    hero3d.model=holder;
+    hero3d.sku=sku;
+    // 按包围球 + 垂直 FOV 算相机距离，留 15% 余量
+    const radius=0.5*Math.hypot(size.x,size.y,size.z)*s;
+    const dist=radius/Math.sin(THREE.MathUtils.degToRad(35/2))*1.15;
+    hero3d.homeDist=dist;
+    hero3d.controls.target.set(0,0,0);
+    hero3d.camera.position.set(1.7,1.1,2.2).normalize().multiplyScalar(dist);
+    hero3d.controls.update();
+  }
+  resize3D();stop3D();tick3D();
+  return true;
+}
 function renderSource(){
   const item=selectedItem();const box=$("modelSummary");
   if(!item){box.textContent="还没有选择产品。";box.className="model-summary";$("imageSummary").textContent="上传一张产品照片或已有渲染图。";$("stageTitle").textContent="选择一个产品开始";state.sourceSize=null;state.sourceRelLoaded="";return;}
@@ -239,7 +361,24 @@ function renderPassReadiness(){
 function renderHero(){
   const item=selectedItem(),row=viewInfo();const image=$("heroImage"),empty=$("heroEmpty");
   const overlay=$("compareLayer"),controls=$("compareControls");
+  const canvas=$("heroCanvas");
   overlay.hidden=true;controls.hidden=true;$("hero").classList.remove("compare-mismatch");
+
+  // ---- 3D 自由旋转档位：不吃 clay.png，直接用 GLB 在浏览器里转 ----
+  if(state.preview==="model3d"){
+    image.hidden=true;$("heroCaption").textContent="3D 自由旋转";
+    if(item?.model){
+      empty.hidden=true;
+      $("previewNote").textContent=`${item.sku} · 拖动旋转 · 滚轮缩放 · 双击复位`;
+      showModel3D(item.sku).catch(()=>{});
+    }else{
+      if(canvas){canvas.hidden=true;stop3D();}
+      empty.hidden=false;
+      $("previewNote").textContent="上传白模后可 3D 预览";
+    }
+    return;
+  }
+  if(canvas&&!canvas.hidden){canvas.hidden=true;stop3D();}
   // 图片模式没有白模可对比；成图与产品原图的比例通常不同，不提供像素级对比
   const compareAllowed=state.sourceType!=="image";
   const chosen=state.selectedTask&&state.tasks.find(t=>t.id===state.selectedTask);
@@ -547,6 +686,13 @@ $("viewBatchSelect").addEventListener("change",()=>{renderPreflight();renderResu
 document.querySelectorAll('input[name="mode"]').forEach(el=>el.addEventListener("change",renderPreflight));
 document.querySelectorAll("[data-style]").forEach(el=>el.addEventListener("click",()=>setStyle(el.dataset.style)));
 document.querySelectorAll("[data-preview]").forEach(el=>el.addEventListener("click",()=>setPreview(el.dataset.preview)));
+$("heroCanvas").addEventListener("dblclick",()=>{          // 双击复位视角
+  if(!hero3d.controls)return;
+  hero3d.camera.position.set(1.7,1.1,2.2).normalize().multiplyScalar(hero3d.homeDist||4.2);
+  hero3d.controls.target.set(0,0,0);
+  hero3d.controls.update();
+});
+window.addEventListener("resize",()=>{if(state.preview==="model3d")resize3D();});
 $("bodyColor").addEventListener("input",event=>{$("bodyColorValue").textContent=event.target.value.toUpperCase();});
 $("refreshButton").addEventListener("click",refreshAll);
 $("refreshTasksButton").addEventListener("click",refreshTasks);
@@ -584,9 +730,17 @@ $("compareRange").addEventListener("input",setComparePosition);
    ========================================================= */
 const CARD_MATERIAL = {
   matte_plastic:{type:"ABS",finish:"fine_sandblast",roughness:.75,metallic:0},
+  glossy_plastic:{type:"ABS",finish:"glossy",roughness:.18,metallic:0},
+  soft_touch:{type:"ABS",finish:"soft_touch",roughness:.6,metallic:0},
   brushed_aluminum:{type:"aluminum",finish:"anodized_brushed",roughness:.35,metallic:1},
+  sandblasted_metal:{type:"aluminum",finish:"sandblasted",roughness:.55,metallic:1},
+  gunmetal:{type:"steel",finish:"satin_gunmetal",roughness:.3,metallic:1},
   polished_metal:{type:"stainless",finish:"polished",roughness:.08,metallic:1},
-  soft_touch:{type:"ABS",finish:"soft_touch",roughness:.6,metallic:0}
+  chrome:{type:"chrome",finish:"mirror",roughness:.02,metallic:1},
+  carbon_fiber:{type:"composite",finish:"carbon_weave",roughness:.25,metallic:.1},
+  rubber:{type:"TPE",finish:"matte_rubber",roughness:.9,metallic:0},
+  leather:{type:"leather",finish:"fine_grain",roughness:.7,metallic:0},
+  wood:{type:"wood",finish:"satin_grain",roughness:.6,metallic:0}
 };
 const CARD_BG = {
   studio:{type:"gradient_gray",from:"#F5F6F7",to:"#DDE1E4"},

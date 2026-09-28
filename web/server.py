@@ -1541,6 +1541,9 @@ def verify_pass_outputs(sku, view):
 THUMB_DIR = os.path.join(ASSETS, "_缩略图")
 THUMB_VIEW = "3q4_left"            # 比正视图更有立体感，适合当预览
 THUMB_W, THUMB_H = 616, 376        # 正式图 1232×752 的一半，比例保持一致
+# 网页 3D 预览用的 GLB（由 Blender 从导入后的网格导出，保留部件结构）。
+# 网页只读这个已三角化、已验证的文件，原始 STEP/3DM 不直接喂浏览器。
+PREVIEW_DIR = os.path.join(ASSETS, "_预览模型")
 _thumb_lock = threading.Lock()
 _thumb_state = {"status": "idle", "sku": "", "message": "",
                 "started_at": None, "finished_at": None}
@@ -1548,6 +1551,23 @@ _thumb_state = {"status": "idle", "sku": "", "message": "",
 
 def thumb_path(sku):
     return os.path.join(THUMB_DIR, safe_file(sku) + ".png")
+
+
+def glb_path(sku):
+    return os.path.join(PREVIEW_DIR, safe_file(sku) + ".glb")
+
+
+def glb_is_fresh(sku, model_path):
+    """预览模型存在、非空，且比模型文件新。"""
+    g = glb_path(sku)
+    try:
+        if not os.path.isfile(g) or os.path.getsize(g) == 0:
+            return False
+        if model_path and os.path.isfile(model_path):
+            return os.path.getmtime(g) >= os.path.getmtime(model_path)
+        return True
+    except OSError:
+        return False
 
 
 def thumb_is_fresh(sku, model_path):
@@ -1589,8 +1609,8 @@ def start_thumb(sku, model_rel=""):
         raise ValueError("未找到 Blender，无法生成预览图")
     if not os.path.isfile(BLENDER_SCRIPT):
         raise ValueError("缺少 scripts/blender_pass.py")
-    if thumb_is_fresh(sku, src):
-        return {"ok": True, "skipped": True, "reason": "缩略图已是最新"}
+    if thumb_is_fresh(sku, src) and glb_is_fresh(sku, src):
+        return {"ok": True, "skipped": True, "reason": "预览已是最新"}
 
     with _thumb_lock:
         if _thumb_state["status"] == "running":
@@ -1604,13 +1624,16 @@ def start_thumb(sku, model_rel=""):
         global _thumb_state
         dest = thumb_path(sku)
         tmp = dest + "." + uuid.uuid4().hex + ".part.png"
+        glb = glb_path(sku)
         try:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
+            os.makedirs(os.path.dirname(glb), exist_ok=True)
             args = [exe, "-b", "-P", BLENDER_SCRIPT, "--",
                     "--model", src, "--sku", sku, "--view", THUMB_VIEW,
                     "--width", str(THUMB_W), "--height", str(THUMB_H),
                     "--samples", "32",          # 预览不需要高采样
-                    "--thumb", tmp]
+                    "--thumb", tmp,
+                    "--export-glb", glb]        # 顺带导 GLB，给网页 3D 预览用
             proc = subprocess.run(args, capture_output=True, text=True,
                                   errors="replace", timeout=900)
             ok = (proc.returncode == 0 and os.path.isfile(tmp)
@@ -1855,6 +1878,25 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def serve_glb(self, sku):
+        """返回某 SKU 的预览模型（GLB）。还没有就 404。"""
+        if not sku:
+            return self.send_json({"error": "缺少 sku"}, 400)
+        path = glb_path(sku)
+        if not os.path.isfile(path) or os.path.getsize(path) == 0:
+            return self.send_json({"error": "还没有预览模型"}, 404)
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError as exc:
+            return self.send_json({"error": "读取预览模型失败：%s" % exc}, 500)
+        self.send_response(200)
+        self.send_header("Content-Type", "model/gltf-binary")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
+        self.end_headers()
+        self.wfile.write(data)
+
     def save_upload(self, rel, fb_sku, fb_view, overwrite=False):
         """裸二进制上传：分块写盘，避免大模型文件把内存顶爆。
 
@@ -2028,6 +2070,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(thumb_status())
             if p == "/api/model/thumb":
                 return self.serve_thumb(q.get("sku", [""])[0])
+            if p == "/api/model/glb":
+                return self.serve_glb(q.get("sku", [""])[0])
             if p == "/api/health":
                 return self.send_json({"ok": True, "root": ROOT, "db": DB_FILE,
                                        "assets": ASSETS, "models": MODELS_DIR,

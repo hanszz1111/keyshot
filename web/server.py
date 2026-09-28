@@ -1341,8 +1341,15 @@ def comfy_submit(tid):
 
     applied, skipped = fill_workflow(wf, payload, defaults, ckpt, use_cn)
 
-    res = http_json(COMFY + "/prompt",
-                    {"prompt": wf, "client_id": "ai-renderer-console"}, timeout=60)
+    try:
+        res = http_json(COMFY + "/prompt",
+                        {"prompt": wf, "client_id": "ai-renderer-console"}, timeout=60)
+    except (urllib.error.URLError, OSError) as exc:
+        # 连不上 ComfyUI 时给「人能执行的动作」，而不是原始 WinError 10061 ——
+        # 实测 ComfyUI 掉线时用户看到的是「位深图无法使用」，实际与图无关。
+        raise RuntimeError(
+            "渲染服务（ComfyUI）没有响应：%s。请双击「一键启动.bat」重启渲染服务，"
+            "或等待半分钟后重试。" % exc) from exc
     if res.get("node_errors"):
         raise RuntimeError("ComfyUI 节点校验失败：%s"
                            % json.dumps(res["node_errors"], ensure_ascii=False)[:600])
@@ -1700,6 +1707,66 @@ def parts_index(sku, view=""):
     return {"sku": sku, "view": use, "count": len(parts),
             "resolution": data.get("resolution"),
             "parts": parts}
+
+
+# 局部重绘掩膜的隔离工作区（大纲 P0-3）：只写这里，绝不碰源 CAD/旧 pass/候选图
+PART_MASK_DIR = os.path.join(ASSETS, "_部件")
+OBJECTID_TOOL = os.path.join(ROOT, "scripts", "objectid_mask.py")
+
+
+def part_mask(sku, view, part, dilate=4):
+    """为指定部件生成局部重绘掩膜（大纲 P0-3 掩膜接口）。
+
+    校验链：objectid.png 与 pass_manifest.json 存在 → 部件号在索引里 → CLI 导出成功。
+    用子进程跑 scripts/objectid_mask.py（同解释器），保持控制台零第三方依赖的约定；
+    该工具读 16 位 objectid 需要 numpy（PIL 解 16 位会降位毁掉 ID），缺失时报可读错误。
+    """
+    if not sku or not view:
+        return {"error": "缺少 sku 或 view"}
+    try:
+        part_id = int(part)
+    except (TypeError, ValueError):
+        return {"error": "部件号无效：%r" % part}
+    oid = os.path.join(PASSES_DIR, sku, view, "objectid.png")
+    man = os.path.join(PASSES_DIR, sku, view, "pass_manifest.json")
+    if not os.path.isfile(oid) or not os.path.isfile(man):
+        return {"error": "该机位还没有 objectid.png / pass_manifest.json，请先出结构图"}
+    try:
+        with open(man, "r", encoding="utf-8", errors="replace") as f:
+            mapping = json.load(f).get("objectid_map") or {}
+    except (OSError, ValueError) as exc:
+        return {"error": "读取 pass_manifest.json 失败：%s" % exc}
+    if str(part_id) not in mapping:
+        return {"error": "部件 #%d 不在该机位的部件索引里（索引共 %d 项）"
+                         % (part_id, len(mapping))}
+    if not os.path.isfile(OBJECTID_TOOL):
+        return {"error": "缺少 scripts/objectid_mask.py"}
+    dest_dir = os.path.join(PART_MASK_DIR, safe_file(sku), safe_file(view))
+    os.makedirs(dest_dir, exist_ok=True)
+    dest = os.path.join(dest_dir, "mask_%d.png" % part_id)
+    d = max(0, min(int(dilate or 0), 32))
+    try:
+        proc = subprocess.run(
+            [sys.executable, OBJECTID_TOOL, oid,
+             "--part", str(part_id), "--dilate", str(d), "--out", dest],
+            capture_output=True, text=True, errors="replace", timeout=120)
+    except subprocess.TimeoutExpired:
+        return {"error": "掩膜生成超时"}
+    if proc.returncode != 0:
+        tail = (proc.stdout + "\n" + proc.stderr).strip()[-300:]
+        return {"error": "掩膜生成失败：%s" % (tail or "未知错误")}
+    if not os.path.isfile(dest) or os.path.getsize(dest) == 0:
+        return {"error": "掩膜文件未产出"}
+    info = {}
+    m = re.search(r"部件 #\d+（?[^）]*）?：(\d+) 像素", proc.stdout or "")
+    if m:
+        info["pixels"] = int(m.group(1))
+    m = re.search(r"包围盒 x (-?\d+)\.\.(-?\d+) y (-?\d+)\.\.(-?\d+)", proc.stdout or "")
+    if m:
+        info["bbox"] = [int(m.group(i)) for i in (1, 2, 3, 4)]
+    rel = os.path.relpath(dest, ASSETS).replace("\\", "/")
+    return {"ok": True, "rel": rel, "part": part_id,
+            "name": mapping.get(str(part_id), ""), "dilate": d, **info}
 
 
 def thumb_is_fresh(sku, model_path):
@@ -2263,6 +2330,13 @@ class Handler(SimpleHTTPRequestHandler):
                     "six": [p["key"] for p in VIEW_PRESETS
                             if p.get("group") == "six" and p.get("renderable", True)],
                 })
+            if p == "/api/cmf":
+                # CMF 预设库（大纲 P0-4）：部件面板与参数卡的唯一材质来源
+                try:
+                    with open(os.path.join(CONFIG_DIR, "cmf_presets.json"), "r", encoding="utf-8") as f:
+                        return self.send_json(json.load(f))
+                except (OSError, ValueError) as exc:
+                    return self.send_json({"presets": [], "error": str(exc)}, 500)
             if p == "/api/assets/file":
                 return self.serve_asset(q.get("rel", [""])[0])
             if p == "/api/changelog":
@@ -2303,6 +2377,10 @@ class Handler(SimpleHTTPRequestHandler):
             if p == "/api/model/parts":
                 return self.send_json(parts_index(q.get("sku", [""])[0],
                                                   q.get("view", [""])[0]))
+            if p == "/api/model/partmask":
+                r = part_mask(q.get("sku", [""])[0], q.get("view", [""])[0],
+                              q.get("part", [""])[0], q.get("dilate", ["4"])[0])
+                return self.send_json(r, 200 if r.get("ok") else 400)
             if p == "/api/health":
                 return self.send_json({"ok": True, "root": ROOT, "db": DB_FILE,
                                        "assets": ASSETS, "models": MODELS_DIR,

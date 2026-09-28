@@ -261,9 +261,12 @@ function pickAt(clientX,clientY){
 /* GLB 导出时 Blender 会把物体名里的 "." 去掉（物体.001 → 物体001），
    而 pass_manifest 里保留原点号。两边对不上就查不到编号，所以匹配前归一化。 */
 function normPartName(s){return String(s||"").replace(/\./g,"").trim().toLowerCase();}
-async function loadPartsIndex(sku){
+async function loadPartsIndex(sku, view){
+  // ★ 大纲 3.1：部件索引必须带当前机位 —— 不同机位可见部件不同，
+  //   不带 view 时后端只能回退到第一个有 manifest 的机位，编号会与出图机位错位。
   try{
-    const d=await api(`/api/model/parts?sku=${encodeURIComponent(sku)}`);
+    const q=view?`&view=${encodeURIComponent(view)}`:"";
+    const d=await api(`/api/model/parts?sku=${encodeURIComponent(sku)}${q}`);
     const rev={};
     for(const [idx,name] of Object.entries(d.parts||{}))rev[normPartName(name)]=Number(idx);
     hero3d.nameToIndex=rev;
@@ -274,6 +277,72 @@ async function loadPartsIndex(sku){
     hero3d.nameToIndex=null;hero3d.partsTotal=0;hero3d.partsNote="部件索引读取失败";
   }
 }
+/* ---------------- 按部位局部重绘（大纲 P0-3 + P0-4）----------------
+   点选部件 → 选 CMF 预设 → 服务端按同机位 objectid 生成掩膜 →
+   以该机位白模为底图走 inpaint（depth/normal 继续锁形）→ 只重绘掩膜区。 */
+let cmfPresets=[];
+async function loadCmfPresets(){
+  try{
+    const d=await api("/api/cmf");
+    cmfPresets=d.presets||[];
+    const sel=$("partCmfSelect");
+    if(sel){
+      clear(sel);
+      for(const p of cmfPresets){
+        const o=document.createElement("option");
+        o.value=p.id;
+        o.textContent=p.name+(p.ai_editable===false?"（AI 禁用）":"");
+        sel.append(o);
+      }
+    }
+  }catch(error){/* 预设拉不到时面板仍可看，只是无法选材质 */}
+}
+function pickedPartState(){
+  const mesh=hero3d.pickedMesh;
+  if(!mesh||state.preview!=="model3d"||!state.sku)return null;
+  return {sku:state.sku,view:selectedView(),
+          partId:hero3d.nameToIndex?hero3d.nameToIndex[normPartName(mesh.name)]:null,
+          partName:mesh.name,
+          baseImageId:`${state.sku}/${selectedView()}/clay.png`};
+}
+async function makePartRender(){
+  const ps=pickedPartState();
+  if(!ps){announce("请先在 3D 视图里点选一个部件，再生成局部候选。");return;}
+  if(ps.partId==null){announce("该部件查不到编号（部件索引缺失或名字对不上），无法生成掩膜。");return;}
+  const preset=cmfPresets.find(p=>p.id===$("partCmfSelect").value);
+  if(!preset){announce("请先给该部件选一个 CMF 材质。");return;}
+  if(preset.ai_editable===false){
+    announce(`「${preset.name}」按 ADR-002 不允许 AI 生成（透明/镜面件走真渲染回贴），已停止。`);return;
+  }
+  const button=$("partRenderButton");
+  try{
+    setBusy(button,true,"生成中…");
+    // 1) 服务端按「同机位 objectid」生成掩膜（校验部件可见、在索引里）
+    const mask=await api(`/api/model/partmask?sku=${encodeURIComponent(ps.sku)}&view=${encodeURIComponent(ps.view)}&part=${ps.partId}&dilate=6`);
+    if(!mask.ok)throw new Error(mask.error||"掩膜生成失败");
+    // 2) 组局部重绘任务：底图=该机位白模，掩膜=该部件，depth/normal 继续锁形
+    const positive=[
+      `Professional high-end product photograph of ${ps.sku}, ${VIEW_EN[ps.view]||ps.view}.`,
+      `ONLY the masked region (one specific part) changes: ${preset.name} — ${preset.prompt}, base color ${$("bodyColor").value}.`,
+      "Everything outside the masked region must stay EXACTLY identical to the base image: same materials, same colors, same lighting, same geometry.",
+      "Premium commercial product photography, realistic material response, crisp silhouette."].filter(Boolean).join(" ");
+    const payload={positive,negative:NEGATIVE,seed:(Math.floor(Date.now()/1000))%2147483647,
+      depth_img:`${ps.sku}/${ps.view}/depth.png`,normal_img:`${ps.sku}/${ps.view}/normal.png`,
+      depth_w:0.8,normal_w:0.5,base_img:ps.baseImageId,mask_img:mask.rel,
+      _meta:{sku:ps.sku,view:ps.view,variant:0,mode:"controlled",ui_version:"2.0",
+             part:{id:ps.partId,name:ps.partName,cmf:preset.id},
+             part_mask:mask.rel,base_image_id:ps.baseImageId}};
+    const inserted=await post("/api/tasks",{tasks:[{sku:ps.sku,view:ps.view,variant:0,
+      positive,negative:NEGATIVE,payload}]});
+    const task={id:(inserted.ids||[])[0],sku:ps.sku,view:ps.view,variant:0,payload};
+    if(!task.id)throw new Error("任务入队失败");
+    announce(`部件「${ps.partName}」的局部候选已入队（#${task.id}），正在生成…`);
+    await executeTask(task);   // 复用现有轮询：完成自动切到结果区
+  }catch(error){announce("局部候选生成失败："+errorMessage(error));}
+  finally{const b=$("partRenderButton");if(b)setBusy(b,false,"生成局部候选");}
+}
+$("partRenderButton").addEventListener("click",makePartRender);
+loadCmfPresets();
 /* Blender 的 az/el 是 Z-up 约定，glTF/three.js 是 Y-up。
    轴向转换 (x,y,z)_blender → (x,z,-y)_gltf，于是方向向量：
      dir_three = ( sin(az)cos(el), sin(el), cos(az)cos(el) )
@@ -316,6 +385,8 @@ function setCameraToView(key){
     state.selectedTask=null;
     renderPassReadiness();renderPreflight();renderResults();
   }
+  // 切了机位就重载该机位的部件索引（不同机位可见部件不同，大纲 3.1）
+  if(state.preview==="model3d"&&state.sku)loadPartsIndex(state.sku,camKey);
 }
 function toggleSpin(){
   if(!hero3d.controls)return;
@@ -409,7 +480,7 @@ async function showModel3D(sku){
     const dist=radius/Math.sin(THREE.MathUtils.degToRad(35/2))*1.15;
     hero3d.homeDist=dist;
     setCameraToView("3q4_left");   // 默认与缩略图同角度，观感一致
-    loadPartsIndex(sku);           // 部件索引（点选时用来显示「第几号部件」）
+    loadPartsIndex(sku, selectedView());   // 部件索引绑定当前机位（大纲 3.1）
   }
   resize3D();stop3D();tick3D();
   return true;

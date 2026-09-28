@@ -157,6 +157,12 @@
           <div class="part-info" id="partInfo" hidden>
             <div class="part-info-head"><span class="part-dot" aria-hidden="true"></span><strong id="partName">—</strong><button type="button" class="mini-button" id="partClear">取消</button></div>
             <span class="part-meta" id="partMeta">—</span>
+            <div class="part-cmf" id="partCmf">
+              <label class="field-label" for="partCmfSelect">该部件材质（CMF）</label>
+              <select id="partCmfSelect"></select>
+              <button type="button" class="mini-button part-render" id="partRenderButton">生成局部候选</button>
+              <p class="part-cmf-help">只重绘该部件所在区域，其余保持底图原样；出图前会先按当前机位生成部件掩膜。</p>
+            </div>
           </div>
           <div id="compareLayer" class="compare-layer" hidden><img id="compareImage" alt="生成结果，用于与白模对比" width="1232" height="752"><span id="compareDivider" class="compare-divider" aria-hidden="true"></span><span class="compare-label compare-label-left">白模</span><span class="compare-label compare-label-right">成图</span></div>
           <div class="hero-caption" id="heroCaption">白模预览</div>

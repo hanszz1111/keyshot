@@ -13,6 +13,7 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
 import threading
 import urllib.error
 import urllib.request
@@ -91,6 +92,52 @@ def main():
     st, body = req("GET", "/api/state")
     skus = [c["sku"] for c in json.loads(body)["cards"]]
     check("参数卡出现在列表中", TEST_SKU in skus, f"共 {len(skus)} 张")
+
+    # v3.4：新增功能必须有无 GPU 的契约测试，旧 18 项不能证明机位/CMF/深度图有效。
+    st, body = req("GET", "/api/views")
+    views = json.loads(body).get("presets", [])
+    keys = [v["key"] for v in views]
+    check("机位表包含双 3/4 与六视图且 ID 唯一",
+          st == 200 and len(keys) == len(set(keys)) and
+          all(v in keys for v in ("3q4_left", "3q4_right", "side", "side_left")) and
+          len([v for v in views if v.get("group") == "six"]) == 6)
+    st, body = req("GET", "/api/cmf")
+    presets = json.loads(body).get("presets", [])
+    legacy = {alias for p in presets for alias in p.get("legacy_ids", [])}
+    check("CMF 统一库含纹理、工艺与旧 12 类映射",
+          st == 200 and len(presets) >= 14 and len(legacy) >= 12 and
+          all(p.get("texture") and p.get("process") for p in presets) and
+          all(not p["ai_editable"] for p in presets if p["id"] in ("glass_clear", "chrome_mirror")))
+    with tempfile.TemporaryDirectory() as tmp:
+        manifest = os.path.join(tmp, "pass_manifest.json")
+        sample = {"pass_format_version": S.PASS_FORMAT_VERSION,
+                  "depth_encoding": {"encoding": "near_white_far_dark_bg_black_v2",
+                                     "background": 0.0, "foreground_pixels": 10, "pixels": 100}}
+        with open(manifest, "w", encoding="utf-8") as f:
+            json.dump(sample, f)
+        check("新版深度清单可用", S._pass_manifest_issue(tmp) == "")
+        sample["pass_format_version"] = 1
+        with open(manifest, "w", encoding="utf-8") as f:
+            json.dump(sample, f)
+        check("旧版深度清单提示重生成", "旧版" in S._pass_manifest_issue(tmp))
+        for role in ("clay", "depth", "normal"):
+            path = os.path.join(tmp, role + ".png")
+            with open(path, "wb") as f:
+                f.write(b"manual-pass-test")
+            S._record_manual_pass(tmp, role, path)
+            if role == "clay":
+                check("只替换一个通道仍禁止混用旧图", "混有旧自动结构图" in S._pass_manifest_issue(tmp))
+        check("三个通道都手动替换后可覆盖旧清单", S._pass_manifest_issue(tmp) == "")
+        sample["pass_format_version"] = S.PASS_FORMAT_VERSION
+        sample["depth_encoding"]["foreground_pixels"] = 0
+        with open(manifest, "w", encoding="utf-8") as f:
+            json.dump(sample, f)
+        check("自动重生成后旧手工记录失效", "无有效结构" in S._pass_manifest_issue(tmp))
+
+    with open(os.path.join(os.path.dirname(__file__), "app.js"), encoding="utf-8") as f:
+        app_js = f.read()
+    check("补齐所选视角会检查整组三通道而非仅深度",
+          'filter(view=>!item.views?.find(row=>row.view===view)?.ok)' in app_js)
 
     st, body = req("GET", f"/api/card?sku={TEST_SKU}")
     check("GET /api/card 单张读取", st == 200 and json.loads(body)["asset"]["sku"] == TEST_SKU)

@@ -795,6 +795,7 @@ def asset_report():
             roles = views[v]
             files = {r: pick(v2) for r, v2 in roles.items()}
             missing = [r for r in ("clay", "depth", "normal") if r not in files]
+            issue = _pass_manifest_issue(os.path.join(PASSES_DIR, sku, v))
             # 通道的像素尺寸。**出图必须与结构图同尺寸** —— 否则 ComfyUI 会把
             # 深度/法线图缩放去适配请求尺寸，比例一变产品就被拉变形
             # （曾出现：结构图 1232×752，而前端请求 1024×1024）。
@@ -814,7 +815,9 @@ def asset_report():
                 "size": {"width": px[0], "height": px[1]} if px else None,
                 "extra": sorted(r for r in roles if r not in ("clay", "depth", "normal")),
                 "missing": missing,
-                "ok": not missing,
+                "stale": bool(issue),
+                "issue": issue,
+                "ok": not missing and not issue,
             })
         ms = [m for m in models if m.get("sku") == sku]
         n_ok = sum(1 for r in rows if r["ok"])
@@ -954,6 +957,40 @@ def clear_tasks():
 # =========================================================
 COMFY = os.environ.get("COMFY_HOST", "http://127.0.0.1:8188")
 CONFIG_DIR = os.path.join(ROOT, "config")
+CMF_PRESETS_PATH = os.path.join(CONFIG_DIR, "cmf_presets.json")
+
+
+def load_cmf_presets():
+    """统一 CMF 目录的最小契约；坏预设不应静默进入生成任务。"""
+    with open(CMF_PRESETS_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    presets = data.get("presets")
+    if not isinstance(presets, list) or not presets:
+        raise ValueError("CMF 预设库为空")
+    ids, legacy = set(), set()
+    for p in presets:
+        for key in ("id", "name", "category", "base", "finish", "color", "prompt", "process"):
+            if not isinstance(p.get(key), str) or not p[key].strip():
+                raise ValueError("CMF 预设缺少 %s：%s" % (key, p.get("id")))
+        if p["id"] in ids:
+            raise ValueError("CMF ID 重复：%s" % p["id"])
+        ids.add(p["id"])
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", p["color"]):
+            raise ValueError("CMF 色值无效：%s" % p["id"])
+        for key in ("roughness", "metalness"):
+            value = p.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+                raise ValueError("CMF %s 超出 0–1：%s" % (key, p["id"]))
+        if not isinstance(p.get("ai_editable"), bool):
+            raise ValueError("CMF ai_editable 必须为布尔值：%s" % p["id"])
+        texture = p.get("texture")
+        if not isinstance(texture, dict) or not all(texture.get(k) for k in ("kind", "scale", "direction")):
+            raise ValueError("CMF 纹理描述不完整：%s" % p["id"])
+        for alias in p.get("legacy_ids", []):
+            if alias in legacy:
+                raise ValueError("CMF 旧 ID 重复：%s" % alias)
+            legacy.add(alias)
+    return data
 OUTPUTS_DIR = os.path.join(ROOT, "outputs")
 WF_TXT2IMG = os.path.join(CONFIG_DIR, "comfy_workflow_sdxl.json")
 WF_CONTROLNET = os.path.join(CONFIG_DIR, "comfy_workflow_sdxl_cn.json")
@@ -1577,6 +1614,102 @@ def convert_step(source):
 
 # 一个机位要能跑 ControlNet，必须凑齐这三个通道（与 index.html 的 payload 对应）
 PASS_REQUIRED = ("clay.png", "depth.png", "normal.png")
+PASS_FORMAT_VERSION = 2
+MANUAL_PASS_ROLES = ("clay", "depth", "normal")
+
+
+def _record_manual_pass(folder, role, path):
+    """记录用户明确替换的通道；仅三通道都新上传时允许绕过旧自动清单。"""
+    marker = os.path.join(folder, "manual_override.json")
+    try:
+        with open(marker, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError, TypeError):
+        data = {}
+    manifest = os.path.join(folder, "pass_manifest.json")
+    manifest_ns = os.stat(manifest).st_mtime_ns if os.path.isfile(manifest) else 0
+    if data.get("manifest_ns") != manifest_ns:
+        data = {"manifest_ns": manifest_ns, "roles": {}}
+    st = os.stat(path)
+    data["roles"][role] = {"file": os.path.basename(path), "size": st.st_size,
+                           "mtime_ns": st.st_mtime_ns}
+    tmp = marker + "." + uuid.uuid4().hex + ".part"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, marker)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _manual_pass_state(folder, manifest_ns):
+    marker = os.path.join(folder, "manual_override.json")
+    if not os.path.isfile(marker):
+        return "none"
+    try:
+        with open(marker, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("manifest_ns") != manifest_ns:
+            return "none"  # 后续自动重生成已经覆盖了手工替换记录
+        roles = data.get("roles") or {}
+        if not roles:
+            return "none"
+        for role in MANUAL_PASS_ROLES:
+            entry = roles.get(role)
+            if not entry:
+                return "partial"
+            name = entry.get("file", "")
+            if os.path.basename(name) != name or not name.startswith(role + "."):
+                return "partial"
+            path = os.path.join(folder, name)
+            if not os.path.isfile(path):
+                return "partial"
+            st = os.stat(path)
+            if not st.st_size or st.st_size != entry.get("size") or st.st_mtime_ns != entry.get("mtime_ns"):
+                return "partial"
+        return "complete"
+    except (OSError, ValueError, TypeError, AttributeError):
+        return "partial"
+
+
+def _pass_manifest_issue(folder):
+    """只拒绝有 manifest 的旧/坏自动生成 pass；手工上传的结构图仍可使用。"""
+    path = os.path.join(folder, "pass_manifest.json")
+    if not os.path.isfile(path):
+        return ""
+    manual = _manual_pass_state(folder, os.stat(path).st_mtime_ns)
+    if manual == "complete":
+        return ""
+    if manual == "partial":
+        return "当前机位混有旧自动结构图；请补齐手动白模、深度、法线三通道，或重新自动生成"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        if meta.get("pass_format_version") != PASS_FORMAT_VERSION:
+            return "结构图使用旧版深度编码，请重新生成当前机位"
+        depth = meta.get("depth_encoding") or {}
+        if (depth.get("encoding") != "near_white_far_dark_bg_black_v2" or
+                depth.get("background") != 0.0 or
+                int(depth.get("foreground_pixels", 0)) <= 0 or
+                int(depth.get("pixels", 0)) <= 0):
+            return "深度通道无有效结构，请重新生成当前机位"
+        sig = meta.get("source_signature")
+        if sig:
+            preset = view_preset(os.path.basename(folder))
+            if preset and sig.get("view") != [preset["azimuth"], preset["elevation"]]:
+                return "机位参数已更新，当前结构图过期，请重新生成"
+            src = os.path.join(MODELS_DIR, sig.get("rel", ""))
+            if os.path.commonpath((os.path.abspath(MODELS_DIR), os.path.abspath(src))) != os.path.abspath(MODELS_DIR):
+                return "结构图模型来源非法"
+            if not os.path.isfile(src):
+                return "结构图对应的原模型已不存在，请重新生成"
+            st = os.stat(src)
+            if st.st_size != sig.get("size") or st.st_mtime_ns != sig.get("mtime_ns"):
+                return "模型已更新，当前机位结构图过期，请重新生成"
+        return ""
+    except (OSError, ValueError, TypeError, KeyError):
+        return "结构图清单损坏，请重新生成当前机位"
 
 
 def _png_size(path):
@@ -1627,6 +1760,9 @@ def verify_pass_outputs(sku, view):
                                    for k in sorted(dims)))
     if len(dims) < len(PASS_REQUIRED):
         return False, "结构图里有文件不是有效 PNG，无法确认尺寸"
+    issue = _pass_manifest_issue(folder)
+    if issue:
+        return False, issue
     return True, ""
 
 
@@ -1902,6 +2038,7 @@ def _run_pass_once(sku, view, src, exe):
     if preset:
         args += ["--azimuth", str(preset["azimuth"]),
                  "--elevation", str(preset["elevation"])]
+    started_ns = time.time_ns()
     try:
         proc = subprocess.run(args, capture_output=True, text=True,
                               errors="replace", timeout=1800)
@@ -1911,6 +2048,27 @@ def _run_pass_once(sku, view, src, exe):
     ok = proc.returncode == 0
     reason = ""
     if ok:
+        folder = os.path.join(PASSES_DIR, sku, view)
+        for name in PASS_REQUIRED:
+            path = os.path.join(folder, name)
+            if not os.path.isfile(path) or os.stat(path).st_mtime_ns < started_ns:
+                return False, "%s 未由本次结构图任务重新生成，请查看 Blender 日志" % name
+        manifest = os.path.join(PASSES_DIR, sku, view, "pass_manifest.json")
+        try:
+            with open(manifest, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            st = os.stat(src)
+            meta["source_signature"] = {
+                "rel": os.path.relpath(src, MODELS_DIR).replace("\\", "/"),
+                "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+                "view": [preset["azimuth"], preset["elevation"]] if preset else None,
+            }
+            tmp = manifest + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, manifest)
+        except (OSError, ValueError, TypeError) as exc:
+            return False, "结构图清单无法记录模型来源：%s" % exc
         # 退出码 0 不等于产物可用：逐项校验通道齐全、体积非零、尺寸一致
         ok, reason = verify_pass_outputs(sku, view)
     if not ok and not reason:
@@ -2039,6 +2197,12 @@ def guarded_submit(tid):
     mode = (payload.get("_meta") or {}).get("mode")
     if mode == "controlled" and not _pass_exists(payload.get("depth_img")):
         raise RuntimeError("缺少当前机位的深度图，已阻止自动降级为纯文生图。请先生成/上传结构图。")
+    if mode == "controlled":
+        depth_path = _asset_path(payload.get("depth_img"))
+        if depth_path and os.path.commonpath((os.path.abspath(PASSES_DIR), os.path.abspath(depth_path))) == os.path.abspath(PASSES_DIR):
+            issue = _pass_manifest_issue(os.path.dirname(depth_path))
+            if issue:
+                raise RuntimeError(issue)
     if mode == "explore" and payload.get("depth_img") and _pass_exists(payload.get("depth_img")):
         raise RuntimeError("外观探索模式的任务意外带了深度图，已停止（避免混淆两种模式）")
     if mode == "image":
@@ -2216,6 +2380,8 @@ class Handler(SimpleHTTPRequestHandler):
                     f.write(chunk)
                     left -= len(chunk)
             os.replace(tmp, dest)
+            if kind == "pass" and meta.get("role") in MANUAL_PASS_ROLES:
+                _record_manual_pass(os.path.dirname(dest), meta["role"], dest)
         except ValueError as exc:
             return self.send_json({"error": str(exc)}, 400)
         finally:
@@ -2333,10 +2499,9 @@ class Handler(SimpleHTTPRequestHandler):
                             if p.get("group") == "six" and p.get("renderable", True)],
                 })
             if p == "/api/cmf":
-                # CMF 预设库（大纲 P0-4）：部件面板与参数卡的唯一材质来源
+                # 整机、部件与参数卡共用的唯一材质来源
                 try:
-                    with open(os.path.join(CONFIG_DIR, "cmf_presets.json"), "r", encoding="utf-8") as f:
-                        return self.send_json(json.load(f))
+                    return self.send_json(load_cmf_presets())
                 except (OSError, ValueError) as exc:
                     return self.send_json({"presets": [], "error": str(exc)}, 500)
             if p == "/api/assets/file":

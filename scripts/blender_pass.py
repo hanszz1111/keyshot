@@ -114,7 +114,7 @@ def parse_args():
     ap.add_argument("--ortho", action="store_true", help="使用正交相机（工业图更常见）")
     ap.add_argument("--samples", type=int, default=64, help="Cycles 采样数")
     ap.add_argument("--no-gpu", action="store_true", help="强制 CPU 渲染")
-    ap.add_argument("--no-denorm", action="store_true", help="不做归一化，直接输出原始值")
+    ap.add_argument("--no-denorm", action="store_true", help="仅为旧命令兼容；控制图始终规范化，原始米值保留在 depth.exr")
     ap.add_argument("--self-test", action="store_true",
                     help="不导入模型，用内置几何自检整条 pass 链路")
     ap.add_argument("--probe", action="store_true",
@@ -694,6 +694,7 @@ def main():
         log(f"  ✅ {target}  {os.path.getsize(dst):,} B")
 
     # 降级件：depth.png / normal.png
+    depth_stats = None
     d_exr = os.path.join(outdir, "depth.exr")
     if os.path.exists(d_exr):
         try:
@@ -707,18 +708,17 @@ def main():
             if vals:
                 lo, hi = min(vals), max(vals)
                 span = (hi - lo) or 1.0
+                # 黑色背景、物体 0.12..1.0：即使侧视深度跨度很小，轮廓也不会
+                # 像旧版「背景=1、最近表面=1」那样一起融进白色。
                 out = bpy.data.images.new("depth_png", w, h, alpha=False)
                 out.colorspace_settings.name = "Non-Color"
                 buf = [0.0] * (w * h * 4)
                 for i in range(w * h):
                     z = px[i * 4]
                     if z <= 0 or z >= BG_CUT:
-                        v = 1.0        # 背景 → 最远
+                        v = 0.0        # 未命中物体：黑色背景，与最近表面的白色分离
                     else:
-                        v = (z - lo) / span
-                        v = 1.0 - v    # 反转：近处=白，远处=黑（ControlNet 常用约定）
-                    if args.no_denorm:
-                        v = min(z, 1.0)
+                        v = 0.12 + 0.88 * (1.0 - (z - lo) / span)
                     buf[i * 4] = v
                     buf[i * 4 + 1] = v
                     buf[i * 4 + 2] = v
@@ -726,9 +726,15 @@ def main():
                 out.pixels = buf
                 out.file_format = "PNG"
                 out.save_render(os.path.join(outdir, "depth.png"))
+                depth_stats = {"encoding": "near_white_far_dark_bg_black_v2",
+                               "background": 0.0, "foreground_min": 0.12,
+                               "near_m": lo, "far_m": hi,
+                               "foreground_pixels": len(vals), "pixels": w * h}
                 bpy.data.images.remove(img)
                 bpy.data.images.remove(out)
                 log(f"  ✅ depth.png（归一化 {lo:.3f}–{hi:.3f} m）")
+            else:
+                log("  ⚠️ 深度 EXR 没有有效前景像素")
         except Exception as e:
             log(f"  ⚠️ depth.png 生成失败：{e}")
 
@@ -739,6 +745,8 @@ def main():
 
     # 工件清单（本机 pass 级）
     meta = {
+        "pass_format_version": 2,
+        "depth_encoding": depth_stats,
         "sku": args.sku, "view": view,
         "resolution": [args.width, args.height],
         "camera": {"azimuth": args.azimuth, "elevation": args.elevation,

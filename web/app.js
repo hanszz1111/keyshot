@@ -218,6 +218,60 @@ function resize3D(){
   hero3d.camera.updateProjectionMatrix();
 }
 function stop3D(){if(hero3d.raf){cancelAnimationFrame(hero3d.raf);hero3d.raf=0;}}
+/* ---------------- 部件拾取 ----------------
+   用途：在 3D 里点中一个部件，高亮它并读出「名字 / 编号 / 三角面数」。
+   ⚠️ 部件名来自源文件：Rhino 的 .3dm 常全是「物体.001」，STEP 往往带编号。
+   名字不直观是数据本身的问题，所以界面把「高亮 + 编号 + 面数」一起给出，
+   让用户靠高亮认出是哪个部件（后续可给它标别名/指定材质）。 */
+function setPickedPart(mesh){
+  if(hero3d.pickedMesh&&hero3d.pickedMesh!==mesh&&hero3d.matBase){
+    hero3d.pickedMesh.material=hero3d.matBase;      // 还原上一个
+  }
+  hero3d.pickedMesh=mesh||null;
+  if(mesh&&hero3d.matPick)mesh.material=hero3d.matPick;
+  const box=$("partInfo");if(!box)return;
+  if(!mesh){box.hidden=true;return;}
+  box.hidden=false;
+  const g=mesh.geometry;
+  const tris=Math.round((g.index?g.index.count:(g.attributes.position||{count:0}).count)/3);
+  const idx=hero3d.nameToIndex?hero3d.nameToIndex[normPartName(mesh.name)]:null;
+  $("partName").textContent=mesh.name||"(未命名)";
+  $("partMeta").textContent=`部件 #${idx==null?"—":idx} · ${tris.toLocaleString()} 个三角面`+
+    (hero3d.partsTotal?` · 全模型共 ${hero3d.partsTotal} 个`:"")+
+    (idx==null&&hero3d.partsNote?`（${hero3d.partsNote}）`:"");
+}
+function pickAt(clientX,clientY){
+  const canvas=$("heroCanvas");
+  if(!hero3d.raycaster||!hero3d.model||!hero3d.camera||!hero3d.lib)return null;
+  const THREE=hero3d.lib.THREE;
+  const rect=canvas.getBoundingClientRect();
+  if(!rect.width||!rect.height)return null;
+  const ndc=new THREE.Vector2(
+    ((clientX-rect.left)/rect.width)*2-1,
+    -((clientY-rect.top)/rect.height)*2+1);
+  hero3d.raycaster.setFromCamera(ndc,hero3d.camera);
+  const hits=hero3d.raycaster.intersectObject(hero3d.model,true);
+  for(const h of hits){
+    if(h.object&&h.object.isMesh&&h.object.visible)return h.object;
+  }
+  return null;
+}
+/* GLB 导出时 Blender 会把物体名里的 "." 去掉（物体.001 → 物体001），
+   而 pass_manifest 里保留原点号。两边对不上就查不到编号，所以匹配前归一化。 */
+function normPartName(s){return String(s||"").replace(/\./g,"").trim().toLowerCase();}
+async function loadPartsIndex(sku){
+  try{
+    const d=await api(`/api/model/parts?sku=${encodeURIComponent(sku)}`);
+    const rev={};
+    for(const [idx,name] of Object.entries(d.parts||{}))rev[normPartName(name)]=Number(idx);
+    hero3d.nameToIndex=rev;
+    hero3d.partsTotal=d.count||0;
+    hero3d.partsView=d.view||"";
+    hero3d.partsNote=d.note||"";
+  }catch(error){
+    hero3d.nameToIndex=null;hero3d.partsTotal=0;hero3d.partsNote="部件索引读取失败";
+  }
+}
 /* Blender 的 az/el 是 Z-up 约定，glTF/three.js 是 Y-up。
    轴向转换 (x,y,z)_blender → (x,z,-y)_gltf，于是方向向量：
      dir_three = ( sin(az)cos(el), sin(el), cos(az)cos(el) )
@@ -291,6 +345,10 @@ async function showModel3D(sku){
     hero3d.scene.add(new THREE.HemisphereLight(0xffffff,0x9aa7ad,1.5));
     const key=new THREE.DirectionalLight(0xffffff,2.1);key.position.set(3,5,4);hero3d.scene.add(key);
     const fill=new THREE.DirectionalLight(0xffffff,0.85);fill.position.set(-4,-1,-3);hero3d.scene.add(fill);
+    // 共享材质：2530 个部件各 new 一个太浪费；选中高亮时只替换那一个 mesh。
+    hero3d.matBase=new THREE.MeshStandardMaterial({color:0xedeff0,roughness:0.58,metalness:0.03,side:THREE.DoubleSide});
+    hero3d.matPick=new THREE.MeshStandardMaterial({color:0x4b8ef7,roughness:0.42,metalness:0.06,side:THREE.DoubleSide,emissive:0x1d4ed8,emissiveIntensity:0.32});
+    hero3d.raycaster=new THREE.Raycaster();
   }
   if(hero3d.sku!==sku){
     if(hero3d.model){hero3d.scene.remove(hero3d.model);hero3d.model=null;}
@@ -314,15 +372,14 @@ async function showModel3D(sku){
     //   当 position 会把模型整个推出画面（表现为 canvas 一片空白）。
     //   放进 Group 后，root.position 是 Group 的局部坐标，缩放由 Group 统一施加。
     root.position.sub(center);
-    // 统一换成本地白模材质：GLB 不带材质，用 three 默认材质既灰又暗；
+    // 统一换成本地白模材质（共享实例）：GLB 不带材质，用 three 默认材质既灰又暗；
     // 更要紧的是**单面壳体**（STL/STEP 常见）在 FrontSide 下会「透视」成 X 光，
     // 必须 DoubleSide 才能看到完整外形。
     root.traverse(o=>{
-      if(o.isMesh){
-        o.material=new THREE.MeshStandardMaterial({
-          color:0xedeff0, roughness:0.58, metalness:0.03, side:THREE.DoubleSide});
-      }
+      if(o.isMesh)o.material=hero3d.matBase;
     });
+    hero3d.pickedMesh=null;
+    setPickedPart(null);
     const holder=new THREE.Group();
     holder.add(root);
     holder.scale.setScalar(s);
@@ -340,6 +397,7 @@ async function showModel3D(sku){
     const dist=radius/Math.sin(THREE.MathUtils.degToRad(35/2))*1.15;
     hero3d.homeDist=dist;
     setCameraToView("3q4_left");   // 默认与缩略图同角度，观感一致
+    loadPartsIndex(sku);           // 部件索引（点选时用来显示「第几号部件」）
   }
   resize3D();stop3D();tick3D();
   return true;
@@ -844,6 +902,19 @@ for(const b of document.querySelectorAll("[data-cam]")){
     setCameraToView(b.dataset.cam);
   });
 }
+/* 部件拾取：必须区分「拖动旋转」和「点击选择」——
+   按下到抬起位移超过阈值就当成旋转，不做拾取。 */
+let _pickDown=null;
+$("heroCanvas").addEventListener("pointerdown",e=>{_pickDown={x:e.clientX,y:e.clientY};});
+$("heroCanvas").addEventListener("pointerup",e=>{
+  if(!_pickDown)return;
+  const moved=Math.hypot(e.clientX-_pickDown.x,e.clientY-_pickDown.y);
+  _pickDown=null;
+  if(moved>5)return;                       // 拖动过 → 那是旋转
+  if(state.preview!=="model3d")return;
+  setPickedPart(pickAt(e.clientX,e.clientY));   // 点空白处即取消选择
+});
+$("partClear").addEventListener("click",()=>setPickedPart(null));
 window.addEventListener("resize",()=>{if(state.preview==="model3d")resize3D();});
 $("bodyColor").addEventListener("input",event=>{$("bodyColorValue").textContent=event.target.value.toUpperCase();});
 $("refreshButton").addEventListener("click",refreshAll);

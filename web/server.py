@@ -1589,6 +1589,47 @@ def glb_is_fresh(sku, model_path):
         return False
 
 
+def parts_index(sku, view=""):
+    """读某个 SKU 的部件索引（pass_index → 物体名），供 3D 预览里点选部件用。
+
+    来源是结构图产物里的 `pass_manifest.json` —— 那是 Blender 出 pass 时
+    **按物体名排序**生成的（见 blender_pass.py 的 assign_pass_index），
+    索引与 objectid.png 的颜色编号一致，所以点选结果能和掩膜对上。
+
+    ⚠️ 部件名是**源文件里带的**：Rhino 导出的 .3dm 常全是「物体.001」，
+    STEP 往往带编号（如 102990008）。名不直观是数据本身的问题，不是 bug ——
+    所以界面要把「名字 + 编号 + 面数」一起显示，让用户靠高亮认出是哪个部件。
+    """
+    views = []
+    sku_dir = os.path.join(PASSES_DIR, sku) if sku else ""
+    if os.path.isdir(sku_dir):
+        views = sorted(d for d in os.listdir(sku_dir)
+                       if os.path.isdir(os.path.join(sku_dir, d)) and not d.startswith("_"))
+    # 优先用指定机位；否则找**第一个真的有 pass_manifest.json 的机位**。
+    # ★ 不能只看目录是否存在 —— 空目录（例如只出过 thumb、没出 pass）会把结果带偏，
+    #   表现为「明明有结构图却说没有部件索引」。
+    cands = ([view] if view else []) + [v for v in views if v != view]
+    man, use = None, ""
+    for v in cands:
+        p = os.path.join(PASSES_DIR, sku, v, "pass_manifest.json")
+        if os.path.isfile(p):
+            man, use = p, v
+            break
+    if not man:
+        return {"sku": sku, "view": "", "count": 0, "parts": {},
+                "note": "还没有任何机位出过结构图（没有 pass_manifest.json），无法给出部件索引"}
+    try:
+        with open(man, "r", encoding="utf-8", errors="replace") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as exc:
+        return {"sku": sku, "view": use, "count": 0, "parts": {},
+                "note": "读取失败：%s" % exc}
+    parts = data.get("objectid_map") or {}
+    return {"sku": sku, "view": use, "count": len(parts),
+            "resolution": data.get("resolution"),
+            "parts": parts}
+
+
 def thumb_is_fresh(sku, model_path):
     """缩略图存在、非空，且**比模型文件新**，才算可用。
 
@@ -2091,6 +2132,9 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.serve_thumb(q.get("sku", [""])[0])
             if p == "/api/model/glb":
                 return self.serve_glb(q.get("sku", [""])[0])
+            if p == "/api/model/parts":
+                return self.send_json(parts_index(q.get("sku", [""])[0],
+                                                  q.get("view", [""])[0]))
             if p == "/api/health":
                 return self.send_json({"ok": True, "root": ROOT, "db": DB_FILE,
                                        "assets": ASSETS, "models": MODELS_DIR,

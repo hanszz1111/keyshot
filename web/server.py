@@ -2078,6 +2078,8 @@ class Handler(SimpleHTTPRequestHandler):
         （没改照样 304 省流量），只是不允许不询问就直接拿缓存。
         """
         path = self.translate_path(self.path)
+        if os.path.isdir(path):
+            path = os.path.join(path, "index.html")   # 访问 / 时补全，否则 isfile 判否、首页永远没缓存头
         if os.path.isfile(path) and os.path.splitext(path)[1].lower() in self._CACHE_EXTS:
             self._negotiated_cache = True
         return super().send_head()

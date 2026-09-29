@@ -3,7 +3,7 @@
 # 停止由 start_all.ps1 注册的持久化服务（2026-09-27 新增）。
 # 计划任务方式启动的服务不会随窗口关闭而退出，必须显式停止，否则会一直占着 8188 / 8765。
 
-$taskNames = @('AIRender_Web', 'AIRender_ComfyUI')
+$taskNames = @('AIRender_Web', 'AIRender_ComfyUI', 'AIRender_Qwen21')
 $schedulerAvailable = $false
 try {
     Import-Module ScheduledTasks -ErrorAction Stop
@@ -45,7 +45,7 @@ foreach ($name in $taskNames) {
 
 Write-Host ""
 if ($stopped -gt 0) {
-    Write-Host "Stopped $stopped item(s). Ports 8188 / 8765 should be free."
+    Write-Host "Stopped $stopped item(s). Ports 8188 / 8765 / 8190 should be free."
 } else {
     Write-Host "Nothing was running."
 }

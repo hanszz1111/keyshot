@@ -193,7 +193,7 @@
 
 ### 7.4 启用与回退
 
-- **启用**：`render_engines.qwen21_edit_local.enabled`（当前 `true`）+ 双击 `F:\AI-Renderer\experiments\启动Qwen21实验服务.bat` 让 8190 在线。
+- **启用**：`render_engines.qwen21_edit_local.enabled`（当前 `true`）+ 让 8190 在线。**v3.6 起直接双击项目根目录 `一键启动.bat` 即可** —— 它一并起 8190（计划任务 `AIRender_Qwen21`，关窗口不死）；只想起前两个就设 `AI_RENDER_NO_QWEN=1`。机外那份 `启动Qwen21实验服务.bat` 仍可用，但不再需要。
 - **回退**：把 `enabled` 改回 `false` 即可，界面显示「实验引擎当前为关闭状态」，SDXL 链路与全部历史结果不受影响，**不需要改动任何旧任务记录**。
 - **输入**：产品图片，或该机位的白模截图（`passes/<SKU>/<view>/clay.png`）。
 

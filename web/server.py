@@ -1346,7 +1346,11 @@ def renderers_report():
             "note": cfg.get("note") or "",
             "disabled_reason": cfg.get("disabled_reason") or "",
         })
-    return {"default": "sdxl_controlled", "items": items}
+    # 千问已安装时优先呈现；离线时保留稳定模式作为可用入口。
+    preferred = "qwen21_edit_local" if any(
+        e["id"] == "qwen21_edit_local" and e["available"] for e in items
+    ) else "sdxl_controlled"
+    return {"default": preferred, "items": items}
 
 
 # 本机 ComfyUI 必须直连：绕开环境里的 http_proxy，否则请求会被代理绕一圈（甚至 502）
@@ -1513,6 +1517,9 @@ def comfy_upload(rel, host=None):
         sub = res.get("subfolder") or ""
         return (sub + "/" + res["name"]) if sub else res["name"]
     except Exception:
+        # 实验实例使用独立 input 目录，不能把文件悄悄复制进稳定实例的目录。
+        if host != COMFY:
+            raise RuntimeError("千问参考图上传失败；请确认 8190 服务和磁盘空间后重试")
         os.makedirs(COMFY_INPUT_DIR, exist_ok=True)
         shutil.copyfile(src, os.path.join(COMFY_INPUT_DIR, name))
         return name
@@ -1666,6 +1673,41 @@ def qwen_clay_input_issue(tid, rel):
     return _pass_manifest_issue(os.path.join(PASSES_DIR, sku, view))
 
 
+def qwen_series_anchor(task, meta):
+    """同组其他机位只能引用已完成的主视图，不能拿旧批次或别的产品串图。"""
+    series = meta.get("series") or {}
+    sid = str(series.get("id") or "")
+    anchor_view = str(series.get("anchor_view") or "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,80}", sid) or anchor_view not in VIEW_KEYS:
+        raise RuntimeError("多视角关联编号无效，请重新创建任务")
+    if task.get("view") == anchor_view:
+        return None
+    sku, variant = str(task.get("sku") or ""), int(task.get("variant") or 0)
+    with DB_LOCK, db() as con:
+        rows = con.execute(
+            "SELECT id, payload, output FROM tasks WHERE sku=? AND view=? AND variant=? "
+            "AND status='done' ORDER BY id DESC LIMIT 200",
+            (sku, anchor_view, variant),
+        ).fetchall()
+    for row in rows:
+        try:
+            candidate = json.loads(row["payload"] or "{}")
+            cm = candidate.get("_meta") or {}
+            cs = cm.get("series") or {}
+            if (cm.get("engine_id") != "qwen21_edit_local" or cs.get("id") != sid
+                    or cs.get("anchor_view") != anchor_view):
+                continue
+            rel = next((r.strip() for r in (row["output"] or "").split(",")
+                        if r.strip().lower().endswith((".png", ".jpg", ".jpeg", ".webp"))), "")
+            expected = "outputs/%s/%s/" % (safe_file(sku), safe_file(anchor_view))
+            if not rel.startswith(expected) or not _output_path(rel):
+                raise RuntimeError("同组主视图结果已丢失或路径不匹配，请重新生成整组")
+            return {"task_id": row["id"], "output": rel}
+        except (ValueError, TypeError, AttributeError):
+            continue
+    raise RuntimeError("同组主视图尚未完成；请先完成主视图，再继续其他机位")
+
+
 def _submit_qwen(tid, payload, engine_id):
     """实验引擎提交：Qwen-Image-2.1 图片精修（单张）。
 
@@ -1701,6 +1743,9 @@ def _submit_qwen(tid, payload, engine_id):
         raise RuntimeError("正在生成结构图（Blender）。8GB 显存放不下两个 GPU 作业，"
                            "请等结构图跑完再提交实验引擎任务。")
 
+    task = task_by_id(tid)
+    series = meta.get("series") or {}
+    anchor = qwen_series_anchor(task, meta) if series else None
     qcfg = qwen_edit_cfg()
     wf = load_qwen_workflow()
 
@@ -1710,10 +1755,14 @@ def _submit_qwen(tid, payload, engine_id):
         raise RuntimeError("精修分辨率（总像素预算）须在 %d–%d 之间。" % (rmin, rmax))
     if res % 32:
         raise RuntimeError("精修分辨率须为 32 的倍数。")
+    steps = int(payload.get("steps") or qcfg.get("steps", 25))
+    if not 8 <= steps <= 50:
+        raise RuntimeError("千问质量步数须在 8–50 之间")
 
     payload = dict(payload)
     payload["source_img"] = comfy_upload(rel, host)   # 必须传到 8190，不能传到 8188
     payload["resolution"] = res
+    payload["steps"] = steps
     if not payload.get("seed"):
         payload["seed"] = int(qcfg.get("seed_default", 43))
 
@@ -1721,6 +1770,13 @@ def _submit_qwen(tid, payload, engine_id):
     # 键名必须是**扁平点号键** images.image_1；写成嵌套 dict 不报错但会被静默忽略。
     wf["4"]["inputs"]["image"] = payload["source_img"]
     wf["5"]["inputs"]["images.image_1"] = ["4", 0]
+    if anchor:
+        staged, stage_err = stage_base_image(task["sku"], task["view"], anchor["output"])
+        if stage_err:
+            raise RuntimeError("同组主视图无法作为外观参考：%s" % stage_err)
+        wf["9"] = {"class_type": "LoadImage",
+                   "inputs": {"image": comfy_upload(staged, host)}}
+        wf["5"]["inputs"]["images.image_2"] = ["9", 0]
 
     applied, skipped = fill_qwen_workflow(wf, payload, qcfg, cfg)
 
@@ -1738,10 +1794,14 @@ def _submit_qwen(tid, payload, engine_id):
         con.execute("UPDATE tasks SET status='running', prompt_id=?, err=NULL, "
                     "updated_at=CURRENT_TIMESTAMP WHERE id=?", (pid, tid))
         con.commit()
+    if anchor:
+        update_task_run_meta(tid, {"appearance_ref_task": anchor["task_id"],
+                                   "appearance_ref_output": anchor["output"]})
     return {
         "ok": True, "id": tid, "prompt_id": pid,
         "engine_id": engine_id, "mode": "qwen21_edit", "host": host,
-        "resolution": res, "applied": applied, "skipped": skipped,
+        "resolution": res, "steps": steps, "appearance_ref_task": anchor["task_id"] if anchor else None,
+        "applied": applied, "skipped": skipped,
     }
 
 

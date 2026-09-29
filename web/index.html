@@ -130,12 +130,12 @@
           <div id="sizeCustomField" hidden>
             <label for="sizeCustom" class="field-label">自定义尺寸（宽 x 高）</label>
             <input id="sizeCustom" name="sizeCustom" type="text" placeholder="例如 1232x752" autocomplete="off">
-            <p class="field-help" id="sizeHint">宽高建议为 8 的倍数；<b>与结构图同比例</b>才不会把产品拉变形。</p>
           </div>
+          <p class="field-help" id="sizeHint">跟随结构图的实际比例，避免拉伸产品。</p>
           <div class="batch-field" id="batchField">
             <div class="batch-head"><span class="field-label">出图视角（可多选）</span><span class="batch-actions"><button type="button" class="mini-button" id="viewPickPreview">仅预览视角</button><button type="button" class="mini-button" id="viewPickStandard">4 标准</button><button type="button" class="mini-button" id="viewPickCommon">8 常用（含 3/4）</button><button type="button" class="mini-button" id="viewPickAll">全选</button><button type="button" class="mini-button" id="viewPickNone">清空</button><button type="button" class="mini-button" id="passSelectedButton">补齐所选视角结构图</button><button type="button" class="mini-button" id="passSixButton">出六视图结构图</button></span></div>
             <div class="view-checks" id="viewChecks"></div>
-            <p class="field-help" id="batchHint">“8 常用”包含六视图与左右前 3/4。点击生成时，程序会先补齐所选机位缺失或过期的结构图；千问每机位出 1 张，稳定模式按每视角候选数出图。</p>
+            <p class="field-help" id="batchHint">“8 常用”包含六视图与左右前 3/4。两套引擎都按所选张数出图；千问按候选系列先出主视图，其余机位引用同一主视图的外观作为第二参考。缺失结构图会先补齐。</p>
           </div>
           <div id="preflight" class="preflight" role="status" aria-live="polite">正在检查白模、结构图与渲染服务…</div>
           <button type="button" class="primary-button" id="generateButton" disabled>开始生成 4 张</button>

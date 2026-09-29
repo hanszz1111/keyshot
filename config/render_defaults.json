@@ -51,10 +51,10 @@
     "_note": "denoise 下限提到 0.55：低于此值在 8–12 步下不足以改变材质。形状由 Canny ControlNet 守住，故 denoise 可以放到 0.85 而不跑形。"
   },
 
-  "_engines_note": "出图引擎注册表（v3.5）。sdxl_controlled 是现有稳定链路，行为不变；qwen21_edit_local 是机外实验实例（ComfyUI 跑在 8190），默认 enabled:false —— 需要用户先把实验实例启动起来再手动开启。enabled 只是「是否允许选择」，服务端在入队与提交两处都会再校验模型文件/端口/节点，**不可用时报中文原因，绝不静默降级为 SDXL**。",
+  "_engines_note": "出图引擎注册表。Qwen 服务、权重和节点就绪时作为界面默认入口；离线时界面默认稳定 SDXL，但已有千问任务不会静默改用 SDXL。两个实例仍隔离运行。",
   "render_engines": {
     "sdxl_controlled": {
-      "label": "稳定模式 · SDXL / ControlNet",
+      "label": "备选 · SDXL / ControlNet（结构约束）",
       "enabled": true,
       "experimental": false,
       "comfy_host": "http://127.0.0.1:8188",
@@ -63,7 +63,7 @@
       "note": "现有路径完全不变：白模结构约束、图片改图、局部重绘、批量都可用。"
     },
     "qwen21_edit_local": {
-      "label": "实验模式 · Qwen-Image-2.1（图片精修）",
+      "label": "首选 · Qwen-Image-2.1（多视角关联）",
       "enabled": true,
       "experimental": true,
       "comfy_host": "http://127.0.0.1:8190",
@@ -74,9 +74,9 @@
         "vae": "qwen_image_2.1_vae_bf16.safetensors"
       },
       "required_nodes": ["UNETLoader", "CLIPLoader", "VAELoader", "TextEncodeQwenImage21", "KSampler"],
-      "supports": ["image_edit", "multi_view_sequential"],
+      "supports": ["image_edit", "multi_view_sequential", "multi_image_reference", "per_view_candidates", "quality_steps", "resolution_budget"],
       "batch_allowed": true,
-      "disabled_reason": "每机位只做单张图片精修，所选机位顺序执行；纯文字推断新视角、局部掩膜和同机位多候选仍未开放。多机位画质尚待 Windows 实测。",
+      "disabled_reason": "按候选系列顺序执行；局部掩膜、深度 ControlNet 与从单张图片推断真实新机位仍不支持。八面图的材质一致性是辅助约束，仍需 Windows 真实模型逐图验收。",
       "note": "独立实验实例（端口 8190），双击 F:\\AI-Renderer\\experiments\\启动Qwen21实验服务.bat 启动。8GB 实测单张 21.5 s、峰值显存 92%。实验模型权重采用 Qwen Research License（非商用）——个人研究/试用可用，转为收费客户项目或对外服务前须核对许可与 ADR-008。"
     }
   },

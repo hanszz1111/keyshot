@@ -209,23 +209,31 @@ def main():
     st, body = req("GET", "/api/renderers")
     rd = json.loads(body)
     engines = {e["id"]: e for e in rd.get("items", [])}
+    expected_default = "qwen21_edit_local" if engines.get("qwen21_edit_local", {}).get("available") else "sdxl_controlled"
     check("GET /api/renderers 返回引擎注册表",
-          st == 200 and rd.get("default") == "sdxl_controlled" and
+          st == 200 and rd.get("default") == expected_default and
           {"sdxl_controlled", "qwen21_edit_local"} <= set(engines),
           f"引擎 {list(engines)}")
+    _real_ready = S.engine_ready
+    try:
+        S.engine_ready = lambda eid: (True, "", {"host": S.engine_host(eid)})
+        check("千问就绪时成为默认入口", S.renderers_report()["default"] == "qwen21_edit_local")
+    finally:
+        S.engine_ready = _real_ready
     check("稳定模式始终可用且允许批量",
           engines.get("sdxl_controlled", {}).get("available") is True and
           engines["sdxl_controlled"].get("batch_allowed") is True and
           engines["sdxl_controlled"].get("experimental") is False)
     qwen = engines.get("qwen21_edit_local", {})
-    check("实验引擎结构契约（图片精修 / 逐机位顺序执行 / 有原因字段）",
+    check("千问结构契约（多参考 / 多候选 / 质量尺寸可选）",
           qwen.get("experimental") is True and
-          qwen.get("supports") == ["image_edit", "multi_view_sequential"] and
+          {"image_edit", "multi_view_sequential", "multi_image_reference",
+           "per_view_candidates", "quality_steps", "resolution_budget"} <= set(qwen.get("supports") or []) and
           qwen.get("batch_allowed") is True and "reason" in qwen and "note" in qwen and
           bool(qwen.get("disabled_reason")),
           f"available={qwen.get('available')}")
-    check("实验引擎指向独立实例（8190）且带中文标签与说明",
-          qwen.get("host", "").endswith("8190") and qwen.get("label", "").startswith("实验模式") and
+    check("千问指向独立实例（8190）且标记首选",
+          qwen.get("host", "").endswith("8190") and qwen.get("label", "").startswith("首选") and
           len(qwen.get("note", "")) > 20)
 
     # 旧任务没有 engine_id 字段 → 必须按稳定模式处理，不能因新增字段而失效
@@ -263,12 +271,12 @@ def main():
     _qwf2["4"]["inputs"]["image"] = "x.png"
     _qwf2["5"]["inputs"]["images.image_1"] = ["4", 0]
     _qapplied, _qskipped = S.fill_qwen_workflow(
-        _qwf2, {"positive": "p", "negative": "n", "seed": 7, "resolution": 832},
+        _qwf2, {"positive": "p", "negative": "n", "seed": 7, "resolution": 832, "steps": 35},
         S.qwen_edit_cfg(), {})
-    check("Qwen 填充器把载荷写进正确节点（提示词 / 种子 / 分辨率）",
+    check("Qwen 填充器把提示词、种子、尺寸和质量写进正确节点",
           _qwf2["5"]["inputs"]["prompt"] == "p" and _qwf2["6"]["inputs"]["seed"] == 7 and
-          _qwf2["5"]["inputs"]["resolution"] == 832 and
-          {"positive", "seed", "resolution"} <= set(_qapplied))
+          _qwf2["5"]["inputs"]["resolution"] == 832 and _qwf2["6"]["inputs"]["steps"] == 35 and
+          {"positive", "seed", "resolution", "steps"} <= set(_qapplied))
 
     # ★ 2026-09-29 回归钉：实验引擎输入图的**路径口径**。
     #   项目约定 pass 图路径相对 assets/passes，形如 `<SKU>/<机位>/clay.png`，**不带 passes/ 前缀**
@@ -334,13 +342,18 @@ def main():
     check("自动出图前会补齐白模、深度和法线整组",
           '["clay","depth","normal"].every(role=>viewHasPass(item,view,role))' in app_js)
 
-    # 实验引擎必须按**目标机位**取白模截图；多机位逐张出，每机位仍只出单张。
+    # 千问仍须按目标机位取白模；候选系列按主视图先行，再接第二参考。
     # 曾经用「预览机位」取图 → 出现「任务标记 3q4_left、输入图却是 side_left」的张冠李戴。
-    check("实验引擎按目标机位取白模截图、每机位单张",
+    check("千问按目标机位取白模，候选数可选且主视图先行",
           "find(r=>r.view===view)?.files?.clay" in app_js and
-          "experimental?1:" in app_js and
+          'const perView=Number($("countSelect").value)' in app_js and
+          "anchor_view:views.includes(\"front\")?\"front\":views[0]" in app_js and
           "return selectedViews();" in app_js,
-          "按 view 取图 / perView=1 / 可逐机位处理")
+          "按 view 取图 / 候选数可选 / 每组主视图先行")
+    check("千问多机位使用目标白模与主视图双参考",
+          '"images.image_2"] = ["9", 0]' in open(S.__file__, encoding="utf-8").read() and
+          "<image1> is the target camera and geometry" in app_js and
+          "<image2> is the same product" in app_js)
     check("两套引擎共用缺图补齐与八常用视角",
           'const COMMON_VIEWS = [...SIX_VIEWS,"3q4_left","3q4_right"]' in app_js and
           "async function ensureRequiredPasses(" in app_js and
@@ -349,6 +362,76 @@ def main():
           '$("viewPickCommon").addEventListener' in app_js)
     check("千问预检不受稳定引擎离线误阻断",
           'if(!experimental&&!state.comfy.online)' in app_js)
+
+    # 同系列只认同 SKU / 机位 / 候选编号 / series id 的已完成主视图。
+    sid = "series-selftest-123"
+    anchor_rel = f"outputs/{TEST_SKU}/front/qwen_test.png"
+    anchor_id = S.insert_tasks([{
+        "sku": TEST_SKU, "view": "front", "variant": 0,
+        "payload": {"_meta": {"engine_id": "qwen21_edit_local",
+                              "series": {"id": sid, "anchor_view": "front"}}}
+    }])[0]
+    S.update_task(anchor_id, status="done", output=anchor_rel)
+    _real_output_path = S._output_path
+    try:
+        S._output_path = lambda rel: "/synthetic/qwen_test.png" if rel == anchor_rel else None
+        found = S.qwen_series_anchor(
+            {"sku": TEST_SKU, "view": "3q4_left", "variant": 0},
+            {"series": {"id": sid, "anchor_view": "front"}})
+        check("同系列侧面找到正确主视图结果", found["task_id"] == anchor_id and found["output"] == anchor_rel)
+        try:
+            S.qwen_series_anchor({"sku": TEST_SKU, "view": "3q4_right", "variant": 0},
+                                 {"series": {"id": "series-other-123", "anchor_view": "front"}})
+            rejected = False
+        except RuntimeError as exc:
+            rejected = "主视图尚未完成" in str(exc)
+        check("不同系列不能串用旧主视图", rejected)
+    finally:
+        S._output_path = _real_output_path
+        with S.DB_LOCK, S.db() as con:
+            con.execute("DELETE FROM tasks WHERE id=?", (anchor_id,))
+            con.commit()
+
+    # 不调用真实显卡，只拦截 /prompt，检查主视图确实成为第二图像输入。
+    submit_id = S.insert_tasks([{
+        "sku": TEST_SKU, "view": "3q4_left", "variant": 0,
+        "payload": {"_meta": {"engine_id": "qwen21_edit_local"}}
+    }])[0]
+    _saved = {name: getattr(S, name) for name in
+              ("engine_ready", "comfy_upload", "_pass_exists", "qwen_clay_input_issue",
+               "qwen_series_anchor", "stage_base_image", "http_json")}
+    captured = {}
+    try:
+        S.engine_ready = lambda eid: (True, "", {"host": "http://127.0.0.1:8190"})
+        S.comfy_upload = lambda rel, host=None: "uploaded_" + os.path.basename(rel)
+        S._pass_exists = lambda rel: True
+        S.qwen_clay_input_issue = lambda tid, rel: ""
+        S.qwen_series_anchor = lambda task, meta: {"task_id": 77, "output": anchor_rel}
+        S.stage_base_image = lambda sku, view, rel: ("_view_ref/qwen_anchor.png", None)
+        def fake_http(url, data=None, timeout=None):
+            captured["workflow"] = data["prompt"]
+            return {"prompt_id": "selftest-qwen"}
+        S.http_json = fake_http
+        result = S._submit_qwen(submit_id, {
+            "positive": "<image1> geometry; <image2> CMF", "negative": "",
+            "source_img": "%s/3q4_left/clay.png" % TEST_SKU,
+            "resolution": 896, "steps": 35,
+            "_meta": {"mode": "image", "engine_id": "qwen21_edit_local",
+                      "series": {"id": sid, "anchor_view": "front"}}
+        }, "qwen21_edit_local")
+        wf = captured["workflow"]
+        check("千问第二参考图真正接入工作流且质量尺寸生效",
+              result.get("appearance_ref_task") == 77 and
+              wf["5"]["inputs"].get("images.image_2") == ["9", 0] and
+              wf["9"]["class_type"] == "LoadImage" and
+              wf["6"]["inputs"]["steps"] == 35 and
+              wf["5"]["inputs"]["resolution"] == 896)
+    finally:
+        for name, value in _saved.items():
+            setattr(S, name, value)
+        with S.DB_LOCK, S.db() as con:
+            con.execute("DELETE FROM tasks WHERE id=?", (submit_id,))
+            con.commit()
 
     st, body = req("GET", f"/api/card?sku={TEST_SKU}")
     check("GET /api/card 单张读取", st == 200 and json.loads(body)["asset"]["sku"] == TEST_SKU)

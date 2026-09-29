@@ -261,21 +261,40 @@ function stop3D(){if(hero3d.raf){cancelAnimationFrame(hero3d.raf);hero3d.raf=0;}
    ⚠️ 部件名来自源文件：Rhino 的 .3dm 常全是「物体.001」，STEP 往往带编号。
    名字不直观是数据本身的问题，所以界面把「高亮 + 编号 + 面数」一起给出，
    让用户靠高亮认出是哪个部件（后续可给它标别名/指定材质）。 */
+function partCmfOf(mesh){
+  const idx=mesh&&hero3d.nameToIndex?hero3d.nameToIndex[normPartName(mesh.name)]:null;
+  if(idx==null)return null;
+  return (partCmfTable[selectedView()]||{})[String(idx)]||null;
+}
 function setPickedPart(mesh){
   if(hero3d.pickedMesh&&hero3d.pickedMesh!==mesh&&hero3d.matBase){
     hero3d.pickedMesh.material=hero3d.matBase;      // 还原上一个
   }
   hero3d.pickedMesh=mesh||null;
-  if(mesh&&hero3d.matPick)mesh.material=hero3d.matPick;
+  if(mesh){
+    // 大纲 §3 P1：已保存过 CMF 的部件直接显示该材质的近似效果；
+    // 没有分配时退回原来的高亮材质（高亮与近似预览不叠加）
+    const saved=partCmfOf(mesh);
+    if(saved&&saved.cmf&&cmfPresets.some(p=>p.id===saved.cmf)){
+      const sel=$("partCmfSelect");
+      if(sel)sel.value=saved.cmf;
+      applyPartCmfPreview();
+    }else if(hero3d.matPick){
+      mesh.material=hero3d.matPick;
+    }
+  }
   const box=$("partInfo");if(!box)return;
   if(!mesh){box.hidden=true;return;}
   box.hidden=false;
   const g=mesh.geometry;
   const tris=Math.round((g.index?g.index.count:(g.attributes.position||{count:0}).count)/3);
   const idx=hero3d.nameToIndex?hero3d.nameToIndex[normPartName(mesh.name)]:null;
+  const saved2=partCmfOf(mesh);
+  const cmfName=saved2&&saved2.cmf?(cmfPresets.find(p=>p.id===saved2.cmf)||{}).name:"";
   $("partName").textContent=mesh.name||"(未命名)";
   $("partMeta").textContent=`部件 #${idx==null?"—":idx} · ${tris.toLocaleString()} 个三角面`+
     (hero3d.partsTotal?` · 全模型共 ${hero3d.partsTotal} 个`:"")+
+    (cmfName?` · 已存材质：${cmfName}`:"")+
     (idx==null&&hero3d.partsNote?`（${hero3d.partsNote}）`:"");
 }
 function pickAt(clientX,clientY){
@@ -313,9 +332,83 @@ async function loadPartsIndex(sku, view){
     hero3d.nameToIndex=null;hero3d.partsTotal=0;hero3d.partsNote="部件索引读取失败";
   }
 }
-/* ---------------- 按部位局部重绘（大纲 P0-3 + P0-4）----------------
-   点选部件 → 选 CMF 预设 → 服务端按同机位 objectid 生成掩膜 →
-   以该机位白模为底图走 inpaint（depth/normal 继续锁形）→ 只重绘掩膜区。 */
+/* ---------------- 大纲 §3 P1：按部件 CMF 持久化 + 三维近似预览 ----------------
+   分配按 (SKU, 机位, 部件号) 存进**参数卡**，切机位不串位、重开卡片能回读。
+   三维预览只改**选中网格**的材质副本 —— GLB 里多个部件常共用同一个 material
+   实例，直接改颜色会把整机一起染色，所以必须先 clone。 */
+let partCmfTable={};
+async function loadPartCmf(sku, view){
+  try{
+    const d=await api(`/api/partcmf?sku=${encodeURIComponent(sku||"")}&view=${encodeURIComponent(view||"")}`);
+    partCmfTable=d.table||{};
+    return d.items||{};
+  }catch(error){partCmfTable={};return {};}
+}
+async function savePartCmf(sku, view, partId, cmfId, color){
+  try{
+    const d=await post("/api/partcmf",{sku,view,part:partId,cmf:cmfId||"",color:color||""});
+    partCmfTable=d.table||{};
+    return true;
+  }catch(error){announce("部件材质保存失败："+errorMessage(error));return false;}
+}
+function applyPartCmfPreview(){
+  const mesh=hero3d.pickedMesh;if(!mesh)return;
+  const preset=cmfPresets.find(p=>p.id===$("partCmfSelect").value);
+  if(!preset||!mesh.material)return;
+  if(!mesh.userData)mesh.userData={};
+  if(!mesh.userData.cmfOrig)mesh.userData.cmfOrig=mesh.material;
+  if(!mesh.userData.cmfClone)mesh.userData.cmfClone=mesh.material.clone();
+  const m=mesh.userData.cmfClone;
+  try{
+    if(m.color)m.color.set(preset.color||"#888888");
+    if("metalness"in m)m.metalness=Number(preset.metalness??0);
+    if("roughness"in m)m.roughness=Number(preset.roughness??0.6);
+    m.needsUpdate=true;
+  }catch(error){/* 近似预览失败不影响出图 */}
+  mesh.material=m;
+}
+function restorePartCmfPreview(mesh){
+  const target=mesh||hero3d.pickedMesh;
+  if(target&&target.userData&&target.userData.cmfOrig)target.material=target.userData.cmfOrig;
+}
+/* ---------------- 大纲 §2 P1：候选底图版本链 ----------------
+   局部编辑优先在「已完成的候选图」上继续做，而不是每次都从白模起；
+   改坏了可以退回更早的一张 —— 这就是版本链的用处。
+   白模当底图只算实验模式（未选区域仍是白模，不等于整机换材），界面上如实标注。 */
+let partBases=[];
+async function loadPartBases(sku, view){
+  const sel=$("partBaseSelect"),help=$("partBaseHelp");
+  if(!sel)return;
+  const keep=sel.value;
+  try{
+    const d=await api(`/api/candidates?sku=${encodeURIComponent(sku||"")}&view=${encodeURIComponent(view||"")}`);
+    partBases=d.items||[];
+  }catch(error){partBases=[];}
+  clear(sel);
+  const clay=`${sku}/${view}/clay.png`;
+  sel.append(new Option("白模（实验模式：未选区域仍是白模）",clay));
+  for(const it of partBases){
+    const sz=it.size?`${it.size[0]}×${it.size[1]}`:"尺寸未知";
+    sel.append(new Option(`成图 ${it.mtime} · ${sz} · ${it.name}`,it.rel));
+  }
+  // 默认优先用最新成图；没有成图才退回白模（大纲要求「优先已完成候选图」）
+  const prefer=partBases.some(b=>b.rel===keep)?keep:(partBases.length?partBases[0].rel:clay);
+  sel.value=prefer;
+  if(help){
+    help.textContent=partBases.length
+      ?`该机位有 ${partBases.length} 张成图可作底图（按时间倒序，最新的在最前）；选白模则未选区域仍是白模。`
+      :"该机位还没有成图，只能先用白模作底图（实验模式：未选区域仍是白模）。";
+  }
+}
+function selectedPartBase(){
+  const sel=$("partBaseSelect");
+  const v=(sel&&sel.value)||"";
+  const kind=partBases.some(b=>b.rel===v)?"candidate":"clay";
+  return {rel:v,kind};
+}
+/* ---------------- 按部位局部重绘（大纲 P0-3 + P0-4 + P1-1）----------------
+   点选部件 → 选 CMF 预设 → 选底图（成图版本链 / 白模）→ 服务端按同机位 objectid
+   生成掩膜 → 裁到 ROI 走 inpaint（depth/normal 继续锁形）→ 贴回并做确定性合成。 */
 let cmfPresets=[];
 async function loadCmfPresets(){
   const d=await api("/api/cmf");
@@ -377,10 +470,13 @@ function updateBodyCmfInfo(){
 function pickedPartState(){
   const mesh=hero3d.pickedMesh;
   if(!mesh||state.preview!=="model3d"||!state.sku)return null;
+  // 大纲 §2 P1：底图取自「候选底图版本链」下拉，而不是写死白模
+  const base=selectedPartBase();
   return {sku:state.sku,view:selectedView(),
           partId:hero3d.nameToIndex?hero3d.nameToIndex[normPartName(mesh.name)]:null,
           partName:mesh.name,
-          baseImageId:`${state.sku}/${selectedView()}/clay.png`};
+          baseImageId:base.rel||`${state.sku}/${selectedView()}/clay.png`,
+          baseKind:base.kind};
 }
 async function makePartRender(){
   const ps=pickedPartState();
@@ -408,6 +504,9 @@ async function makePartRender(){
       depth_w:0.8,normal_w:0.5,base_img:ps.baseImageId,mask_img:mask.rel,
       _meta:{sku:ps.sku,view:ps.view,variant:0,mode:"controlled",ui_version:"2.0",
              part:{id:ps.partId,name:ps.partName,cmf:preset.id},
+             // 大纲 §2 P1：如实记录底图来源（成图版本链 / 白模实验模式），
+             // 后端据此决定是否要把候选图复制进工作区再上传
+             base_source:{kind:ps.baseKind,rel:ps.baseImageId},
              part_mask:mask.rel,base_image_id:ps.baseImageId}};
     const inserted=await post("/api/tasks",{tasks:[{sku:ps.sku,view:ps.view,variant:0,
       positive,negative:NEGATIVE,payload}]});
@@ -463,7 +562,7 @@ function setCameraToView(key){
     renderPassReadiness();renderPreflight();renderResults();
   }
   // 切了机位就重载该机位的部件索引（不同机位可见部件不同，大纲 3.1）
-  if(state.preview==="model3d"&&state.sku)loadPartsIndex(state.sku,camKey);
+  if(state.preview==="model3d"&&state.sku){loadPartsIndex(state.sku,camKey);loadPartBases(state.sku,camKey);loadPartCmf(state.sku,camKey);}
 }
 function toggleSpin(){
   if(!hero3d.controls)return;
@@ -559,6 +658,8 @@ async function showModel3D(sku){
     hero3d.homeDist=dist;
     setCameraToView(VIEW_ANGLES_3D[selectedView()]?selectedView():"3q4_left");
     loadPartsIndex(sku, selectedView());   // 部件索引绑定当前机位（大纲 3.1）
+    loadPartBases(sku, selectedView());    // 候选底图版本链（大纲 §2 P1）
+    loadPartCmf(sku, selectedView());      // 按部件 CMF 分配（大纲 §3 P1）
   }
   resize3D();stop3D();tick3D();
   return true;
@@ -1052,7 +1153,10 @@ async function executeTask(task){
     await pause(3000);
     let result;
     try{result=await api(`/api/comfy/poll?id=${task.id}`);}catch(error){announce(`任务 #${task.id} 暂时无法查询：${errorMessage(error)}`);continue;}
-    if(result.state==="done"){await refreshTasks();state.selectedTask=task.id;setPreview("result");return;}
+    if(result.state==="done"){await refreshTasks();state.selectedTask=task.id;setPreview("result");
+      // 刚出的图自动进入候选底图链（大纲 §2 P1：接受的结果可作为下一次底图）
+      loadPartBases(task.sku,task.view).catch(()=>{});
+      return;}
     if(result.state==="error"){
       await post("/api/task/status",{id:task.id,status:"failed",err:result.error||"生成失败"}).catch(()=>{});
       await refreshTasks();throw new Error(`候选 ${task.variant+1}：${result.error||"生成失败"}`);
@@ -1290,6 +1394,24 @@ $("heroCanvas").addEventListener("pointerup",e=>{
 $("partClear").addEventListener("click",()=>setPickedPart(null));
 window.addEventListener("resize",()=>{if(state.preview==="model3d")resize3D();});
 $("designSelect").addEventListener("change",()=>{renderDesignInfo();renderPreflight();});
+$("partCmfSelect").addEventListener("change",async()=>{
+  // 大纲 §3 P1：选材质即保存分配（按 SKU + 机位 + 部件号），并做三维近似预览。
+  // 保存放这里而不是「生成局部候选」时，是为了让分配成为**可复用的方案**，
+  // 而不是绑死在一次任务上。
+  const ps=pickedPartState();
+  const preset=cmfPresets.find(p=>p.id===$("partCmfSelect").value);
+  applyPartCmfPreview();
+  if(!ps||ps.partId==null||!preset)return;
+  if(preset.ai_editable===false){
+    announce(`「${preset.name}」按 ADR-002 不允许 AI 生成（透明/镜面件走真渲染），本地分配未保存。`);
+    return;
+  }
+  const ok=await savePartCmf(ps.sku,ps.view,ps.partId,preset.id,preset.color||"");
+  if(ok){
+    announce(`部件「${ps.partName}」的材质已记为「${preset.name}」（按机位保存，参数卡可回读）。`);
+    setPickedPart(hero3d.pickedMesh);   // 刷新面板上的「已存材质」
+  }
+});
 $("materialSelect").addEventListener("change",()=>{
   const preset=selectedCmf();if(!preset)return;
   $("bodyColor").value=preset.color;

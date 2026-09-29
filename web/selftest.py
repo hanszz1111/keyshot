@@ -11,6 +11,7 @@
 
 import json
 import os
+import shutil
 import sqlite3
 import sys
 import tempfile
@@ -133,6 +134,47 @@ def main():
         with open(manifest, "w", encoding="utf-8") as f:
             json.dump(sample, f)
         check("自动重生成后旧手工记录失效", "无有效结构" in S._pass_manifest_issue(tmp))
+
+    # ---- 大纲 §2 P1：候选底图版本链（v3.10）----
+    _cands = S.list_candidates("AI渲染1", "front")
+    check("list_candidates 能列出该机位的成图（版本链数据源）",
+          isinstance(_cands, list) and
+          all(c.get("rel", "").startswith("outputs/") and c.get("name") for c in _cands),
+          "front 机位 %d 张" % len(_cands))
+    check("候选列表不含 *_raw.png（那是 AI 原样对照件，不作底图候选）",
+          all(not c["name"].endswith("_raw.png") for c in _cands))
+    check("候选列表按时间倒序（最新的可作默认底图）",
+          all(_cands[i]["ts"] >= _cands[i + 1]["ts"] for i in range(len(_cands) - 1)))
+    check("不存在的 SKU / 机位返回空列表而不是抛异常",
+          S.list_candidates("no_such_sku_xyz", "front") == [] and S.list_candidates("", "") == [])
+    _staged, _serr = S.stage_base_image(TEST_SKU, "front", "AI渲染1/front/clay.png")
+    check("stage_base_image 把底图复制进部件工作区（供 comfy_upload 使用）",
+          bool(_staged) and _staged.startswith("_部件/") and S._asset_path(_staged),
+          _staged or (_serr or ""))
+    _bad, _berr = S.stage_base_image(TEST_SKU, "front", "outputs/no/such/file.png")
+    check("stage_base_image 对不存在的底图报中文错误而不是静默继续",
+          _bad is None and "找不到" in (_berr or ""), _berr or "")
+
+    # ---- 大纲 §3 P1：按部件 CMF 持久化（v3.10）----
+    check("初始状态：该 SKU 还没有部件 CMF 分配", S.load_part_cmf(TEST_SKU) == {})
+    _t1 = S.save_part_cmf(TEST_SKU, "front", 1234, "plastic_fine_matte", "#343b42")
+    check("save_part_cmf 写入后按机位归档（含颜色覆盖）",
+          (_t1.get("front") or {}).get("1234", {}).get("cmf") == "plastic_fine_matte" and
+          (S.load_part_cmf(TEST_SKU).get("front") or {}).get("1234", {}).get("color") == "#343b42")
+    S.save_part_cmf(TEST_SKU, "side", 1234, "plastic_fine_matte")
+    _t2 = S.load_part_cmf(TEST_SKU)
+    check("同一部件号在不同机位各存一份（切机位不串位 —— 大纲 GATE）",
+          (_t2.get("front") or {}).get("1234", {}).get("color") == "#343b42" and
+          "color" not in ((_t2.get("side") or {}).get("1234") or {}))
+    S.save_part_cmf(TEST_SKU, "front", 1234, "")
+    check("cmf 传空 = 删除该条分配（恢复默认）",
+          "1234" not in (S.load_part_cmf(TEST_SKU).get("front") or {}))
+    _raised = False
+    try:
+        S.save_part_cmf("", "front", 1, "x")
+    except ValueError:
+        _raised = True
+    check("缺 sku / view / partId 时报错，而不是写坏参数卡", _raised)
 
     # ---- 大纲 §4：设计语言 / 布光预设（v3.8）----
     st, body = req("GET", "/api/designs")
@@ -367,10 +409,11 @@ def _count_selftest_tasks():
 
 
 def _cleanup_selftest():
-    """删除本次自检写入的 _selftest 任务与参数卡。
+    """删除本次自检写入的 _selftest 任务、参数卡与部件工作区。
 
     设计为幂等且不抛异常：即使自检中途失败也要执行，
-    避免残留的 4 条测试任务让下一次运行断言失败（造成“越跑越坏”的假故障）。
+    避免残留的测试数据让下一次运行断言失败（造成“越跑越坏”的假故障）。
+    v3.10 起还要清 assets/_部件/_selftest —— 候选底图测试会往那里复制底图。
     """
     try:
         con = sqlite3.connect(S.DB_FILE)
@@ -387,6 +430,12 @@ def _cleanup_selftest():
             os.remove(p)
     except Exception as e:
         print(f"  [警告] 清理自检参数卡失败：{e}")
+    try:
+        part_ws = os.path.join(S.ASSETS, "_部件", TEST_SKU)
+        if os.path.isdir(part_ws):
+            shutil.rmtree(part_ws, ignore_errors=True)
+    except Exception as e:
+        print(f"  [警告] 清理自检部件工作区失败：{e}")
 
 
 def run():

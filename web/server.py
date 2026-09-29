@@ -178,6 +178,79 @@ def save_card(card):
     return sku
 
 
+def load_part_cmf(sku):
+    """读某 SKU 的「按部件 CMF 分配」（大纲 §3 P1）。
+
+    存在**参数卡文件**里（`web/data/cards/<sku>.json` 的 `partCmf` 键），
+    这样「保存参数卡 → 重新载入」之后部件分配跟着回来，满足大纲 GATE
+    「卡片保存再打开后 ID 与覆盖项不变」。
+    结构：`{机位: {部件号: {cmf: 预设id, color: 可选覆盖}}}`
+    —— 按机位分开存，是为了 GATE 的另一条「切换机位后部件分配不串位」。
+    """
+    if not sku:
+        return {}
+    p = card_path(sku)
+    if not os.path.isfile(p):
+        return {}
+    try:
+        with open(p, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    table = data.get("partCmf")
+    return table if isinstance(table, dict) else {}
+
+
+def save_part_cmf(sku, view, part_id, cmf_id, color=""):
+    """写入一条部件 CMF 分配，返回该 SKU 的完整分配表。
+
+    只动 `partCmf` 这一个键，参数卡里的其他字段原样保留；
+    `cmf_id` 传空 → **删除**该部件的分配（等于恢复默认）。
+    """
+    sku = str(sku or "").strip()
+    view = str(view or "").strip()
+    if not sku or not view or part_id in (None, ""):
+        raise ValueError("缺少 sku / view / partId")
+    p = card_path(sku)
+    data = {}
+    if os.path.isfile(p):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = {}
+    asset = data.get("asset")
+    if not isinstance(asset, dict):
+        asset = {}
+    asset["sku"] = sku
+    data["asset"] = asset
+
+    table = data.get("partCmf")
+    if not isinstance(table, dict):
+        table = {}
+    per_view = table.get(view)
+    if not isinstance(per_view, dict):
+        per_view = {}
+    key = str(part_id)
+    if cmf_id:
+        item = {"cmf": str(cmf_id)}
+        if color:
+            item["color"] = str(color)
+        per_view[key] = item
+    else:
+        per_view.pop(key, None)
+    if per_view:
+        table[view] = per_view
+    else:
+        table.pop(view, None)
+    if table:
+        data["partCmf"] = table
+    else:
+        data.pop("partCmf", None)
+    save_card(data)
+    return table
+
+
 def delete_card(sku):
     p = card_path(sku)
     if os.path.isfile(p):
@@ -1687,14 +1760,19 @@ def comfy_submit(tid):
     with_normal = use_cn and _pass_exists(n_rel)
 
     # ---- 局部重绘（inpaint）----
-    # payload 带 mask_img（掩膜）且底图可用时，改走 inpaint 工作流：
-    # 以该机位的白模渲染图为底，只把掩膜区域送去重绘，depth/normal 继续锁形。
+    # payload 带 mask_img（掩膜）且底图可用时，改走 inpaint 工作流。
+    # 底图有两种来源（大纲 §2 P1）：该机位白模（实验模式），或**已完成的候选图**
+    # （版本链，优先）。候选图在 outputs/ 下、_asset_path() 解析不了，
+    # 所以这里不能只判 base_img —— 否则「用成图当底图」的任务根本进不了 inpaint 分支。
     mask_rel = payload.get("mask_img") or ""
+    _bsrc_pre = ((payload.get("_meta") or {}).get("base_source") or {})
+    _base_is_candidate = bool(_bsrc_pre.get("kind") == "candidate" and _bsrc_pre.get("rel"))
     inpaint_mode = (not image_mode and bool(mask_rel) and _pass_exists(mask_rel)
-                    and _pass_exists(payload.get("base_img") or ""))
+                    and (_base_is_candidate or _pass_exists(payload.get("base_img") or "")))
     if mask_rel and not inpaint_mode and not image_mode:
         raise RuntimeError(
-            "带 mask_img 但底图（base_img）不可用或掩膜文件缺失，已停止局部重绘任务。")
+            "带 mask_img 但底图不可用（既没有可用的 base_img，也没有选中的候选底图），"
+            "或掩膜文件缺失，已停止局部重绘任务。")
 
     wf = load_workflow(use_cn, image_mode, inpaint_mode)
     if image_mode:
@@ -1739,6 +1817,24 @@ def comfy_submit(tid):
     roi_info = None
     base_for_upload = payload.get("base_img") or ""
     mask_for_upload = mask_rel
+
+    # ---- 大纲 §2 P1：候选底图版本链 --------------------------------------------
+    # 局部编辑应在「已完成的候选图」上继续做，而不是每次都从白模起 ——
+    # 白模当底图只算实验模式（未选区域仍是白模，不等于整机换材）。
+    # 候选图在 outputs/ 下，comfy_upload() 认不了，先复制进部件工作区再上传；
+    # 复制而非原地改写，是「可回退」的前提。
+    base_src = meta_now.get("base_source") or {}
+    base_source_kind = "clay"
+    if inpaint_mode and base_src.get("kind") == "candidate" and base_src.get("rel"):
+        staged, stage_err = stage_base_image(t.get("sku") or "", t.get("view") or "",
+                                             base_src.get("rel"))
+        if stage_err:
+            raise RuntimeError("候选底图准备失败：%s" % stage_err)
+        base_for_upload = staged
+        base_source_kind = "candidate"
+    elif inpaint_mode:
+        base_source_kind = "clay"
+
     if inpaint_mode and meta_now.get("roi_auto", True):
         roi_info, roi_err = prepare_roi(
             t.get("sku") or "", t.get("view") or "",
@@ -1817,7 +1913,12 @@ def comfy_submit(tid):
         con.commit()
     # ROI 信息要落库：轮询阶段（另一个请求）要用它把产物贴回原位并合成
     if roi_info:
+        roi_info["base_source_kind"] = base_source_kind
+        if base_source_kind == "candidate":
+            roi_info["base_source_rel"] = (meta_now.get("base_source") or {}).get("rel")
         update_task_run_meta(tid, {"roi": roi_info, "roi_enabled": True})
+    elif inpaint_mode:
+        update_task_run_meta(tid, {"base_source_kind": base_source_kind})
     # v2.2 修正：此前图片任务被一并标成 txt2img，与真实链路
     # （LoadImage → ImageScale → VAEEncode → KSampler）不符，见验收文档 §6.2。
     if image_mode:
@@ -2409,6 +2510,69 @@ def _output_path(rel):
     if (p == root or p.startswith(root + os.sep)) and os.path.isfile(p):
         return p
     return None
+
+
+def list_candidates(sku, view):
+    """列出某机位已有的候选图，供局部编辑选底图（大纲 §2 P1「候选底图版本链」）。
+
+    大纲要求在已有产品图的基础上做局部编辑，而不是每次都从白模起 ——
+    白模当底图只算实验模式（未选区域仍是白模，不等于整机换材）。
+    这里按时间倒序列出全部候选，用户可任选一张作为下一次的底图，
+    改坏了就退回更早的一张，这就是链路的价值。
+    `*_raw.png`（ROI 合成前的 AI 原样留档）不列为候选底图。
+    """
+    if not sku or not view:
+        return []
+    ddir = os.path.join(OUTPUTS_DIR, safe_file(sku), safe_file(view))
+    if not os.path.isdir(ddir):
+        return []
+    out = []
+    for name in sorted(os.listdir(ddir)):
+        if not name.lower().endswith(".png") or name.lower().endswith("_raw.png"):
+            continue
+        p = os.path.join(ddir, name)
+        if not os.path.isfile(p):
+            continue
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        out.append({
+            "rel": "outputs/%s/%s/%s" % (safe_file(sku), safe_file(view), name),
+            "name": name,
+            "bytes": st.st_size,
+            "ts": st.st_mtime,
+            "mtime": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime)),
+            # 尺寸要给前端看：候选图尺寸常与结构图不同（实测 1536×1024 / 992×608 vs
+            # 结构图 1232×752），选底图时用户需要知道这件事
+            "size": _png_size(p),
+        })
+    out.sort(key=lambda r: -r["ts"])
+    return out
+
+
+def stage_base_image(sku, view, rel):
+    """把选定的底图复制进部件工作区，返回可被 _asset_path() 解析的相对路径。
+
+    为什么要复制：comfy_upload() 走 _asset_path()，只认 assets/ 下的素材，
+    而候选图在 outputs/ 下。复制到隔离工作区既让上传能工作，
+    也保证 outputs 里的原始产物不被改写（可回退的前提）。
+    """
+    rel = str(rel or "").replace("\\", "/")
+    src = _output_path(rel) if rel.startswith("outputs/") else _asset_path(rel)
+    if not src:
+        return None, "找不到底图：%s" % rel
+    dest_dir = os.path.join(PART_MASK_DIR, safe_file(sku), safe_file(view), "base")
+    os.makedirs(dest_dir, exist_ok=True)
+    name = "base_%s_%s" % (time.strftime("%Y%m%d_%H%M%S"), safe_file(os.path.basename(src)))
+    dest = os.path.join(dest_dir, name)
+    try:
+        shutil.copyfile(src, dest)
+    except OSError as exc:
+        return None, "底图复制失败：%s" % exc
+    if not os.path.isfile(dest) or os.path.getsize(dest) == 0:
+        return None, "底图复制后为空"
+    return os.path.relpath(dest, ASSETS).replace("\\", "/"), None
 
 
 def composite_roi_output(gen_rel, roi_info):
@@ -3127,6 +3291,20 @@ class Handler(SimpleHTTPRequestHandler):
                 # 大纲 §4：设计语言 / 布光预设（只读）。文件坏了返回空表而不是 500 ——
                 # 没有设计预设时出图照常，不应因此挡住主流程。
                 return self.send_json(load_design_presets())
+            if p == "/api/candidates":
+                # 大纲 §2 P1：候选底图版本链。局部编辑从这里挑一张已有成图当底图。
+                sku_ = q.get("sku", [""])[0]
+                view_ = q.get("view", [""])[0]
+                return self.send_json({"sku": sku_, "view": view_,
+                                       "items": list_candidates(sku_, view_)})
+            if p == "/api/partcmf":
+                # 大纲 §3 P1：按部件 CMF 分配。按机位分开存 —— 切机位不串位。
+                sku_ = q.get("sku", [""])[0]
+                view_ = q.get("view", [""])[0]
+                table = load_part_cmf(sku_)
+                return self.send_json({"sku": sku_, "view": view_,
+                                       "items": (table.get(view_) or {}) if view_ else {},
+                                       "table": table})
             if p == "/api/renderers":
                 # 出图引擎注册表（v3.5，只读）：前端下拉、状态文字与禁用规则都读这里。
                 # available/reason 由**服务端**探测得出，不依赖浏览器本地状态。
@@ -3209,6 +3387,15 @@ class Handler(SimpleHTTPRequestHandler):
             body = self.read_json()
             if p == "/api/card":
                 return self.send_json({"ok": True, "sku": save_card(body)})
+            if p == "/api/partcmf":
+                # 大纲 §3 P1：保存一条「按部件 CMF」分配（cmf 传空 = 删除该条）
+                try:
+                    b = body or {}
+                    table = save_part_cmf(b.get("sku"), b.get("view"), b.get("part"),
+                                          b.get("cmf"), b.get("color") or "")
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+                return self.send_json({"ok": True, "table": table})
             if p == "/api/board":
                 save_board(body)
                 return self.send_json({"ok": True})

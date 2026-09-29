@@ -162,6 +162,9 @@
             <div class="part-cmf" id="partCmf">
               <label class="field-label" for="partCmfSelect">该部件材质（CMF）</label>
               <select id="partCmfSelect"></select>
+              <label class="field-label" for="partBaseSelect" style="margin-top:10px">局部编辑底图</label>
+              <select id="partBaseSelect"><option value="">正在读取候选图…</option></select>
+              <p class="part-cmf-help" id="partBaseHelp">优先在已有成图上继续改；选「白模」属于实验模式，未选区域仍是白模，不等于整机换材。</p>
               <button type="button" class="mini-button part-render" id="partRenderButton">生成局部候选</button>
               <p class="part-cmf-help">只重绘该部件所在区域，其余保持底图原样；出图前会先按当前机位生成部件掩膜。</p>
             </div>

@@ -66,6 +66,19 @@ def main(argv=None):
         src[role] = Image.open(path)
 
     W, H = src["base"].size
+    # ★ 尺寸适配（2026-09-29）：底图可能是**已完成的候选图**，它的尺寸不一定等于结构图
+    #   —— 实测结构图 1232×752，而 SDXL 产物 1536×1024、Qwen 产物 992×608，全都不一样。
+    #   这里**以底图为基准**把掩膜/深度/法线缩放过去：底图是最终画面，要保住它的原始像素；
+    #   掩膜是二值图（用 NEAREST，形状不会被糊掉），深度/法线是约束图，缩放可以接受。
+    rescaled = []
+    for role in ("mask", "depth", "normal"):
+        img = src.get(role)
+        if img is None or img.size == (W, H):
+            continue
+        src[role] = img.resize((W, H), Image.NEAREST if role == "mask" else Image.LANCZOS)
+        rescaled.append("%s %dx%d→%dx%d" % (role, img.size[0], img.size[1], W, H))
+    if rescaled:
+        print("尺寸适配（以底图 %dx%d 为基准）：%s" % (W, H, "、".join(rescaled)))
     if args.bbox:
         x0, x1, y0, y1 = args.bbox
     elif args.auto_bbox:
@@ -110,6 +123,7 @@ def main(argv=None):
     info = {
         "ok": True,
         "source_size": [W, H],
+        "rescaled": rescaled,
         "bbox": [x0, x1, y0, y1],
         "part_size": [bw, bh],
         "pad": pad,

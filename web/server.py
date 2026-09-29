@@ -1678,6 +1678,34 @@ def comfy_submit(tid):
         payload.setdefault("canny_low", float(i2i.get("canny_low", 0.06)))
         payload.setdefault("canny_high", float(i2i.get("canny_high", 0.18)))
         payload.setdefault("canny_w", float(i2i.get("canny_w", 0.75)))
+
+    # ---- 大纲 §2 P1：ROI 局部重绘（2026-09-29）--------------------------------
+    # 整幅重绘时，一个几百像素的部件在 1232×752 上只占很小一块，细节密度低，
+    # 且非目标区域容易被连带改动。默认先裁到「部件外接框 + 按尺度留边」的 ROI
+    # 再生成；完成后由 composite_roi_output() 贴回原位并做确定性合成。
+    # 想关掉：任务载荷带 _meta.roi_auto = false。
+    meta_now = payload.get("_meta") or {}
+    roi_info = None
+    base_for_upload = payload.get("base_img") or ""
+    mask_for_upload = mask_rel
+    if inpaint_mode and meta_now.get("roi_auto", True):
+        roi_info, roi_err = prepare_roi(
+            t.get("sku") or "", t.get("view") or "",
+            meta_now.get("part") or "x",
+            base_for_upload, mask_rel, d_rel, n_rel,
+            scale=float(meta_now.get("roi_scale") or 1.0),
+            pad_ratio=float(meta_now.get("roi_pad_ratio") or 0.12))
+        if roi_err:
+            raise RuntimeError("ROI 局部重绘准备失败（可加 _meta.roi_auto=false 关闭 ROI）：%s" % roi_err)
+        files = roi_info["files"]
+        d_rel = files.get("depth") or d_rel        # 深度/法线一并换成本 ROI 的裁剪版
+        n_rel = files.get("normal") or n_rel
+        base_for_upload = files["base"]
+        mask_for_upload = files["mask"]
+        # 羽化按部件尺度走，不用固定像素（大纲 §2 P1 的明确要求）
+        roi_info["feather"] = float(meta_now.get("feather")
+                                    or max(2.0, round(roi_info.get("pad", 8) * 0.25, 1)))
+
     if use_cn:
         payload = dict(payload)
         payload["depth_img"] = comfy_upload(d_rel)
@@ -1692,10 +1720,11 @@ def comfy_submit(tid):
             wf["3"]["inputs"]["negative"] = ["20", 1]
 
     if inpaint_mode:
-        # 局部重绘：底图与掩膜都要先传给 ComfyUI（与 depth/normal 同一套上传机制）
+        # 局部重绘：底图与掩膜都要先传给 ComfyUI（与 depth/normal 同一套上传机制）。
+        # 若启用了 ROI，这里上传的是裁剪版；原图路径记在 roi_info.src，供合成阶段贴回。
         payload = dict(payload)
-        payload["base_img"] = comfy_upload(payload.get("base_img") or "")
-        payload["mask_img"] = comfy_upload(mask_rel)
+        payload["base_img"] = comfy_upload(base_for_upload)
+        payload["mask_img"] = comfy_upload(mask_for_upload)
 
     # ---- 参考图（IPAdapter）：有图 + 装了插件才接，否则整条链摘掉，KSampler 退回裸底模 ----
     ref_rel = payload.get("ref_img") or ""
@@ -1735,6 +1764,9 @@ def comfy_submit(tid):
         con.execute("UPDATE tasks SET status='running', prompt_id=?, err=NULL, "
                     "updated_at=CURRENT_TIMESTAMP WHERE id=?", (pid, tid))
         con.commit()
+    # ROI 信息要落库：轮询阶段（另一个请求）要用它把产物贴回原位并合成
+    if roi_info:
+        update_task_run_meta(tid, {"roi": roi_info, "roi_enabled": True})
     # v2.2 修正：此前图片任务被一并标成 txt2img，与真实链路
     # （LoadImage → ImageScale → VAEEncode → KSampler）不符，见验收文档 §6.2。
     if image_mode:
@@ -1752,6 +1784,7 @@ def comfy_submit(tid):
         "ref_weight_type": payload.get("ref_weight_type"),
         "checkpoint": ckpt,
         "applied": applied, "skipped": skipped,
+        "roi": roi_info,
     }
 
 
@@ -1807,20 +1840,44 @@ def comfy_poll(tid):
             f.write(data)
         saved.append(os.path.relpath(dst, ROOT).replace("\\", "/"))
 
-    update_task(tid, status="done", output=",".join(saved))
-
-    # 运行元数据（执行方案第 6 节第 5 条）：事后能查一张图出自哪条链路、哪个模型、什么参数、多久。
-    # 产物文件名前缀由工作流的 filename_prefix 决定（Qwen 侧为 qwen21），所以文件名本身也带链路标识。
+    # ---- 大纲 §2 P1：ROI 任务落盘后做确定性合成 -------------------------------
+    # 只在掩膜（含羽化边）内采用 AI 产物，掩膜外**逐像素还原原底图**。
+    # 这一步不依赖模型「自觉不改」，由 composite_masked.py 自检保证（外差必须为 0）；
+    # 原始 AI 产物会留成 *_raw.png，便于对比。
     try:
         payload = json.loads(t.get("payload") or "{}")
     except Exception:
         payload = {}
+    roi = ((payload.get("_meta") or {}).get("run") or {}).get("roi")
+    composite_note = None
+    if roi:
+        fixed, errs = [], []
+        for s in saved:
+            final, cinfo, cerr = composite_roi_output(s, roi)
+            if cerr:
+                fixed.append(s)
+                errs.append("%s → %s" % (os.path.basename(s), cerr))
+            else:
+                fixed.append(final)
+                composite_note = cinfo
+        saved = fixed
+        if errs:
+            # 合成失败不算任务失败（产物已落地），但必须如实记录，不能假装做了还原
+            composite_note = {"ok": False, "errors": errs}
+
+    update_task(tid, status="done", output=",".join(saved))
+
+    # 运行元数据（执行方案第 6 节第 5 条）：事后能查一张图出自哪条链路、哪个模型、什么参数、多久。
+    # 产物文件名前缀由工作流的 filename_prefix 决定（Qwen 侧为 qwen21），所以文件名本身也带链路标识。
     run = {
         "engine_id": engine_id,
         "host": host,
         "outputs": [os.path.basename(s) for s in saved],
         "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
+    if composite_note is not None:
+        run["composite"] = composite_note
+        run["roi"] = roi
     for k in ("seed", "resolution", "steps", "cfg", "denoise", "source_img"):
         if payload.get(k) not in (None, ""):
             run[k] = payload[k]
@@ -2222,6 +2279,131 @@ def parts_index(sku, view=""):
 # 局部重绘掩膜的隔离工作区（大纲 P0-3）：只写这里，绝不碰源 CAD/旧 pass/候选图
 PART_MASK_DIR = os.path.join(ASSETS, "_部件")
 OBJECTID_TOOL = os.path.join(ROOT, "scripts", "objectid_mask.py")
+# 大纲 §2 P1（2026-09-29）：ROI 局部重绘与确定性合成。
+# 两者同样以**子进程**方式调用，numpy/PIL 由运行本服务的 Python 提供
+# （与 objectid_mask.py 同一约定），控制台本体仍然零第三方依赖。
+ROI_TOOL = os.path.join(ROOT, "scripts", "roi_crop.py")
+COMPOSITE_TOOL = os.path.join(ROOT, "scripts", "composite_masked.py")
+
+
+def prepare_roi(sku, view, part_id, base_rel, mask_rel, depth_rel="", normal_rel="",
+                scale=1.0, pad_ratio=0.12):
+    """把局部重绘的输入裁到同一 ROI（按部件尺度留边）。
+
+    返回 (info, error)。info.roi 是闭区间，与 composite_masked.py 的 --bbox 同一口径；
+    info.files 是裁剪后各图的**相对 assets 路径**，可直接交给 comfy_upload()。
+    产物写 assets/_部件/<SKU>/<机位>/roi_<part>/，不碰源 CAD、旧 pass 与已有候选图。
+    """
+    if not os.path.isfile(ROI_TOOL):
+        return None, "缺少 scripts/roi_crop.py"
+    base_abs = _asset_path(base_rel or "")
+    mask_abs = _asset_path(mask_rel or "")
+    if not base_abs:
+        return None, "局部重绘底图不可用：%s" % (base_rel or "(空)")
+    if not mask_abs:
+        return None, "局部重绘掩膜不可用：%s" % (mask_rel or "(空)")
+    dest_dir = os.path.join(PART_MASK_DIR, safe_file(sku), safe_file(view),
+                            "roi_%s" % safe_file(str(part_id)))
+    os.makedirs(dest_dir, exist_ok=True)
+    cmd = [sys.executable, ROI_TOOL, "--base", base_abs, "--mask", mask_abs,
+           "--out-dir", dest_dir, "--auto-bbox",
+           "--scale", str(scale), "--pad-ratio", str(pad_ratio), "--json"]
+    for role, rel in (("depth", depth_rel), ("normal", normal_rel)):
+        p = _asset_path(rel) if rel else None
+        if p:
+            cmd += ["--" + role, p]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=180)
+    except subprocess.TimeoutExpired:
+        return None, "ROI 裁剪超时"
+    if proc.returncode != 0:
+        tail = (proc.stdout + "\n" + proc.stderr).strip()[-300:]
+        return None, "ROI 裁剪失败：%s" % (tail or "未知错误")
+    info = None
+    for line in reversed((proc.stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                info = json.loads(line)
+                break
+            except ValueError:
+                continue
+    if not info:
+        return None, "ROI 裁剪没有返回结果"
+    files = {}
+    for role, path in (info.get("files") or {}).items():
+        rel = os.path.relpath(path, ASSETS).replace("\\", "/")
+        if _asset_path(rel):
+            files[role] = rel
+    if "base" not in files or "mask" not in files:
+        return None, "ROI 裁剪产物不完整"
+    info["files"] = files
+    info["src"] = {"base": base_rel, "mask": mask_rel,
+                   "depth": depth_rel, "normal": normal_rel}
+    return info, None
+
+
+def _output_path(rel):
+    """解析 outputs/ 下的相对路径（相对 ROOT）。
+
+    ★ 注意与 _asset_path() 的区别：后者只认 assets/（投放区）下的素材，
+      而**产物**在 outputs/ 下，用它去解析产物必然返回 None —— 2026-09-29 踩过：
+      ROI 合成报「gen/base/mask 缺失」，其实产物好好的，是解析函数用错了。
+    """
+    if not rel:
+        return None
+    p = os.path.abspath(os.path.join(ROOT, str(rel).replace("\\", "/")))
+    root = os.path.abspath(OUTPUTS_DIR)
+    if (p == root or p.startswith(root + os.sep)) and os.path.isfile(p):
+        return p
+    return None
+
+
+def composite_roi_output(gen_rel, roi_info):
+    """把 ROI 产物贴回原坐标并做确定性合成（掩膜外逐像素保留原底图）。
+
+    返回 (最终相对路径, 合成信息, error)。原产物先改名为 *_raw.png 留档，
+    便于对比「AI 原样 vs 合成后」。
+    """
+    if not os.path.isfile(COMPOSITE_TOOL):
+        return None, None, "缺少 scripts/composite_masked.py"
+    gen_abs = _output_path(gen_rel)          # 产物在 outputs/ 下，不能用 _asset_path
+    src = (roi_info or {}).get("src") or {}
+    base_abs = _asset_path(src.get("base") or "")
+    mask_abs = _asset_path(src.get("mask") or "")
+    if not gen_abs or not base_abs or not mask_abs:
+        miss = [n for n, v in (("gen", gen_abs), ("base", base_abs), ("mask", mask_abs)) if not v]
+        return None, None, "合成所需文件缺失：%s" % "、".join(miss)
+    roi = roi_info.get("roi") or []
+    if len(roi) != 4:
+        return None, None, "ROI 信息不完整"
+    try:
+        shutil.copyfile(gen_abs, os.path.splitext(gen_abs)[0] + "_raw.png")
+    except OSError as exc:
+        return None, None, "保留原始产物失败：%s" % exc
+    cmd = [sys.executable, COMPOSITE_TOOL, "--base", base_abs, "--mask", mask_abs,
+           "--gen", gen_abs, "--out", gen_abs, "--json",
+           "--bbox"] + [str(int(v)) for v in roi]
+    feather = roi_info.get("feather")
+    if feather:
+        cmd += ["--feather", str(feather)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=180)
+    except subprocess.TimeoutExpired:
+        return None, None, "合成超时"
+    info = None
+    for line in reversed((proc.stdout or "").splitlines()):
+        line = line.strip()
+        if line.startswith("{") and line.endswith("}"):
+            try:
+                info = json.loads(line)
+                break
+            except ValueError:
+                continue
+    if proc.returncode != 0 or not info or not info.get("ok"):
+        tail = (proc.stdout + "\n" + proc.stderr).strip()[-300:]
+        return None, info, "合成未通过自检：%s" % (tail or "未知错误")
+    return gen_rel, info, None
 
 
 def part_mask(sku, view, part, dilate=4):

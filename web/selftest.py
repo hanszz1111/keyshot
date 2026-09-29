@@ -147,10 +147,16 @@ def main():
           all(_cands[i]["ts"] >= _cands[i + 1]["ts"] for i in range(len(_cands) - 1)))
     check("不存在的 SKU / 机位返回空列表而不是抛异常",
           S.list_candidates("no_such_sku_xyz", "front") == [] and S.list_candidates("", "") == [])
-    _staged, _serr = S.stage_base_image(TEST_SKU, "front", "AI渲染1/front/clay.png")
-    check("stage_base_image 把底图复制进部件工作区（供 comfy_upload 使用）",
-          bool(_staged) and _staged.startswith("_部件/") and S._asset_path(_staged),
-          _staged or (_serr or ""))
+    os.makedirs(S.PASSES_DIR, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="_selftest_pass_", dir=S.PASSES_DIR) as sample_dir:
+        sample_path = os.path.join(sample_dir, "clay.png")
+        with open(sample_path, "wb") as sample_file:
+            sample_file.write(b"selftest-clay-sample")
+        sample_rel = os.path.relpath(sample_path, S.PASSES_DIR).replace("\\", "/")
+        _staged, _serr = S.stage_base_image(TEST_SKU, "front", sample_rel)
+        check("stage_base_image 把底图复制进部件工作区（供 comfy_upload 使用）",
+              bool(_staged) and _staged.startswith("_部件/") and S._asset_path(_staged),
+              _staged or (_serr or ""))
     _bad, _berr = S.stage_base_image(TEST_SKU, "front", "outputs/no/such/file.png")
     check("stage_base_image 对不存在的底图报中文错误而不是静默继续",
           _bad is None and "找不到" in (_berr or ""), _berr or "")
@@ -212,9 +218,10 @@ def main():
           engines["sdxl_controlled"].get("batch_allowed") is True and
           engines["sdxl_controlled"].get("experimental") is False)
     qwen = engines.get("qwen21_edit_local", {})
-    check("实验引擎结构契约（experimental / 仅图片精修 / 禁批量 / 有原因字段）",
-          qwen.get("experimental") is True and qwen.get("supports") == ["image_edit"] and
-          qwen.get("batch_allowed") is False and "reason" in qwen and "note" in qwen and
+    check("实验引擎结构契约（图片精修 / 逐机位顺序执行 / 有原因字段）",
+          qwen.get("experimental") is True and
+          qwen.get("supports") == ["image_edit", "multi_view_sequential"] and
+          qwen.get("batch_allowed") is True and "reason" in qwen and "note" in qwen and
           bool(qwen.get("disabled_reason")),
           f"available={qwen.get('available')}")
     check("实验引擎指向独立实例（8190）且带中文标签与说明",
@@ -304,6 +311,8 @@ def main():
         check("HTTP 层同样阻断并返回中文原因（400）",
               st == 400 and "实验引擎" in json.loads(body).get("error", ""),
               f"HTTP {st}")
+        check("千问拒绝把其他机位白模当作本机位输入",
+              "机位不一致" in S.qwen_clay_input_issue(qid, "%s/side/clay.png" % TEST_SKU))
     finally:
         S.render_engines = _real_engines
         # 探针任务用完即删：否则会污染后面「任务可查询」的计数断言
@@ -322,14 +331,24 @@ def main():
         app_js = f.read()
     check("补齐所选视角会检查整组三通道而非仅深度",
           'filter(view=>!item.views?.find(row=>row.view===view)?.ok)' in app_js)
+    check("自动出图前会补齐白模、深度和法线整组",
+          '["clay","depth","normal"].every(role=>viewHasPass(item,view,role))' in app_js)
 
-    # 2026-09-29 回归钉：实验引擎必须按**目标机位**取白模截图，且只出单张。
+    # 实验引擎必须按**目标机位**取白模截图；多机位逐张出，每机位仍只出单张。
     # 曾经用「预览机位」取图 → 出现「任务标记 3q4_left、输入图却是 side_left」的张冠李戴。
-    check("实验引擎按目标机位取白模截图、且限制为单张",
+    check("实验引擎按目标机位取白模截图、每机位单张",
           "find(r=>r.view===view)?.files?.clay" in app_js and
-          "isExperimentalEngine()?1:" in app_js and
-          'isExperimentalEngine())return [selectedView()]' in app_js,
-          "三个点：按 view 取图 / perView=1 / 只出当前机位")
+          "experimental?1:" in app_js and
+          "return selectedViews();" in app_js,
+          "按 view 取图 / perView=1 / 可逐机位处理")
+    check("两套引擎共用缺图补齐与八常用视角",
+          'const COMMON_VIEWS = [...SIX_VIEWS,"3q4_left","3q4_right"]' in app_js and
+          "async function ensureRequiredPasses(" in app_js and
+          'await post("/api/ui/pass/batch"' in app_js and
+          'await ensureRequiredPasses(sku,views,mode,experimental)' in app_js and
+          '$("viewPickCommon").addEventListener' in app_js)
+    check("千问预检不受稳定引擎离线误阻断",
+          'if(!experimental&&!state.comfy.online)' in app_js)
 
     st, body = req("GET", f"/api/card?sku={TEST_SKU}")
     check("GET /api/card 单张读取", st == 200 and json.loads(body)["asset"]["sku"] == TEST_SKU)

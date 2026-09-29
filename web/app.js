@@ -48,6 +48,7 @@ const NEGATIVE_CLAY = ", white unpainted plastic, bare grey model, clay render, 
 const ACCEPT_PASS = new Set(["png","jpg","jpeg","webp","bmp"]);
 const ACCEPT_MODEL = new Set(["blend","glb","gltf","obj","stl","fbx","stp","step","3dm"]);
 const STANDARD_VIEWS = ["front","3q4_left","3q4_right","side"];
+const COMMON_VIEWS = [...SIX_VIEWS,"3q4_left","3q4_right"];
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 let state = {assets:{items:[],models:[]},tasks:[],comfy:{online:false},ui:{blender:false},passJob:null,sku:"",sourceType:"model",modelCount:"4",imageCount:"1",sourceRelLoaded:"",sourceSize:null,sourceProbe:null,style:"studio",preview:"clay",running:false,runCount:0,selectedTask:null,ref:{rel:"",palette:[],strength:"L2_material"},renderers:[],engineDefault:"sdxl_controlled"};
@@ -67,9 +68,6 @@ function selectedViews(){
 }
 function renderViews(){
   if(state.sourceType==="image")return ["photo"];
-  // 实验引擎只出「当前预览机位」的单张（执行方案第 6 节：多视角先禁用）。
-  // 这样预检与实际提交的机位永远一致，不会出现「预检说 1 张、实际提交 8 条」。
-  if(isExperimentalEngine())return [selectedView()];
   return selectedViews();
 }
 function sourceSize(){
@@ -160,6 +158,7 @@ async function loadViewPresets(){
   if(!presets.length)throw new Error("机位表为空，无法选择视角");
   const previous=$("viewSelect").value;
   SIX_VIEWS.splice(0,SIX_VIEWS.length,...presets.filter(p=>p.group==="six").map(p=>p.key));
+  COMMON_VIEWS.splice(0,COMMON_VIEWS.length,...presets.filter(p=>p.group==="six"||p.group==="quarter").map(p=>p.key));
   ALL_VIEWS.splice(0,ALL_VIEWS.length,...presets.map(p=>p.key));
   const select=$("viewSelect");clear(select);
   const groups={six:"六视图",quarter:"3/4 视角",detail:"特写"};
@@ -731,7 +730,7 @@ function renderEngineHint(){
     return;
   }
   el.append(text("span",e.available
-    ?"实验模式：8GB 实测单张约 21 秒；目前只开放「单张图片精修」——结构约束出图、多视角、局部掩膜与批量暂不开放。"
+    ?"实验模式：按所选机位逐张精修；缺少白模时先自动补齐。每机位 1 张，局部掩膜与同机位多候选暂不开放。"
     :"当前不可用："+(e.reason||"未知原因"),"engine-status"));
   el.append(document.createElement("br"));
   el.append(text("span","权重采用 Qwen Research License（非商用）：个人研究试用可用；转为收费客户项目、对外服务或正式商业交付前，须先核对许可与 ADR-008。","engine-license"));
@@ -748,15 +747,8 @@ function applyEngineConstraints(){
     if(experimental){if(input.dataset.engineLocked===undefined)input.dataset.engineLocked=input.disabled?"1":"0";input.disabled=true;}
     else if(input.dataset.engineLocked!==undefined){input.disabled=input.dataset.engineLocked==="1";delete input.dataset.engineLocked;}
   }
-  // 单张精修：张数/质量档/尺寸/视角都不适用（尺寸由 resolution 预算折算，服务端算）
-  for(const id of ["countSelect","qualitySelect","sizeSelect","viewSelect",
-                   "viewPickPreview","viewPickStandard","viewPickAll","viewPickNone",
-                   "passSelectedButton","passSixButton","partRenderButton","sectionPassMake"])lock(id,experimental);
-  // 视角多选的勾选框也要锁：实验引擎只出当前预览机位，勾了也不生效
-  for(const cb of document.querySelectorAll('#viewChecks input[type="checkbox"]')){
-    if(experimental){if(cb.dataset.engineLocked===undefined)cb.dataset.engineLocked=cb.disabled?"1":"0";cb.disabled=true;}
-    else if(cb.dataset.engineLocked!==undefined){cb.disabled=cb.dataset.engineLocked==="1";delete cb.dataset.engineLocked;}
-  }
+  // 千问仍按机位单张精修；机位选择和结构图补齐两套引擎共用。
+  for(const id of ["countSelect","qualitySelect","sizeSelect","partRenderButton","sectionPassMake"])lock(id,experimental);
   const sizeCustom=$("sizeCustom");if(sizeCustom)sizeCustom.disabled=experimental;
   renderEngineResolutionField(experimental);
 }
@@ -788,8 +780,25 @@ function renderEngineResolutionField(experimental){
 function onEngineChange(){
   renderEngineHint();
   applyEngineConstraints();
+  renderPassReadiness();
   renderPreflight();
   announce(`已切换到「${(engineInfo(currentEngine())||{}).label||currentEngine()}」；当前产品、机位与材质保持不变。`);
+}
+function missingRequiredPassViews(item,views,mode,experimental){
+  if(state.sourceType==="image")return [];
+  if(!experimental&&mode!=="controlled")return [];
+  // 一组结构图必须三通道齐全；只有 depth 或 clay 可用时也要补齐整组。
+  return views.filter(view=>!["clay","depth","normal"].every(role=>viewHasPass(item,view,role)));
+}
+function passPreparationIssue(item){
+  if(!item?.model)return "当前产品没有可生成结构图的 3D 模型";
+  const ext=(item.model.ext||"").toLowerCase().replace(/^\./,"");
+  if(!ACCEPT_MODEL.has(ext))return "当前 3D 模型格式暂不支持自动出结构图";
+  if(!state.ui.blender)return "未找到 Blender，请安装或设置 BLENDER_EXE";
+  if(["stp","step"].includes(ext)&&!state.ui.stepper&&!state.ui.freecad_cmd)return "STEP/STP 需要 STEPper 或 FreeCAD 转换能力";
+  if(ext==="3dm"&&!state.ui.import3dm)return "Rhino 3DM 需要 Blender 的 import_3dm 扩展";
+  if(state.passJob?.status==="running")return "已有结构图任务在运行，请等待它结束";
+  return "";
 }
 function renderPreflight(){
   const box=$("preflight"),button=$("generateButton");const item=selectedItem(),row=viewInfo();
@@ -803,25 +812,18 @@ function renderPreflight(){
     if(engine&&engine.disabled_reason)messages.push("能力范围："+engine.disabled_reason);
   }
   if(!item){messages.push(mode==="image"?(state.sourceType==="image"?"先上传产品图片。":"先选择产品或导入白模。"):"先选择产品或导入白模。 ");ready=false;}
-  if(!state.comfy.online){messages.push("ComfyUI 未连接；启动后可出图。");ready=false;}
+  if(!experimental&&!state.comfy.online){messages.push("稳定渲染服务未连接；启动后可出图。");ready=false;}
   if(!selectedCmf()){messages.push("材质库尚未加载；请刷新状态。");ready=false;}
   else if(!selectedCmf().ai_editable){messages.push("当前材质仅支持真渲染，不能提交 AI 出图。");ready=false;}
   if(mode==="image"){
     if(experimental){
-      // 逐机位检查输入图（views 在实验引擎下就是「当前预览机位」这一个）
       if(state.sourceType==="image"){
         if(!item?.source?.rel){
           messages.push("实验引擎需要一张产品图片作为输入，请先上传产品图片。");
           ready=false;
         }
-      }else{
-        const missing=views.filter(v=>!item?.views?.find(r=>r.view===v)?.files?.clay);
-        if(missing.length){
-          messages.push(`实验引擎需要${missing.map(v=>VIEW_ZH[v]||v).join("、")}的白模截图（clay.png），这些机位还没有：先用「补齐所选视角结构图」生成，或换一个已有白模截图的机位。`);
-          ready=false;
-        }
       }
-      messages.push("实验模式（Qwen-Image-2.1）：一次只出 1 张，用于试材质 / 灯光 / 氛围；形状由输入图自身约束，不对几何精度作承诺。");
+      messages.push("实验模式（Qwen-Image-2.1）：所选机位逐张生成、每机位 1 张；形状由各机位的输入白模约束，不承诺几何精度。");
     }else{
       if(item&&!item.source){messages.push("当前产品还没有源图片，请上传图片。");ready=false;}
       else if(item?.source&&!state.sourceSize){messages.push("正在读取图片尺寸…");ready=false;}
@@ -829,14 +831,19 @@ function renderPreflight(){
       messages.push("图片改图会参考原图构图与轮廓，但无法保证孔位、文字和结构精度；请对照原图检查。");
     }
   }
+  const missing=item?missingRequiredPassViews(item,views,mode,experimental):[];
+  if(missing.length){
+    const issue=passPreparationIssue(item);
+    if(issue){messages.push(`${missing.map(v=>VIEW_ZH[v]||v).join("、")}缺少有效结构图或已过期；无法自动补齐：${issue}。`);ready=false;}
+    else messages.push(`将先自动补齐 ${missing.map(v=>VIEW_ZH[v]||v).join("、")} 的白模、深度和法线图，再开始生成。`);
+  }
   if(item&&mode==="controlled"){
-    const missing=views.filter(view=>!viewHasPass(item,view,"depth"));
-    if(missing.length){messages.push(`${missing.map(view=>VIEW_ZH[view]||view).join("、")}缺少有效深度图或结构图已过期。请补齐所选视角结构图。`);ready=false;}
     const weak=views.filter(view=>{const files=item.views?.find(row=>row.view===view)?.files;return isUsablePass(files?.depth)&&!isUsablePass(files?.normal);});
     if(weak.length)messages.push(`${weak.map(view=>VIEW_ZH[view]).join("、")}缺少法线图：仍可出图，但细节约束较弱。`);
   }
   if(item&&mode==="explore")messages.push("外观探索只使用文字；可能改变产品形状、孔位和细节。");
-  const batchCount=experimental?1:Number($("countSelect").value)*views.length;
+  const batchCount=experimental?views.length:Number($("countSelect").value)*views.length;
+  if(batchCount>200){messages.push(`本次需要 ${batchCount} 张，超过单批 200 张上限；请减少每视角候选数或分批选择机位。`);ready=false;}
   if(!experimental&&batchCount>=15)messages.push(`本次共 ${batchCount} 张，逐张生成；可能耗时较长，请保持网页与渲染服务运行。任务会保存，可在任务列表续跑。`);
   const refOn=!!(state.ref.strength&&state.ref.rel&&(state.ref.palette||[]).length);
   if(!experimental&&refOn){
@@ -845,15 +852,15 @@ function renderPreflight(){
       +(iadapterOn?"；IPAdapter 已就绪，图片同时作为条件注入。":"；图像编码器未接入，图片本身不参与条件注入。"));
   }
   else if(!experimental&&state.ref.rel&&!state.ref.strength)messages.push("已上传参考图但强度选了「不使用」，本次不会生效。");
-  if(ready&&mode==="controlled")messages.unshift("白模结构图和渲染服务已就绪。生成后请核对细节与文字。");
+  if(ready&&mode==="controlled"&&!missing.length)messages.unshift("白模结构图和渲染服务已就绪。生成后请核对细节与文字。");
   if(ready&&mode==="image"&&!experimental&&state.sourceSize)messages.unshift(`产品图片已就绪 · ${state.sourceSize.width} × ${state.sourceSize.height}。`);
-  if(ready&&experimental)messages.unshift(`实验引擎已就绪 · 单张精修 · ${($("qwenResolution")||{}).value||768} 像素预算。`);
+  if(ready&&experimental&&!missing.length)messages.unshift(`实验引擎已就绪 · 每机位 1 张 · ${($("qwenResolution")||{}).value||768} 像素预算。`);
   box.className="preflight "+(ready?(mode==="controlled"||mode==="image"?"is-good":"is-warn"):(item?"is-warn":""));
   box.replaceChildren(...messages.map(message=>text("p",message)));
   const count=batchCount;
-  button.textContent=state.running?`正在生成 ${state.runCount} 张…`:(experimental?"开始精修 1 张（实验）":`开始生成 ${count} 张`);
+  button.textContent=state.running?`正在处理 ${state.runCount} 张…`:missing.length&&ready?`先补齐 ${missing.length} 个机位，再生成 ${count} 张`:(experimental?`开始精修 ${count} 张（每机位 1 张）`:`开始生成 ${count} 张`);
   button.disabled=!ready||state.running;
-  $("stageBadge").textContent=!item?"等待导入":experimental?(ready?"实验引擎就绪":"实验引擎待准备"):mode==="image"?(ready?"图片已就绪":"等待图片"):mode==="explore"?"外观探索":ready?"结构图就绪":"结构图待准备";
+  $("stageBadge").textContent=!item?"等待导入":missing.length&&ready?"将自动补结构图":experimental?(ready?"实验引擎就绪":"实验引擎待准备"):mode==="image"?(ready?"图片已就绪":"等待图片"):mode==="explore"?"外观探索":ready?"结构图就绪":"结构图待准备";
   $("stageBadge").className="stage-badge "+(ready?"is-ready":"");
 }
 function renderPassReadiness(){
@@ -1113,12 +1120,47 @@ function buildPayload(sku,view,variant,mode){
   }
   return payload;
 }
+async function ensureRequiredPasses(sku,views,mode,experimental){
+  const item=selectedItem();
+  const missing=missingRequiredPassViews(item,views,mode,experimental);
+  if(!missing.length)return;
+  const issue=passPreparationIssue(item);
+  if(issue)throw new Error(`无法补齐结构图：${issue}`);
+  await post("/api/ui/pass/batch",{sku,model:item.model.rel||"",views:missing});
+  announce(`正在补齐 ${missing.length} 个机位的白模、深度和法线图；完成后自动继续出图。`);
+  while(true){
+    await pause(2500);
+    const job=await api("/api/ui/pass/status");
+    state.passJob=job;
+    if(job.sku!==sku)throw new Error("结构图任务已被其他产品替换，请检查任务状态后重试");
+    if(job.status==="running"){
+      const batch=job.batch||{};
+      const progress=`正在补结构图 ${Math.min((batch.index||0)+1,batch.total||missing.length)}/${batch.total||missing.length}：已完成 ${(batch.done||[]).length} 个`;
+      $("passJobStatus").textContent=progress;
+      announce(progress);
+      continue;
+    }
+    $("passJobStatus").textContent=job.message||"结构图任务已结束";
+    await refreshAssets();
+    if(job.status!=="done")throw new Error(job.message||"结构图生成失败，请查看任务中的具体机位原因");
+    const remaining=missingRequiredPassViews(selectedItem(),views,mode,experimental);
+    if(remaining.length)throw new Error(`${remaining.map(v=>VIEW_ZH[v]||v).join("、")}生成后仍缺有效结构图；请查看结构图任务原因`);
+    announce(`已补齐 ${missing.length} 个机位的结构图，开始生成图片。`);
+    return;
+  }
+}
 async function generate(){
   renderPreflight();if($("generateButton").disabled)return;
-  const sku=state.sku,views=renderViews(),perView=isExperimentalEngine()?1:Number($("countSelect").value),count=perView*views.length,mode=getMode();
-  const tasks=views.flatMap(view=>Array.from({length:perView},(_,variant)=>{const payload=buildPayload(sku,view,variant,mode);return{sku,view,variant,positive:payload.positive,negative:payload.negative,payload};}));
-  state.running=true;state.runCount=count;renderPreflight();announce(`正在加入并生成 ${count} 张图片`);
+  const sku=state.sku,views=renderViews(),experimental=isExperimentalEngine(),engineId=currentEngine();
+  const perView=experimental?1:Number($("countSelect").value),count=perView*views.length,mode=getMode(),sourceType=state.sourceType;
+  state.running=true;state.runCount=count;renderPreflight();
   try{
+    await ensureRequiredPasses(sku,views,mode,experimental);
+    if(state.sku!==sku||state.sourceType!==sourceType||currentEngine()!==engineId||renderViews().join("|")!==views.join("|")){
+      throw new Error("补结构图期间产品、模型或机位选择已变化；结构图已保存，请确认选择后再点生成");
+    }
+    const tasks=views.flatMap(view=>Array.from({length:perView},(_,variant)=>{const payload=buildPayload(sku,view,variant,mode);return{sku,view,variant,positive:payload.positive,negative:payload.negative,payload};}));
+    announce(`正在加入并生成 ${count} 张图片`);
     const inserted=await post("/api/tasks",{tasks});await refreshTasks();
     const ids=new Set(inserted.ids||[]);
     const created=state.tasks.filter(t=>ids.has(t.id)).sort((a,b)=>a.id-b.id);
@@ -1366,6 +1408,7 @@ function setViewChecks(views){
 buildViewChecks();
 $("viewPickPreview").addEventListener("click",()=>setViewChecks([selectedView()]));
 $("viewPickStandard").addEventListener("click",()=>setViewChecks(STANDARD_VIEWS));
+$("viewPickCommon").addEventListener("click",()=>setViewChecks(COMMON_VIEWS));
 $("viewPickAll").addEventListener("click",()=>setViewChecks(ALL_VIEWS));
 $("viewPickNone").addEventListener("click",()=>setViewChecks([]));
 document.querySelectorAll('input[name="mode"]').forEach(el=>el.addEventListener("change",renderPreflight));
@@ -1466,19 +1509,22 @@ function renderAssetMatrix(){
   const items=state.assets.items||[];
   if(!items.length){box.append(text("div","投放区还没有素材。导入白模后会出现在这里。"));return;}
   for(const item of items){
-    const views=item.views||[],done=views.filter(v=>v.ok).length;
+    const views=item.views||[],shown=item.model?ALL_VIEWS:views.map(v=>v.view);
+    const done=shown.filter(key=>views.find(v=>v.view===key)?.ok).length;
     const row=text("div","","matrix-row"+(done?" is-ready":""));
     const head=text("div","","matrix-head");
     head.append(text("strong",item.sku));
-    head.append(text("span",views.length?`${done}/${views.length} 机位就绪`:"尚无结构图","fold-hint"));
+    head.append(text("span",item.model?`${done}/${shown.length} 机位就绪`:"图片素材无需结构图","fold-hint"));
     row.append(head);
     const wrap=text("div","","matrix-views");
-    for(const v of views){
+    for(const key of shown){
+      const v=views.find(row=>row.view===key);
+      if(!v){wrap.append(text("span",`${VIEW_ZH[key]||key}（未生成）`,"view-chip"));continue;}
       const miss=v.missing||[];
-      wrap.append(text("span",`${VIEW_ZH[v.view]||v.view}${v.stale?"（需重生成）":miss.length?"（缺 "+miss.join("/")+"）":""}`,
+      wrap.append(text("span",`${VIEW_ZH[v.view]||v.view}${v.stale?`（${v.issue||"需重生成"}）`:miss.length?"（缺 "+miss.join("/")+"）":""}`,
         "view-chip "+(v.ok?"is-ready":miss.length<3?"is-part":"")));
     }
-    if(!views.length)wrap.append(text("span","待出结构图","view-chip"));
+    if(!shown.length)wrap.append(text("span","待出结构图","view-chip"));
     row.append(wrap);box.append(row);
   }
 }

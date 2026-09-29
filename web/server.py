@@ -1652,6 +1652,20 @@ def qwen_input_ok(rel):
     return rel.startswith("source/") or rel.endswith("/clay.png")
 
 
+def qwen_clay_input_issue(tid, rel):
+    """白模输入必须属于任务自己的 SKU/机位，且不能使用过期结构图。"""
+    rel = str(rel or "").replace("\\", "/")
+    if not rel.endswith("/clay.png"):
+        return ""
+    task = task_by_id(tid)
+    if not task:
+        return "实验引擎任务不存在"
+    sku, view = str(task.get("sku") or ""), str(task.get("view") or "")
+    if rel != "%s/%s/clay.png" % (sku, view):
+        return "实验引擎输入的白模与任务产品或机位不一致，请重新建立任务"
+    return _pass_manifest_issue(os.path.join(PASSES_DIR, sku, view))
+
+
 def _submit_qwen(tid, payload, engine_id):
     """实验引擎提交：Qwen-Image-2.1 图片精修（单张）。
 
@@ -1667,8 +1681,7 @@ def _submit_qwen(tid, payload, engine_id):
 
     meta = payload.get("_meta") or {}
     if meta.get("mode") != "image":
-        raise RuntimeError("实验引擎目前只支持「图片改图」单张精修；"
-                           "白模结构约束、多视角与批量请继续使用稳定模式。")
+        raise RuntimeError("实验引擎只支持图片精修；多机位会逐机位各提交 1 张，不接受深度结构约束。")
     for k in ("depth_img", "normal_img", "mask_img"):
         if payload.get(k):
             raise RuntimeError("实验引擎不接受结构图/掩膜载荷（%s），请改用稳定模式。" % k)
@@ -1679,6 +1692,9 @@ def _submit_qwen(tid, payload, engine_id):
     # 文件是否存在在这里实校 —— 两层都过才放行。
     if not qwen_input_ok(rel) or not _pass_exists(rel):
         raise RuntimeError("实验引擎缺少可用的输入图片：需要产品图片，或该机位已有的白模截图 clay.png。")
+    clay_issue = qwen_clay_input_issue(tid, rel)
+    if clay_issue:
+        raise RuntimeError(clay_issue)
 
     # 8GB 单卡：Qwen 与 Blender 结构图不能同时跑（执行方案第 6 节队列约束）
     if _pass_state.get("status") == "running":

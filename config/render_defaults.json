@@ -74,9 +74,9 @@
         "vae": "qwen_image_2.1_vae_bf16.safetensors"
       },
       "required_nodes": ["UNETLoader", "CLIPLoader", "VAELoader", "TextEncodeQwenImage21", "KSampler"],
-      "supports": ["image_edit"],
-      "batch_allowed": false,
-      "disabled_reason": "纯文字新视角、多视角结构约束、局部掩膜与批量本轮不开放：单张链路已跑通，但尚未做多机位/多种子的成对盲评。",
+      "supports": ["image_edit", "multi_view_sequential"],
+      "batch_allowed": true,
+      "disabled_reason": "每机位只做单张图片精修，所选机位顺序执行；纯文字推断新视角、局部掩膜和同机位多候选仍未开放。多机位画质尚待 Windows 实测。",
       "note": "独立实验实例（端口 8190），双击 F:\\AI-Renderer\\experiments\\启动Qwen21实验服务.bat 启动。8GB 实测单张 21.5 s、峰值显存 92%。实验模型权重采用 Qwen Research License（非商用）——个人研究/试用可用，转为收费客户项目或对外服务前须核对许可与 ADR-008。"
     }
   },

@@ -1,0 +1,97 @@
+{
+  "_comment": "Qwen-Image-2.1 图片精修（实验引擎）· API 格式工作流。2026-09-29 由本机实测跑通的等价图整理而来（阶段 4：24 节点无 node_errors、单张 21.49 s）。",
+  "_usage": "只由 web/server.py 的 comfy_submit() 在 engine_id=qwen21_edit_local 时使用；节点 ID 与 SDXL 工作流完全独立，禁止互相复用。",
+  "_api_format_note": "这是 /prompt 接口吃的 API 格式。不能把 ComfyUI 界面导出的 workflows/*.json（带 nodes/links/groups）直接提交。",
+  "_autogrow_note": "节点 5 的参考图输入 images 是 COMFY_AUTOGROW_V3 类型，在 API 里**必须写成扁平点号键**（见节点 5 的 images.image_1）。写成嵌套 dict 不报错但会被静默忽略。",
+
+  "_node_map": {
+    "1": "UNETLoader · 扩散模型",
+    "2": "CLIPLoader · 文本/视觉编码器（type 必须是 qwen_image）",
+    "3": "VAELoader · 64 通道 RGBA VAE",
+    "4": "LoadImage · 参考图（白模或产品图）",
+    "5": "TextEncodeQwenImage21 · 提示词 + 参考图 → positive/negative/latent 三路",
+    "6": "KSampler · latent_image 接节点 5 的**第 3 路输出**",
+    "7": "VAEDecode",
+    "8": "SaveImage"
+  },
+
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "qwen_image_2.1_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "_comment": "8GB 选 INT8（7.26 GB）。BF16 版 14.23 GB 在 8GB 卡上需更大 offload，未实测。"
+  },
+
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_8b_w4a8.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "_comment": "type 只能填 qwen_image（没有 qwen_image21 这个选项，填错会 HTTP 400）。"
+  },
+
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_2.1_vae_bf16.safetensors"
+    }
+  },
+
+  "4": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "example.png"
+    },
+    "_comment": "运行时由服务端上传参考图后替换为实际文件名。"
+  },
+
+  "5": {
+    "class_type": "TextEncodeQwenImage21",
+    "inputs": {
+      "clip": ["2", 0],
+      "prompt": "",
+      "negative_prompt": "",
+      "vae": ["3", 0],
+      "resolution": 768,
+      "images.image_1": ["4", 0]
+    },
+    "_comment": "输出 3 路：0=positive, 1=negative, 2=latent（按参考图尺寸的空 latent）。resolution 是总像素预算，参考图按原比例折算成 32 的倍数。"
+  },
+
+  "6": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["5", 0],
+      "negative": ["5", 1],
+      "latent_image": ["5", 2],
+      "seed": 43,
+      "steps": 25,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0
+    },
+    "_comment": "latent_image 必须用节点 5 的第 3 路。改用 EmptyLatentImage 会因尺寸与参考图不一致而产生偏移（官方节点说明原文：any other size shifts the edit）。CFG 固定 1.0（该模型为 CFG-distilled）。"
+  },
+
+  "7": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["6", 0],
+      "vae": ["3", 0]
+    }
+  },
+
+  "8": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["7", 0],
+      "filename_prefix": "qwen21"
+    }
+  }
+}

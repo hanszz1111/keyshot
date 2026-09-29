@@ -18,7 +18,7 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "enum": ["front", "3q4_left", "3q4_right", "side", "top", "detail_keypad", "detail_window"]
+            "enum": ["front", "back", "side", "side_left", "top", "bottom", "3q4_left", "3q4_right", "detail_keypad", "detail_window"]
           },
           "description": "机位。球坐标预设见 scripts/keyshot_passes.py 的 VIEW_PRESETS；detail_* 用于局部特写"
         }
@@ -120,7 +120,7 @@
           "minItems": 2, "maxItems": 2,
           "description": "ADR-006：pass 出 2048，成图 1024，按需超分"
         },
-        "count": { "type": "integer", "minimum": 1, "maximum": 20, "description": "每机位张数（变体数）" },
+        "count": { "type": "integer", "minimum": 1, "maximum": 50, "description": "每机位张数（变体数）" },
         "upscale": { "type": "integer", "enum": [1, 2, 4] },
         "lang": { "type": "string", "enum": ["CN", "EN"] }
       }
@@ -137,17 +137,18 @@
     "pbrMat": {
       "type": "object",
       "properties": {
+        "cmf_preset_id": { "type": "string", "description": "config/cmf_presets.json 中的预设 ID；精确回读优先于旧 finish 匹配" },
         "type": {
-          "type": "string",
-          "enum": ["ABS", "PC", "aluminum", "PMMA", "rubber", "stainless", "glass", "silicone"]
+          "type": "string"
         },
         "finish": {
-          "type": "string",
-          "enum": ["fine_sandblast", "anodized_brushed", "high_gloss", "soft_touch", "matte", "polished", "injection"]
+          "type": "string"
         },
         "color": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
         "roughness": { "type": "number", "minimum": 0, "maximum": 1 },
-        "metallic": { "type": "number", "minimum": 0, "maximum": 1 }
+        "metallic": { "type": "number", "minimum": 0, "maximum": 1 },
+        "texture": { "type": "object", "properties": {"kind":{"type":"string"},"scale":{"type":"string"},"direction":{"type":"string"}} },
+        "process": { "type": "string" }
       }
     },
     "light": {

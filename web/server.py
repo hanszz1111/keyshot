@@ -795,6 +795,7 @@ def asset_report():
             roles = views[v]
             files = {r: pick(v2) for r, v2 in roles.items()}
             missing = [r for r in ("clay", "depth", "normal") if r not in files]
+            issue = _pass_manifest_issue(os.path.join(PASSES_DIR, sku, v))
             # 通道的像素尺寸。**出图必须与结构图同尺寸** —— 否则 ComfyUI 会把
             # 深度/法线图缩放去适配请求尺寸，比例一变产品就被拉变形
             # （曾出现：结构图 1232×752，而前端请求 1024×1024）。
@@ -814,7 +815,9 @@ def asset_report():
                 "size": {"width": px[0], "height": px[1]} if px else None,
                 "extra": sorted(r for r in roles if r not in ("clay", "depth", "normal")),
                 "missing": missing,
-                "ok": not missing,
+                "stale": bool(issue),
+                "issue": issue,
+                "ok": not missing and not issue,
             })
         ms = [m for m in models if m.get("sku") == sku]
         n_ok = sum(1 for r in rows if r["ok"])
@@ -927,6 +930,35 @@ def update_task(tid, status=None, output=None, err=None, retry=None):
         return cur.rowcount
 
 
+def update_task_run_meta(tid, patch):
+    """把运行元数据合并进 payload._meta.run（不动原载荷字段，旧参数卡仍可读）。
+
+    v3.5 新增：执行方案第 6 节第 5 条要求保存 engine_id / 权重文件名 / 种子 /
+    尺寸 / 耗时等，便于事后判断一张图是哪条链路、哪个模型出的。
+    """
+    with DB_LOCK, db() as con:
+        row = con.execute("SELECT payload FROM tasks WHERE id=?", (tid,)).fetchone()
+        if not row:
+            return 0
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except Exception:
+            payload = {}
+        meta = payload.get("_meta")
+        if not isinstance(meta, dict):
+            meta = {}
+        run = meta.get("run")
+        if not isinstance(run, dict):
+            run = {}
+        run.update(patch)
+        meta["run"] = run
+        payload["_meta"] = meta
+        con.execute("UPDATE tasks SET payload=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (json.dumps(payload, ensure_ascii=False), tid))
+        con.commit()
+    return 1
+
+
 def reset_running():
     """启动时把残留 running 重置为 pending —— 断点续跑（文档 5.6）。"""
     with DB_LOCK, db() as con:
@@ -954,6 +986,40 @@ def clear_tasks():
 # =========================================================
 COMFY = os.environ.get("COMFY_HOST", "http://127.0.0.1:8188")
 CONFIG_DIR = os.path.join(ROOT, "config")
+CMF_PRESETS_PATH = os.path.join(CONFIG_DIR, "cmf_presets.json")
+
+
+def load_cmf_presets():
+    """统一 CMF 目录的最小契约；坏预设不应静默进入生成任务。"""
+    with open(CMF_PRESETS_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    presets = data.get("presets")
+    if not isinstance(presets, list) or not presets:
+        raise ValueError("CMF 预设库为空")
+    ids, legacy = set(), set()
+    for p in presets:
+        for key in ("id", "name", "category", "base", "finish", "color", "prompt", "process"):
+            if not isinstance(p.get(key), str) or not p[key].strip():
+                raise ValueError("CMF 预设缺少 %s：%s" % (key, p.get("id")))
+        if p["id"] in ids:
+            raise ValueError("CMF ID 重复：%s" % p["id"])
+        ids.add(p["id"])
+        if not re.fullmatch(r"#[0-9a-fA-F]{6}", p["color"]):
+            raise ValueError("CMF 色值无效：%s" % p["id"])
+        for key in ("roughness", "metalness"):
+            value = p.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+                raise ValueError("CMF %s 超出 0–1：%s" % (key, p["id"]))
+        if not isinstance(p.get("ai_editable"), bool):
+            raise ValueError("CMF ai_editable 必须为布尔值：%s" % p["id"])
+        texture = p.get("texture")
+        if not isinstance(texture, dict) or not all(texture.get(k) for k in ("kind", "scale", "direction")):
+            raise ValueError("CMF 纹理描述不完整：%s" % p["id"])
+        for alias in p.get("legacy_ids", []):
+            if alias in legacy:
+                raise ValueError("CMF 旧 ID 重复：%s" % alias)
+            legacy.add(alias)
+    return data
 OUTPUTS_DIR = os.path.join(ROOT, "outputs")
 WF_TXT2IMG = os.path.join(CONFIG_DIR, "comfy_workflow_sdxl.json")
 WF_CONTROLNET = os.path.join(CONFIG_DIR, "comfy_workflow_sdxl_cn.json")
@@ -1028,6 +1094,142 @@ def load_render_defaults():
     return d
 
 
+# =========================================================
+# 出图引擎注册表（v3.5）
+# ---------------------------------------------------------
+# 稳定模式 SDXL（8188）与实验模式 Qwen-Image-2.1（8190）并存。
+# 三条硬约束（见 docs/Qwen-Image-2.1-Windows-部署与模型切换执行方案.md 第 6 节）：
+#   ① 可用性判定放在**服务端**，不能只信浏览器本地状态；
+#   ② 实验引擎不可用时返回**中文具体原因**，绝不静默降级为 SDXL；
+#   ③ 旧任务没有 engine_id 字段 → 按稳定模式处理（向后兼容）。
+# =========================================================
+
+def render_engines():
+    """读 config/render_defaults.json 的 render_engines。"""
+    d = load_render_defaults().get("render_engines") or {}
+    return d if isinstance(d, dict) else {}
+
+
+def engine_cfg(engine_id):
+    """按 id 取引擎配置。空 id = 稳定模式；未知 id 返回错误文案。"""
+    eid = (engine_id or "").strip() or "sdxl_controlled"
+    cfg = render_engines().get(eid)
+    if not isinstance(cfg, dict):
+        return eid, None, "未知的出图引擎「%s」，请刷新页面后重试。" % eid
+    return eid, cfg, None
+
+
+def qwen_edit_cfg():
+    d = load_render_defaults().get("qwen21_edit") or {}
+    return d if isinstance(d, dict) else {}
+
+
+def task_engine_id(t):
+    """从任务载荷取引擎 id；旧任务没有这个字段 → 稳定模式。"""
+    try:
+        payload = json.loads((t or {}).get("payload") or "{}")
+    except Exception:
+        return "sdxl_controlled"
+    return (payload.get("_meta") or {}).get("engine_id") or "sdxl_controlled"
+
+
+def engine_host(engine_id):
+    _eid, cfg, _err = engine_cfg(engine_id)
+    if cfg is None:
+        return COMFY
+    return cfg.get("comfy_host") or COMFY
+
+
+def qwen_task_running():
+    """是否有实验引擎任务仍在 running（8GB 单卡：它和 Blender 结构图不能同时占 GPU）。
+
+    执行方案第 6 节第 6 条：队列一次只跑一个 GPU 作业。这里给出反向约束 ——
+    结构图侧启动前先问一句，避免两个进程把 8GB 显存抢到 OOM。
+    """
+    try:
+        with DB_LOCK, db() as con:
+            rows = con.execute("SELECT payload FROM tasks WHERE status='running'").fetchall()
+    except Exception:
+        return False
+    for r in rows:
+        try:
+            payload = json.loads(r["payload"] or "{}")
+        except Exception:
+            continue
+        eid = (payload.get("_meta") or {}).get("engine_id") or "sdxl_controlled"
+        if eid != "sdxl_controlled":
+            return True
+    return False
+
+
+def engine_ready(engine_id):
+    """服务端可用性探测 → (ok, 中文原因, 细节)。
+
+    检查顺序按「用户自己能修的」排：开关 → 端口/权重 → 节点 → 工作流文件。
+    权重检查用 comfy_models()：实例没起来时它拿不到列表，正好一并覆盖端口探测。
+    """
+    eid, cfg, err = engine_cfg(engine_id)
+    if err:
+        return False, err, {}
+    if eid == "sdxl_controlled":
+        return True, "", {"host": cfg.get("comfy_host") or COMFY}
+
+    host = cfg.get("comfy_host") or ""
+    detail = {"host": host}
+    if not cfg.get("enabled"):
+        return False, ("实验引擎当前为关闭状态（config/render_defaults.json → "
+                       "render_engines.%s.enabled = false）。改为 true 后即可在界面选择。" % eid), detail
+
+    want = cfg.get("weight_files") or {}
+    for node, field, key in (("UNETLoader", "unet_name", "unet"),
+                             ("CLIPLoader", "clip_name", "clip"),
+                             ("VAELoader", "vae_name", "vae")):
+        opts = comfy_models(node, field, host)
+        if not opts:
+            return False, ("实验实例（%s）没有响应。请先双击 "
+                           "「F:\\AI-Renderer\\experiments\\启动Qwen21实验服务.bat」启动它，再重试。" % host), detail
+        if want.get(key) and want[key] not in opts:
+            return False, ("实验实例缺少权重文件 %s（%s 的候选列表里没有）。"
+                           "请按执行方案第 3 节下载后放进对应 models 子目录。"
+                           % (want[key], node)), detail
+
+    try:
+        info = http_json("%s/object_info" % host, timeout=20)
+    except Exception as exc:
+        return False, "读取实验实例节点失败：%s" % exc, detail
+    missing = [n for n in (cfg.get("required_nodes") or []) if n not in info]
+    if missing:
+        return False, ("实验实例缺少必需节点：%s。该实例的 ComfyUI 版本过旧，需要更新。"
+                       % "、".join(missing)), detail
+
+    wfname = cfg.get("workflow") or ""
+    if wfname and not os.path.isfile(os.path.join(CONFIG_DIR, wfname)):
+        return False, "缺少工作流文件 config/%s。" % wfname, detail
+    return True, "", detail
+
+
+def renderers_report():
+    """GET /api/renderers 的响应。前端下拉、状态文字与禁用规则都读它。"""
+    engines = render_engines()
+    items = []
+    for eid, cfg in engines.items():
+        ok, why, detail = engine_ready(eid)
+        items.append({
+            "id": eid,
+            "label": cfg.get("label") or eid,
+            "enabled": bool(cfg.get("enabled")),
+            "experimental": bool(cfg.get("experimental")),
+            "supports": cfg.get("supports") or [],
+            "batch_allowed": bool(cfg.get("batch_allowed")),
+            "available": ok,
+            "reason": why,
+            "host": detail.get("host") or cfg.get("comfy_host"),
+            "note": cfg.get("note") or "",
+            "disabled_reason": cfg.get("disabled_reason") or "",
+        })
+    return {"default": "sdxl_controlled", "items": items}
+
+
 # 本机 ComfyUI 必须直连：绕开环境里的 http_proxy，否则请求会被代理绕一圈（甚至 502）
 _OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -1048,10 +1250,12 @@ def http_json(url, payload=None, timeout=30):
     return json.loads(body.decode("utf-8")) if body else None
 
 
-def comfy_models(node, field):
-    """取某个 loader 节点的可选模型名列表（COMBO 型输入）。"""
+def comfy_models(node, field, host=None):
+    """取某个 loader 节点的可选模型名列表（COMBO 型输入）。
+    host 留空 = 稳定实例（8188）；实验引擎（Qwen 8190）传自己的地址。"""
+    host = host or COMFY
     try:
-        d = http_json("%s/object_info/%s" % (COMFY, node), timeout=8)
+        d = http_json("%s/object_info/%s" % (host, node), timeout=8)
         spec = d[node]["input"]["required"][field]
         opts = spec[0]
         if isinstance(opts, dict):            # 新版把候选放在 {"options": [...]}
@@ -1165,9 +1369,11 @@ def fill_workflow(wf, payload, defaults, ckpt, use_cn):
     return applied, skipped
 
 
-def comfy_upload(rel):
+def comfy_upload(rel, host=None):
     """把投放区里的图传给 ComfyUI，返回它在 input 目录下的文件名。
-    投放区里的 pass 图与参考图都能传（两侧口径见 _asset_path）。"""
+    投放区里的 pass 图与参考图都能传（两侧口径见 _asset_path）。
+    host 留空 = 稳定实例；实验引擎必须传自己的地址，否则图会传进另一个实例的 input 目录。"""
+    host = host or COMFY
     src = _asset_path(rel)
     if not src:
         raise RuntimeError("找不到素材：%s" % rel)
@@ -1181,7 +1387,7 @@ def comfy_upload(rel):
             "Content-Type: application/octet-stream\r\n\r\n" % (boundary, name)
         ).encode("utf-8")
         tail = ("\r\n--%s--\r\n" % boundary).encode("utf-8")
-        req = urllib.request.Request(COMFY + "/upload/image", data=head + blob + tail, method="POST")
+        req = urllib.request.Request(host + "/upload/image", data=head + blob + tail, method="POST")
         req.add_header("Content-Type", "multipart/form-data; boundary=%s" % boundary)
         with _urlopen(req, timeout=90) as r:
             res = json.loads(r.read().decode("utf-8"))
@@ -1237,11 +1443,167 @@ def ipadapter_available():
     return _ipadapter_cache["ok"]
 
 
+# ---------- 实验引擎：Qwen-Image-2.1 图片精修 ----------
+
+# Qwen 槽位表。**与 SDXL 的 SLOTS 完全独立**：节点 ID 不同、字段名不同，
+# 也不共用 ControlNet / canny / denoise 等结构约束参数（执行方案第 6 节明确禁止复用）。
+QWEN_SLOTS = {
+    "positive":     ("5", "prompt"),
+    "negative":     ("5", "negative_prompt"),
+    "resolution":   ("5", "resolution"),
+    "seed":         ("6", "seed"),
+    "steps":        ("6", "steps"),
+    "cfg":          ("6", "cfg"),
+    "sampler_name": ("6", "sampler_name"),
+    "scheduler":    ("6", "scheduler"),
+    "denoise":      ("6", "denoise"),
+    "unet_name":    ("1", "unet_name"),
+    "clip_name":    ("2", "clip_name"),
+    "vae_name":     ("3", "vae_name"),
+}
+
+
+def load_qwen_workflow():
+    """加载实验引擎的 API 格式工作流。"""
+    _eid, cfg, err = engine_cfg("qwen21_edit_local")
+    if err:
+        raise RuntimeError(err)
+    path = os.path.join(CONFIG_DIR, cfg.get("workflow") or "comfy_workflow_qwen21_edit.json")
+    with open(path, "r", encoding="utf-8") as f:
+        wf = json.load(f)
+    out = {}
+    for k, v in wf.items():
+        if k.startswith("_"):
+            continue
+        if isinstance(v, dict):
+            v = {ik: iv for ik, iv in v.items() if not str(ik).startswith("_")}
+        out[k] = v
+    return out
+
+
+def fill_qwen_workflow(wf, payload, qcfg, cfg):
+    """Qwen 工作流填充：先用 render_defaults.qwen21_edit 打底，再让载荷逐项覆盖。"""
+    applied, skipped = [], []
+    want = cfg.get("weight_files") or {}
+
+    wf["1"]["inputs"]["unet_name"] = want.get("unet") or wf["1"]["inputs"]["unet_name"]
+    wf["2"]["inputs"]["clip_name"] = want.get("clip") or wf["2"]["inputs"]["clip_name"]
+    wf["3"]["inputs"]["vae_name"] = want.get("vae") or wf["3"]["inputs"]["vae_name"]
+
+    ks = wf["6"]["inputs"]
+    ks["steps"] = int(qcfg.get("steps", 25))
+    ks["cfg"] = float(qcfg.get("cfg", 1.0))
+    ks["sampler_name"] = qcfg.get("sampler_name", "euler")
+    ks["scheduler"] = qcfg.get("scheduler", "simple")
+    ks["denoise"] = float(qcfg.get("denoise", 1.0))
+    wf["5"]["inputs"]["resolution"] = int(qcfg.get("resolution", 768))
+    wf["8"]["inputs"]["filename_prefix"] = qcfg.get("filename_prefix", "qwen21")
+
+    for key, (nid, field) in QWEN_SLOTS.items():
+        if key not in payload:
+            continue
+        val = payload.get(key)
+        if val is None or val == "":
+            continue
+        node = wf.get(str(nid))
+        if not node:
+            skipped.append(key)
+            continue
+        if field in ("resolution", "steps", "seed"):
+            val = int(val)
+        elif field in ("cfg", "denoise"):
+            val = float(val)
+        node.setdefault("inputs", {})[field] = val
+        applied.append(key)
+    return applied, skipped
+
+
+def _submit_qwen(tid, payload, engine_id):
+    """实验引擎提交：Qwen-Image-2.1 图片精修（单张）。
+
+    任何不可用情况都**显式抛中文原因**；绝不静默换回 SDXL 出一张无关的图。
+    """
+    _eid, cfg, err = engine_cfg(engine_id)
+    if err:
+        raise RuntimeError(err)
+    ok, why, detail = engine_ready(engine_id)
+    if not ok:
+        raise RuntimeError(why)
+    host = detail.get("host") or cfg.get("comfy_host")
+
+    meta = payload.get("_meta") or {}
+    if meta.get("mode") != "image":
+        raise RuntimeError("实验引擎目前只支持「图片改图」单张精修；"
+                           "白模结构约束、多视角与批量请继续使用稳定模式。")
+    for k in ("depth_img", "normal_img", "mask_img"):
+        if payload.get(k):
+            raise RuntimeError("实验引擎不接受结构图/掩膜载荷（%s），请改用稳定模式。" % k)
+
+    rel = payload.get("source_img") or ""
+    # 输入可以是产品图（source/…），也可以是该机位的白模截图（passes/<SKU>/<view>/clay.png）——
+    # 执行方案第 5 节明确要覆盖「同机位白模或产品照片」两种输入。
+    ok_input = rel.startswith("source/") or (rel.startswith("passes/") and rel.endswith("/clay.png"))
+    if not ok_input or not _pass_exists(rel):
+        raise RuntimeError("实验引擎缺少可用的输入图片：需要产品图片，或该机位的白模截图 clay.png。")
+
+    # 8GB 单卡：Qwen 与 Blender 结构图不能同时跑（执行方案第 6 节队列约束）
+    if _pass_state.get("status") == "running":
+        raise RuntimeError("正在生成结构图（Blender）。8GB 显存放不下两个 GPU 作业，"
+                           "请等结构图跑完再提交实验引擎任务。")
+
+    qcfg = qwen_edit_cfg()
+    wf = load_qwen_workflow()
+
+    res = int(payload.get("resolution") or qcfg.get("resolution", 768))
+    rmin, rmax = int(qcfg.get("resolution_min", 512)), int(qcfg.get("resolution_max", 1536))
+    if not rmin <= res <= rmax:
+        raise RuntimeError("精修分辨率（总像素预算）须在 %d–%d 之间。" % (rmin, rmax))
+    if res % 32:
+        raise RuntimeError("精修分辨率须为 32 的倍数。")
+
+    payload = dict(payload)
+    payload["source_img"] = comfy_upload(rel, host)   # 必须传到 8190，不能传到 8188
+    payload["resolution"] = res
+    if not payload.get("seed"):
+        payload["seed"] = int(qcfg.get("seed_default", 43))
+
+    # 参考图接线：LoadImage(4) → TextEncodeQwenImage21(5) 的 Autogrow 输入。
+    # 键名必须是**扁平点号键** images.image_1；写成嵌套 dict 不报错但会被静默忽略。
+    wf["4"]["inputs"]["image"] = payload["source_img"]
+    wf["5"]["inputs"]["images.image_1"] = ["4", 0]
+
+    applied, skipped = fill_qwen_workflow(wf, payload, qcfg, cfg)
+
+    try:
+        resp = http_json(host + "/prompt",
+                         {"prompt": wf, "client_id": "ai-renderer-qwen21"}, timeout=180)
+    except (urllib.error.URLError, OSError) as exc:
+        raise RuntimeError("实验引擎（%s）没有响应：%s。请双击「启动Qwen21实验服务.bat」后重试。"
+                           % (host, exc)) from exc
+    if resp.get("node_errors"):
+        raise RuntimeError("实验引擎节点校验失败：%s"
+                           % json.dumps(resp["node_errors"], ensure_ascii=False)[:600])
+    pid = resp.get("prompt_id")
+    with DB_LOCK, db() as con:
+        con.execute("UPDATE tasks SET status='running', prompt_id=?, err=NULL, "
+                    "updated_at=CURRENT_TIMESTAMP WHERE id=?", (pid, tid))
+        con.commit()
+    return {
+        "ok": True, "id": tid, "prompt_id": pid,
+        "engine_id": engine_id, "mode": "qwen21_edit", "host": host,
+        "resolution": res, "applied": applied, "skipped": skipped,
+    }
+
+
 def comfy_submit(tid):
     t = task_by_id(tid)
     if not t:
         raise RuntimeError("任务不存在：#%s" % tid)
     payload = json.loads(t.get("payload") or "{}")
+    # 引擎分流（v3.5）：实验引擎与稳定链路完全分开 —— 不同端口、不同工作流、不同参数。
+    _eng = (payload.get("_meta") or {}).get("engine_id") or "sdxl_controlled"
+    if _eng != "sdxl_controlled":
+        return _submit_qwen(tid, payload, _eng)
     image_mode = (payload.get("_meta") or {}).get("mode") == "image"
     # 2026-09-27 加固：带 source_img 却没有 _meta.mode 的任务说明提交方丢了模式标记，
     # 静默走 txt2img 会产出一张与产品毫无关系的图（实测产物是人像），且界面无任何提示。
@@ -1385,10 +1747,13 @@ def comfy_poll(tid):
     pid = t.get("prompt_id")
     if not pid:
         return {"state": "nosubmit"}
+    # 按任务所属引擎找实例：实验引擎跑在 8190、稳定链路在 8188（v3.5）
+    engine_id = task_engine_id(t)
+    host = engine_host(engine_id)
     try:
-        h = http_json("%s/history/%s" % (COMFY, pid), timeout=20)
+        h = http_json("%s/history/%s" % (host, pid), timeout=20)
     except Exception as e:
-        return {"state": "offline", "error": str(e)}
+        return {"state": "offline", "error": str(e), "engine_id": engine_id}
     if pid not in h:
         return {"state": "running"}
 
@@ -1397,6 +1762,8 @@ def comfy_poll(tid):
     if status.get("status_str") == "error":
         msg = json.dumps(status.get("messages", []), ensure_ascii=False)[:600]
         update_task(tid, status="failed", err=msg)
+        update_task_run_meta(tid, {"engine_id": engine_id, "host": host,
+                                   "failed": True, "error": msg[:300]})
         return {"state": "error", "error": msg}
 
     imgs = []
@@ -1416,7 +1783,7 @@ def comfy_poll(tid):
                        "subfolder": im.get("subfolder", "") or "",
                        "type": im.get("type", "output")})
         try:
-            with _urlopen("%s/view?%s" % (COMFY, q), timeout=90) as r:
+            with _urlopen("%s/view?%s" % (host, q), timeout=90) as r:
                 data = r.read()
         except Exception as e:
             return {"state": "error", "error": "取图失败：%s" % e}
@@ -1426,7 +1793,36 @@ def comfy_poll(tid):
         saved.append(os.path.relpath(dst, ROOT).replace("\\", "/"))
 
     update_task(tid, status="done", output=",".join(saved))
-    return {"state": "done", "saved": saved, "files": [os.path.basename(s) for s in saved]}
+
+    # 运行元数据（执行方案第 6 节第 5 条）：事后能查一张图出自哪条链路、哪个模型、什么参数、多久。
+    # 产物文件名前缀由工作流的 filename_prefix 决定（Qwen 侧为 qwen21），所以文件名本身也带链路标识。
+    try:
+        payload = json.loads(t.get("payload") or "{}")
+    except Exception:
+        payload = {}
+    run = {
+        "engine_id": engine_id,
+        "host": host,
+        "outputs": [os.path.basename(s) for s in saved],
+        "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    for k in ("seed", "resolution", "steps", "cfg", "denoise", "source_img"):
+        if payload.get(k) not in (None, ""):
+            run[k] = payload[k]
+    if engine_id != "sdxl_controlled":
+        ecfg = render_engines().get(engine_id) or {}
+        run["weights"] = ecfg.get("weight_files") or {}
+        run["workflow"] = ecfg.get("workflow")
+    ts = {}
+    for m in (status.get("messages") or []):
+        if isinstance(m, (list, tuple)) and len(m) == 2 and isinstance(m[1], dict):
+            ts[m[0]] = m[1].get("timestamp")
+    if ts.get("execution_start") and ts.get("execution_success"):
+        run["gpu_ms"] = int(ts["execution_success"] - ts["execution_start"])
+    update_task_run_meta(tid, run)
+
+    return {"state": "done", "saved": saved, "files": [os.path.basename(s) for s in saved],
+            "engine_id": engine_id}
 
 
 # =========================================================
@@ -1577,6 +1973,102 @@ def convert_step(source):
 
 # 一个机位要能跑 ControlNet，必须凑齐这三个通道（与 index.html 的 payload 对应）
 PASS_REQUIRED = ("clay.png", "depth.png", "normal.png")
+PASS_FORMAT_VERSION = 2
+MANUAL_PASS_ROLES = ("clay", "depth", "normal")
+
+
+def _record_manual_pass(folder, role, path):
+    """记录用户明确替换的通道；仅三通道都新上传时允许绕过旧自动清单。"""
+    marker = os.path.join(folder, "manual_override.json")
+    try:
+        with open(marker, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError, TypeError):
+        data = {}
+    manifest = os.path.join(folder, "pass_manifest.json")
+    manifest_ns = os.stat(manifest).st_mtime_ns if os.path.isfile(manifest) else 0
+    if data.get("manifest_ns") != manifest_ns:
+        data = {"manifest_ns": manifest_ns, "roles": {}}
+    st = os.stat(path)
+    data["roles"][role] = {"file": os.path.basename(path), "size": st.st_size,
+                           "mtime_ns": st.st_mtime_ns}
+    tmp = marker + "." + uuid.uuid4().hex + ".part"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+        os.replace(tmp, marker)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _manual_pass_state(folder, manifest_ns):
+    marker = os.path.join(folder, "manual_override.json")
+    if not os.path.isfile(marker):
+        return "none"
+    try:
+        with open(marker, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if data.get("manifest_ns") != manifest_ns:
+            return "none"  # 后续自动重生成已经覆盖了手工替换记录
+        roles = data.get("roles") or {}
+        if not roles:
+            return "none"
+        for role in MANUAL_PASS_ROLES:
+            entry = roles.get(role)
+            if not entry:
+                return "partial"
+            name = entry.get("file", "")
+            if os.path.basename(name) != name or not name.startswith(role + "."):
+                return "partial"
+            path = os.path.join(folder, name)
+            if not os.path.isfile(path):
+                return "partial"
+            st = os.stat(path)
+            if not st.st_size or st.st_size != entry.get("size") or st.st_mtime_ns != entry.get("mtime_ns"):
+                return "partial"
+        return "complete"
+    except (OSError, ValueError, TypeError, AttributeError):
+        return "partial"
+
+
+def _pass_manifest_issue(folder):
+    """只拒绝有 manifest 的旧/坏自动生成 pass；手工上传的结构图仍可使用。"""
+    path = os.path.join(folder, "pass_manifest.json")
+    if not os.path.isfile(path):
+        return ""
+    manual = _manual_pass_state(folder, os.stat(path).st_mtime_ns)
+    if manual == "complete":
+        return ""
+    if manual == "partial":
+        return "当前机位混有旧自动结构图；请补齐手动白模、深度、法线三通道，或重新自动生成"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        if meta.get("pass_format_version") != PASS_FORMAT_VERSION:
+            return "结构图使用旧版深度编码，请重新生成当前机位"
+        depth = meta.get("depth_encoding") or {}
+        if (depth.get("encoding") != "near_white_far_dark_bg_black_v2" or
+                depth.get("background") != 0.0 or
+                int(depth.get("foreground_pixels", 0)) <= 0 or
+                int(depth.get("pixels", 0)) <= 0):
+            return "深度通道无有效结构，请重新生成当前机位"
+        sig = meta.get("source_signature")
+        if sig:
+            preset = view_preset(os.path.basename(folder))
+            if preset and sig.get("view") != [preset["azimuth"], preset["elevation"]]:
+                return "机位参数已更新，当前结构图过期，请重新生成"
+            src = os.path.join(MODELS_DIR, sig.get("rel", ""))
+            if os.path.commonpath((os.path.abspath(MODELS_DIR), os.path.abspath(src))) != os.path.abspath(MODELS_DIR):
+                return "结构图模型来源非法"
+            if not os.path.isfile(src):
+                return "结构图对应的原模型已不存在，请重新生成"
+            st = os.stat(src)
+            if st.st_size != sig.get("size") or st.st_mtime_ns != sig.get("mtime_ns"):
+                return "模型已更新，当前机位结构图过期，请重新生成"
+        return ""
+    except (OSError, ValueError, TypeError, KeyError):
+        return "结构图清单损坏，请重新生成当前机位"
 
 
 def _png_size(path):
@@ -1627,6 +2119,9 @@ def verify_pass_outputs(sku, view):
                                    for k in sorted(dims)))
     if len(dims) < len(PASS_REQUIRED):
         return False, "结构图里有文件不是有效 PNG，无法确认尺寸"
+    issue = _pass_manifest_issue(folder)
+    if issue:
+        return False, issue
     return True, ""
 
 
@@ -1902,6 +2397,7 @@ def _run_pass_once(sku, view, src, exe):
     if preset:
         args += ["--azimuth", str(preset["azimuth"]),
                  "--elevation", str(preset["elevation"])]
+    started_ns = time.time_ns()
     try:
         proc = subprocess.run(args, capture_output=True, text=True,
                               errors="replace", timeout=1800)
@@ -1911,6 +2407,27 @@ def _run_pass_once(sku, view, src, exe):
     ok = proc.returncode == 0
     reason = ""
     if ok:
+        folder = os.path.join(PASSES_DIR, sku, view)
+        for name in PASS_REQUIRED:
+            path = os.path.join(folder, name)
+            if not os.path.isfile(path) or os.stat(path).st_mtime_ns < started_ns:
+                return False, "%s 未由本次结构图任务重新生成，请查看 Blender 日志" % name
+        manifest = os.path.join(PASSES_DIR, sku, view, "pass_manifest.json")
+        try:
+            with open(manifest, "r", encoding="utf-8") as f:
+                meta = json.load(f)
+            st = os.stat(src)
+            meta["source_signature"] = {
+                "rel": os.path.relpath(src, MODELS_DIR).replace("\\", "/"),
+                "size": st.st_size, "mtime_ns": st.st_mtime_ns,
+                "view": [preset["azimuth"], preset["elevation"]] if preset else None,
+            }
+            tmp = manifest + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, manifest)
+        except (OSError, ValueError, TypeError) as exc:
+            return False, "结构图清单无法记录模型来源：%s" % exc
         # 退出码 0 不等于产物可用：逐项校验通道齐全、体积非零、尺寸一致
         ok, reason = verify_pass_outputs(sku, view)
     if not ok and not reason:
@@ -1925,6 +2442,9 @@ def start_pass(sku, view, model_rel=""):
         raise ValueError("不支持的机位：%s" % view)
     src, exe = _resolve_pass_model(sku, model_rel)
 
+    if qwen_task_running():
+        raise ValueError("实验引擎（Qwen）任务正在运行。8GB 显存放不下两个 GPU 作业，"
+                         "请等它完成再出结构图。")
     with _pass_lock:
         if _pass_state["status"] == "running":
             raise ValueError("已有结构图任务在运行，请等它完成")
@@ -1974,6 +2494,9 @@ def start_pass_batch(sku, model_rel="", views=None):
         raise ValueError("机位列表有重复")
     src, exe = _resolve_pass_model(sku, model_rel)
 
+    if qwen_task_running():
+        raise ValueError("实验引擎（Qwen）任务正在运行。8GB 显存放不下两个 GPU 作业，"
+                         "请等它完成再出结构图。")
     total = len(views)
     views_label = "批量(%s)" % "、".join(views)
     with _pass_lock:
@@ -2036,9 +2559,20 @@ def guarded_submit(tid):
     if not t:
         raise ValueError("任务不存在：#%s" % tid)
     payload = json.loads(t.get("payload") or "{}")
+    # 实验引擎（Qwen）有自己的校验口径（见 _submit_qwen）：输入可以是产品图，
+    # 也可以是该机位的白模截图 clay.png。这里先放行，避免被 SDXL 的
+    # 「必须 source/ 开头」误伤（v3.5）。
+    if ((payload.get("_meta") or {}).get("engine_id") or "sdxl_controlled") != "sdxl_controlled":
+        return comfy_submit(tid)
     mode = (payload.get("_meta") or {}).get("mode")
     if mode == "controlled" and not _pass_exists(payload.get("depth_img")):
         raise RuntimeError("缺少当前机位的深度图，已阻止自动降级为纯文生图。请先生成/上传结构图。")
+    if mode == "controlled":
+        depth_path = _asset_path(payload.get("depth_img"))
+        if depth_path and os.path.commonpath((os.path.abspath(PASSES_DIR), os.path.abspath(depth_path))) == os.path.abspath(PASSES_DIR):
+            issue = _pass_manifest_issue(os.path.dirname(depth_path))
+            if issue:
+                raise RuntimeError(issue)
     if mode == "explore" and payload.get("depth_img") and _pass_exists(payload.get("depth_img")):
         raise RuntimeError("外观探索模式的任务意外带了深度图，已停止（避免混淆两种模式）")
     if mode == "image":
@@ -2216,6 +2750,8 @@ class Handler(SimpleHTTPRequestHandler):
                     f.write(chunk)
                     left -= len(chunk)
             os.replace(tmp, dest)
+            if kind == "pass" and meta.get("role") in MANUAL_PASS_ROLES:
+                _record_manual_pass(os.path.dirname(dest), meta["role"], dest)
         except ValueError as exc:
             return self.send_json({"error": str(exc)}, 400)
         finally:
@@ -2333,12 +2869,15 @@ class Handler(SimpleHTTPRequestHandler):
                             if p.get("group") == "six" and p.get("renderable", True)],
                 })
             if p == "/api/cmf":
-                # CMF 预设库（大纲 P0-4）：部件面板与参数卡的唯一材质来源
+                # 整机、部件与参数卡共用的唯一材质来源
                 try:
-                    with open(os.path.join(CONFIG_DIR, "cmf_presets.json"), "r", encoding="utf-8") as f:
-                        return self.send_json(json.load(f))
+                    return self.send_json(load_cmf_presets())
                 except (OSError, ValueError) as exc:
                     return self.send_json({"presets": [], "error": str(exc)}, 500)
+            if p == "/api/renderers":
+                # 出图引擎注册表（v3.5，只读）：前端下拉、状态文字与禁用规则都读这里。
+                # available/reason 由**服务端**探测得出，不依赖浏览器本地状态。
+                return self.send_json(renderers_report())
             if p == "/api/assets/file":
                 return self.serve_asset(q.get("rel", [""])[0])
             if p == "/api/changelog":

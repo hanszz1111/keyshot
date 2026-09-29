@@ -135,3 +135,12 @@ pre.code{margin:10px 0 0;padding:11px;background:#1e292e;color:#dbe6ea;border-ra
 .stage-top h2,.section-intro h1{text-wrap:balance}
 .compare-controls input[type=range]{min-height:26px}
 @media(max-width:760px){.compare-controls{flex-wrap:wrap;gap:9px}}
+
+/* =========================================================
+   出图引擎（v3.5）：稳定 SDXL / 实验 Qwen-Image-2.1
+   ========================================================= */
+.engine-field{margin-bottom:16px}
+.engine-status{color:var(--amber);font-weight:600}
+.engine-license{display:inline-block;margin-top:3px;font-size:11px;line-height:1.5;color:var(--muted)}
+#qwenResolutionField{margin-bottom:14px}
+#qwenResolutionField select{width:100%;height:42px;padding:0 12px;background:#fff;border:1px solid #cbd5d8;border-radius:10px;color:var(--ink)}

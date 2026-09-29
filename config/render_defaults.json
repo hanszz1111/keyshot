@@ -49,5 +49,49 @@
     "canny_w": 0.75,
     "canny_end_percent": 0.85,
     "_note": "denoise 下限提到 0.55：低于此值在 8–12 步下不足以改变材质。形状由 Canny ControlNet 守住，故 denoise 可以放到 0.85 而不跑形。"
+  },
+
+  "_engines_note": "出图引擎注册表（v3.5）。sdxl_controlled 是现有稳定链路，行为不变；qwen21_edit_local 是机外实验实例（ComfyUI 跑在 8190），默认 enabled:false —— 需要用户先把实验实例启动起来再手动开启。enabled 只是「是否允许选择」，服务端在入队与提交两处都会再校验模型文件/端口/节点，**不可用时报中文原因，绝不静默降级为 SDXL**。",
+  "render_engines": {
+    "sdxl_controlled": {
+      "label": "稳定模式 · SDXL / ControlNet",
+      "enabled": true,
+      "experimental": false,
+      "comfy_host": "http://127.0.0.1:8188",
+      "supports": ["controlnet", "img2img", "inpaint"],
+      "batch_allowed": true,
+      "note": "现有路径完全不变：白模结构约束、图片改图、局部重绘、批量都可用。"
+    },
+    "qwen21_edit_local": {
+      "label": "实验模式 · Qwen-Image-2.1（图片精修）",
+      "enabled": true,
+      "experimental": true,
+      "comfy_host": "http://127.0.0.1:8190",
+      "workflow": "comfy_workflow_qwen21_edit.json",
+      "weight_files": {
+        "unet": "qwen_image_2.1_int8_convrot.safetensors",
+        "clip": "qwen3vl_8b_w4a8.safetensors",
+        "vae": "qwen_image_2.1_vae_bf16.safetensors"
+      },
+      "required_nodes": ["UNETLoader", "CLIPLoader", "VAELoader", "TextEncodeQwenImage21", "KSampler"],
+      "supports": ["image_edit"],
+      "batch_allowed": false,
+      "disabled_reason": "纯文字新视角、多视角结构约束、局部掩膜与批量本轮不开放：单张链路已跑通，但尚未做多机位/多种子的成对盲评。",
+      "note": "独立实验实例（端口 8190），双击 F:\\AI-Renderer\\experiments\\启动Qwen21实验服务.bat 启动。8GB 实测单张 21.5 s、峰值显存 92%。实验模型权重采用 Qwen Research License（非商用）——个人研究/试用可用，转为收费客户项目或对外服务前须核对许可与 ADR-008。"
+    }
+  },
+
+  "_qwen21_edit_note": "Qwen-Image-2.1 图片精修基线。参数取自官方模板（t2i 与 edit 两者一致）：25 步 / CFG 1.0 / euler / simple / denoise 1.0。该模型为 CFG-distilled，CFG 拉到常规 3–7 不会更好，只会变慢并可能过曝。resolution 是**总像素预算**而非边长：参考图按自身长宽比折算成 32 的倍数，1232×752 在 resolution=768 下得到 992×608。",
+  "qwen21_edit": {
+    "steps": 25,
+    "cfg": 1.0,
+    "sampler_name": "euler",
+    "scheduler": "simple",
+    "denoise": 1.0,
+    "resolution": 768,
+    "seed_default": 43,
+    "filename_prefix": "qwen21",
+    "resolution_min": 512,
+    "resolution_max": 1536
   }
 }

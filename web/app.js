@@ -50,7 +50,8 @@ const ACCEPT_MODEL = new Set(["blend","glb","gltf","obj","stl","fbx","stp","step
 const STANDARD_VIEWS = ["front","3q4_left","3q4_right","side"];
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-let state = {assets:{items:[],models:[]},tasks:[],comfy:{online:false},ui:{blender:false},passJob:null,sku:"",sourceType:"model",modelCount:"4",imageCount:"1",sourceRelLoaded:"",sourceSize:null,sourceProbe:null,style:"studio",preview:"clay",running:false,runCount:0,selectedTask:null,ref:{rel:"",palette:[],strength:"L2_material"}};
+let state = {assets:{items:[],models:[]},tasks:[],comfy:{online:false},ui:{blender:false},passJob:null,sku:"",sourceType:"model",modelCount:"4",imageCount:"1",sourceRelLoaded:"",sourceSize:null,sourceProbe:null,style:"studio",preview:"clay",running:false,runCount:0,selectedTask:null,ref:{rel:"",palette:[],strength:"L2_material"},renderers:[],engineDefault:"sdxl_controlled"};
+let renderers=[];
 let lastFocus = null;
 
 function announce(message){$("statusMessage").textContent=message;}
@@ -127,7 +128,7 @@ function errorMessage(error){return error instanceof Error?error.message:String(
 
 async function refreshAll(){
   try{
-    await Promise.all([loadViewPresets(),loadCmfPresets()]);
+    await Promise.all([loadViewPresets(),loadCmfPresets(),loadRenderers()]);
     const [assets,tasks,comfy,ui]=await Promise.all([
       api("/api/assets"),api("/api/tasks?limit=300"),api("/api/comfy/status"),api("/api/ui/info")
     ]);
@@ -560,18 +561,130 @@ function renderService(){
     :"未检测到参考图控制组件。当前只把参考图的配色与影调写入提示词，原图本身不会参与生成。";
   renderProviderPanel();
 }
+/* --- 出图引擎（v3.5）：稳定 SDXL 与实验 Qwen-Image-2.1 并存 ---
+   可用性一律以服务端 /api/renderers 为准（不靠浏览器本地状态）。
+   实验引擎本轮只开放「单张图片精修」，其余能力按钮禁用并写明原因。
+   切换引擎不改变当前 SKU、机位、CMF 与已有任务。 */
+function engineInfo(id){return renderers.find(e=>e.id===id)||null;}
+function currentEngine(){const sel=$("engineSelect");return (sel&&sel.value)||state.engineDefault||"sdxl_controlled";}
+function isExperimentalEngine(){const e=engineInfo(currentEngine());return !!(e&&e.id!=="sdxl_controlled");}
+async function loadRenderers(){
+  try{
+    const data=await api("/api/renderers");
+    renderers=data.items||[];
+    state.engineDefault=data.default||"sdxl_controlled";
+    state.renderers=renderers;
+  }catch(error){renderers=[];console.warn("[形照] 引擎列表读取失败：",errorMessage(error));}
+  renderEngineField();
+}
+function renderEngineField(){
+  const sel=$("engineSelect");if(!sel)return;
+  const keep=sel.value||state.engineDefault;
+  clear(sel);
+  if(!renderers.length)sel.append(new Option("稳定模式 · SDXL / ControlNet","sdxl_controlled"));
+  for(const e of renderers){
+    sel.append(new Option(e.available?e.label:(e.label+"（不可用）"),e.id));
+  }
+  sel.value=renderers.some(e=>e.id===keep)?keep:(state.engineDefault||"sdxl_controlled");
+  renderEngineHint();
+  applyEngineConstraints();
+}
+function renderEngineHint(){
+  const el=$("engineHint");if(!el)return;
+  clear(el);
+  const e=engineInfo(currentEngine());
+  if(!e){el.append(text("span","引擎列表读取失败，将按稳定模式处理。"));return;}
+  if(e.id==="sdxl_controlled"){
+    el.append(text("span","现有链路：白模结构约束 + ControlNet 锁形；图片改图、局部重绘与批量都可用。"));
+    return;
+  }
+  el.append(text("span",e.available
+    ?"实验模式：8GB 实测单张约 21 秒；目前只开放「单张图片精修」——结构约束出图、多视角、局部掩膜与批量暂不开放。"
+    :"当前不可用："+(e.reason||"未知原因"),"engine-status"));
+  el.append(document.createElement("br"));
+  el.append(text("span","权重采用 Qwen Research License（非商用）：个人研究试用可用；转为收费客户项目、对外服务或正式商业交付前，须先核对许可与 ADR-008。","engine-license"));
+}
+/* 实验引擎的能力围栏：把不支持的入口禁用，并在 preflight 里说明为什么。 */
+function applyEngineConstraints(){
+  const experimental=isExperimentalEngine();
+  const lock=(id,locked)=>{
+    const el=$(id);if(!el)return;
+    if(locked){if(el.dataset.engineLocked===undefined)el.dataset.engineLocked=el.disabled?"1":"0";el.disabled=true;}
+    else if(el.dataset.engineLocked!==undefined){el.disabled=el.dataset.engineLocked==="1";delete el.dataset.engineLocked;}
+  };
+  for(const input of document.querySelectorAll('input[name="mode"]')){
+    if(experimental){if(input.dataset.engineLocked===undefined)input.dataset.engineLocked=input.disabled?"1":"0";input.disabled=true;}
+    else if(input.dataset.engineLocked!==undefined){input.disabled=input.dataset.engineLocked==="1";delete input.dataset.engineLocked;}
+  }
+  // 单张精修：张数/质量档/尺寸/视角都不适用（尺寸由 resolution 预算折算，服务端算）
+  for(const id of ["countSelect","qualitySelect","sizeSelect","viewSelect",
+                   "viewPickPreview","viewPickStandard","viewPickAll","viewPickNone",
+                   "passSelectedButton","passSixButton","partRenderButton","sectionPassMake"])lock(id,experimental);
+  const sizeCustom=$("sizeCustom");if(sizeCustom)sizeCustom.disabled=experimental;
+  renderEngineResolutionField(experimental);
+}
+function renderEngineResolutionField(experimental){
+  let field=$("qwenResolutionField");
+  if(!experimental){if(field)field.hidden=true;return;}
+  if(!field){
+    field=document.createElement("div");
+    field.id="qwenResolutionField";
+    field.className="row-fields";
+    const label=text("div","","");
+    label.append(text("label","精修分辨率（总像素预算）","field-label"));
+    const select=document.createElement("select");
+    select.id="qwenResolution";
+    for(const [value,caption] of [["640","640 · 最快"],["768","768 · 推荐"],["896","896"],["1024","1024 · 更细"]]){
+      select.append(new Option(caption,value));
+    }
+    select.value="768";
+    select.addEventListener("change",renderPreflight);
+    label.append(select);
+    field.append(label);
+    const hint=text("p","参考图会按自身长宽比折算到该像素预算（32 的倍数），因此不会拉变形；数值越大越慢、显存占用越高。8GB 卡建议不超过 1024。","field-help");
+    field.append(hint);
+    const anchor=$("sizeCustomField")||$("sizeSelect")?.closest(".row-fields")||$("generateButton");
+    anchor.parentNode.insertBefore(field,anchor);
+  }
+  field.hidden=false;
+}
+function onEngineChange(){
+  renderEngineHint();
+  applyEngineConstraints();
+  renderPreflight();
+  announce(`已切换到「${(engineInfo(currentEngine())||{}).label||currentEngine()}」；当前产品、机位与材质保持不变。`);
+}
 function renderPreflight(){
-  const box=$("preflight"),button=$("generateButton");const item=selectedItem(),row=viewInfo();const mode=getMode(),views=renderViews();
+  const box=$("preflight"),button=$("generateButton");const item=selectedItem(),row=viewInfo();
+  const experimental=isExperimentalEngine();
+  const mode=experimental?"image":getMode();const views=renderViews();
   const messages=[];let ready=true;
-  if(!item){messages.push(mode==="image"?"先上传产品图片。":"先选择产品或导入白模。 ");ready=false;}
+  const engine=engineInfo(currentEngine());
+  if(experimental){
+    // 引擎可用性先判：不可用就没必要继续谈材质与图片
+    if(!engine||!engine.available){messages.push("实验引擎当前不可用："+((engine&&engine.reason)||"未知原因"));ready=false;}
+    if(engine&&engine.disabled_reason)messages.push("能力范围："+engine.disabled_reason);
+  }
+  if(!item){messages.push(mode==="image"?(state.sourceType==="image"?"先上传产品图片。":"先选择产品或导入白模。"):"先选择产品或导入白模。 ");ready=false;}
   if(!state.comfy.online){messages.push("ComfyUI 未连接；启动后可出图。");ready=false;}
   if(!selectedCmf()){messages.push("材质库尚未加载；请刷新状态。");ready=false;}
   else if(!selectedCmf().ai_editable){messages.push("当前材质仅支持真渲染，不能提交 AI 出图。");ready=false;}
   if(mode==="image"){
-    if(item&&!item.source){messages.push("当前产品还没有源图片，请上传图片。");ready=false;}
-    else if(item?.source&&!state.sourceSize){messages.push("正在读取图片尺寸…");ready=false;}
-    else if(item?.source&&!sourceSize()){messages.push("按最长边缩到 1024 像素后，短边不足 256 像素；请上传比例更合适的图片。");ready=false;}
-    messages.push("图片改图会参考原图构图与轮廓，但无法保证孔位、文字和结构精度；请对照原图检查。");
+    if(experimental){
+      const inputRel=state.sourceType==="image"?(item?.source?.rel||""):(row?.files?.clay||"");
+      if(!inputRel){
+        messages.push(state.sourceType==="image"
+          ?"实验引擎需要一张产品图片作为输入，请先上传产品图片。"
+          :`实验引擎需要「${VIEW_ZH[selectedView()]||selectedView()}」的白模截图（clay.png），请先用稳定模式生成该机位结构图。`);
+        ready=false;
+      }
+      messages.push("实验模式（Qwen-Image-2.1）：一次只出 1 张，用于试材质 / 灯光 / 氛围；形状由输入图自身约束，不对几何精度作承诺。");
+    }else{
+      if(item&&!item.source){messages.push("当前产品还没有源图片，请上传图片。");ready=false;}
+      else if(item?.source&&!state.sourceSize){messages.push("正在读取图片尺寸…");ready=false;}
+      else if(item?.source&&!sourceSize()){messages.push("按最长边缩到 1024 像素后，短边不足 256 像素；请上传比例更合适的图片。");ready=false;}
+      messages.push("图片改图会参考原图构图与轮廓，但无法保证孔位、文字和结构精度；请对照原图检查。");
+    }
   }
   if(item&&mode==="controlled"){
     const missing=views.filter(view=>!viewHasPass(item,view,"depth"));
@@ -580,23 +693,24 @@ function renderPreflight(){
     if(weak.length)messages.push(`${weak.map(view=>VIEW_ZH[view]).join("、")}缺少法线图：仍可出图，但细节约束较弱。`);
   }
   if(item&&mode==="explore")messages.push("外观探索只使用文字；可能改变产品形状、孔位和细节。");
-  const batchCount=Number($("countSelect").value)*views.length;
-  if(batchCount>=15)messages.push(`本次共 ${batchCount} 张，逐张生成；可能耗时较长，请保持网页与渲染服务运行。任务会保存，可在任务列表续跑。`);
+  const batchCount=experimental?1:Number($("countSelect").value)*views.length;
+  if(!experimental&&batchCount>=15)messages.push(`本次共 ${batchCount} 张，逐张生成；可能耗时较长，请保持网页与渲染服务运行。任务会保存，可在任务列表续跑。`);
   const refOn=!!(state.ref.strength&&state.ref.rel&&(state.ref.palette||[]).length);
-  if(refOn){
+  if(!experimental&&refOn){
     const iadapterOn=!!(state.comfy&&state.comfy.ipadapter_ok);
     messages.push(`参考图已接入（${state.ref.strength}）：配色 ${state.ref.palette.slice(0,3).map(p=>p.hex).join(" ")} 与影调写入提示词`
       +(iadapterOn?"；IPAdapter 已就绪，图片同时作为条件注入。":"；图像编码器未接入，图片本身不参与条件注入。"));
   }
-  else if(state.ref.rel&&!state.ref.strength)messages.push("已上传参考图但强度选了「不使用」，本次不会生效。");
+  else if(!experimental&&state.ref.rel&&!state.ref.strength)messages.push("已上传参考图但强度选了「不使用」，本次不会生效。");
   if(ready&&mode==="controlled")messages.unshift("白模结构图和渲染服务已就绪。生成后请核对细节与文字。");
-  if(ready&&mode==="image")messages.unshift(`产品图片已就绪 · ${state.sourceSize.width} × ${state.sourceSize.height}。`);
+  if(ready&&mode==="image"&&!experimental&&state.sourceSize)messages.unshift(`产品图片已就绪 · ${state.sourceSize.width} × ${state.sourceSize.height}。`);
+  if(ready&&experimental)messages.unshift(`实验引擎已就绪 · 单张精修 · ${($("qwenResolution")||{}).value||768} 像素预算。`);
   box.className="preflight "+(ready?(mode==="controlled"||mode==="image"?"is-good":"is-warn"):(item?"is-warn":""));
   box.replaceChildren(...messages.map(message=>text("p",message)));
   const count=batchCount;
-  button.textContent=state.running?`正在生成 ${state.runCount} 张…`:`开始生成 ${count} 张`;
+  button.textContent=state.running?`正在生成 ${state.runCount} 张…`:(experimental?"开始精修 1 张（实验）":`开始生成 ${count} 张`);
   button.disabled=!ready||state.running;
-  $("stageBadge").textContent=!item?"等待导入":mode==="image"?(ready?"图片已就绪":"等待图片"):mode==="explore"?"外观探索":ready?"结构图就绪":"结构图待准备";
+  $("stageBadge").textContent=!item?"等待导入":experimental?(ready?"实验引擎就绪":"实验引擎待准备"):mode==="image"?(ready?"图片已就绪":"等待图片"):mode==="explore"?"外观探索":ready?"结构图就绪":"结构图待准备";
   $("stageBadge").className="stage-badge "+(ready?"is-ready":"");
 }
 function renderPassReadiness(){
@@ -784,13 +898,44 @@ function buildPayload(sku,view,variant,mode){
   const q=QUALITY[qualityKey]||QUALITY.standard;
   const payload={positive,negative:NEGATIVE,seed:(Math.floor(Date.now()/1000)+variant)%2147483647,
     width:dim.width,height:dim.height,
-    _meta:{sku,view,variant,mode,ui_version:"2.0",style:state.style,description,
+    _meta:{sku,view,variant,mode,ui_version:"2.0",engine_id:currentEngine(),style:state.style,description,
       output:{width:dim.width,height:dim.height,source:dim.source},
       quality:qualityKey,cmf_preset_id:material.id,cmf_texture:material.texture,
       // ★ 大纲 P0-2：把最终生效的采样参数也写进任务，日志里可复现；
       //   仅结构约束模式覆盖，img2img 用它自己的 img2img 专参
       sampling:mode==="controlled"?{steps:q.steps,cfg:q.cfg}:null,
       reference:useRef?{image:state.ref.rel,strength:state.ref.strength,palette:state.ref.palette.slice(0,4).map(p=>p.hex),applied:refApplied}:null}};
+
+  // ★ v3.5 实验引擎（Qwen-Image-2.1）分支：与上面 SDXL 载荷**完全不同的字段集**。
+  //   不带 depth/normal/denoise/width/height —— 服务端按 render_defaults.qwen21_edit 填基线，
+  //   这里只传提示词、输入图、种子与分辨率预算。
+  if(isExperimentalEngine()){
+    const inputRel=state.sourceType==="image"
+      ?(selectedItem()?.source?.rel||"")
+      :(viewInfo()?.files?.clay||"");
+    if(!inputRel)throw new Error(state.sourceType==="image"
+      ?"实验引擎需要一张产品图片作为输入，请先上传产品图片。"
+      :`实验引擎需要${VIEW_ZH[view]||view}的白模截图（clay.png），请先生成该机位结构图。`);
+    const qwenPositive=[
+      `Professional e-commerce product photograph of ${sku}, ${VIEW_EN[view]||view}.`,
+      "Keep the silhouette, camera angle, part count, openings and hole positions exactly as the input image shows.",
+      `Change only the surface finish: main body ${material.prompt}, color ${color}; ${material.texture.kind} texture at ${material.texture.scale} scale with ${material.texture.direction} direction; process ${material.process}.`,
+      lighting+".",style.text+".",
+      "Photorealistic material response, soft studio lighting, clean contact shadow, sharp focus.",
+      description?`User's design requirements (retain exact intent): ${description}`:""
+    ].filter(Boolean).join(" ");
+    return {
+      positive:qwenPositive,negative:NEGATIVE,
+      seed:(Math.floor(Date.now()/1000)+variant)%2147483647,
+      source_img:inputRel,
+      resolution:Number(($("qwenResolution")||{}).value||768),
+      _meta:{sku,view,variant,mode:"image",ui_version:"2.0",engine_id:currentEngine(),
+        style:state.style,description,cmf_preset_id:material.id,cmf_texture:material.texture,
+        input_kind:state.sourceType==="image"?"photo":"clay",
+        experimental:true,sampling:null,reference:null,
+        note:"实验引擎单张精修：形状由输入图自身约束（无 ControlNet/结构图参与），不对几何精度作承诺。"}
+    };
+  }
   // 质量档只作用于「结构约束出图」；图片改图有意保留它自己的 img2img 专参
   // （那套 denoise/steps 是配着 Canny 链路调出来的，不该被这里覆盖）。
   if(mode==="controlled"){payload.steps=q.steps;payload.cfg=q.cfg;}
@@ -844,7 +989,7 @@ async function executeTask(task){
   const payload=typeof task.payload==="string"?JSON.parse(task.payload):(task.payload||{});
   const mode=payload._meta?.mode;
   if(!["controlled","explore","image"].includes(mode))throw new Error("旧版任务请到旧控制台执行");
-  if(mode==="image"&&(!payload.source_img||!payload.source_img.startsWith("source/")))throw new Error("图片改图任务缺少源图");
+  if(mode==="image"&&(!payload.source_img||!(payload.source_img.startsWith("source/")||payload.source_img.endsWith("/clay.png"))))throw new Error("图片改图任务缺少源图");
   if(mode==="controlled"){
     const assets=await api("/api/assets");const item=assets.items.find(x=>x.sku===task.sku);
     const row=item?.views?.find(x=>x.view===task.view);
@@ -1039,6 +1184,7 @@ $("viewSelect").addEventListener("change",()=>{
   renderPassReadiness();renderPreflight();renderResults();renderHero();
 });
 $("countSelect").addEventListener("change",renderPreflight);
+$("engineSelect").addEventListener("change",onEngineChange);
 $("sizeSelect").addEventListener("change",()=>{
   const isCustom=$("sizeSelect").value==="custom";
   $("sizeCustomField").hidden=!isCustom;

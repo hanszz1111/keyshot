@@ -105,6 +105,11 @@
 
         <div class="step final-step" id="renderStep">
           <div class="step-head"><span class="step-number">3</span><h2>检查并出图</h2></div>
+          <div class="engine-field" id="engineField">
+            <label for="engineSelect" class="field-label">出图模型</label>
+            <select id="engineSelect" name="engine"><option value="sdxl_controlled">稳定模式 · SDXL / ControlNet</option></select>
+            <p class="field-help" id="engineHint">正在检查可用引擎…</p>
+          </div>
           <fieldset class="mode-set" id="modelModeSet">
             <legend class="field-label">生成方式</legend>
             <label class="mode-choice"><input type="radio" name="mode" value="controlled" checked><span><strong>结构约束出图</strong><small>使用深度图约束轮廓；细节仍需核对</small></span></label>

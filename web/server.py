@@ -1518,6 +1518,21 @@ def fill_qwen_workflow(wf, payload, qcfg, cfg):
     return applied, skipped
 
 
+def qwen_input_ok(rel):
+    """实验引擎的输入图路径是否合规。
+
+    ★ 口径必须与 payload 的 depth_img 一致：pass 图相对 assets/passes，
+      形如 `<SKU>/<机位>/clay.png`，**不带 `passes/` 前缀**（见 _asset_path 注释）。
+      2026-09-29 曾在这里错写成要求 `passes/` 开头，导致界面上的正确路径全被判
+      「缺少输入图片」→ 千问渲染必定失败。抽成独立函数是为了让自检能直接钉住这条契约。
+      注意：本函数只管**路径形态**，文件是否存在由调用方用 _pass_exists() 另判。
+    """
+    rel = str(rel or "").strip()
+    if not rel:
+        return False
+    return rel.startswith("source/") or rel.endswith("/clay.png")
+
+
 def _submit_qwen(tid, payload, engine_id):
     """实验引擎提交：Qwen-Image-2.1 图片精修（单张）。
 
@@ -1540,11 +1555,11 @@ def _submit_qwen(tid, payload, engine_id):
             raise RuntimeError("实验引擎不接受结构图/掩膜载荷（%s），请改用稳定模式。" % k)
 
     rel = payload.get("source_img") or ""
-    # 输入可以是产品图（source/…），也可以是该机位的白模截图（passes/<SKU>/<view>/clay.png）——
-    # 执行方案第 5 节明确要覆盖「同机位白模或产品照片」两种输入。
-    ok_input = rel.startswith("source/") or (rel.startswith("passes/") and rel.endswith("/clay.png"))
-    if not ok_input or not _pass_exists(rel):
-        raise RuntimeError("实验引擎缺少可用的输入图片：需要产品图片，或该机位的白模截图 clay.png。")
+    # 输入可以是产品图，也可以是该机位的白模截图（执行方案第 5 节：同机位白模或产品照片）。
+    # 路径形态由 qwen_input_ok() 判定（口径与 depth_img 一致，不带 passes/ 前缀），
+    # 文件是否存在在这里实校 —— 两层都过才放行。
+    if not qwen_input_ok(rel) or not _pass_exists(rel):
+        raise RuntimeError("实验引擎缺少可用的输入图片：需要产品图片，或该机位已有的白模截图 clay.png。")
 
     # 8GB 单卡：Qwen 与 Blender 结构图不能同时跑（执行方案第 6 节队列约束）
     if _pass_state.get("status") == "running":

@@ -65,7 +65,13 @@ function selectedViews(){
   // 一个都没勾时退回「预览视角」，避免计算出 0 张让人以为坏了
   return picked.length?picked:[selectedView()];
 }
-function renderViews(){return state.sourceType==="image"?["photo"]:selectedViews();}
+function renderViews(){
+  if(state.sourceType==="image")return ["photo"];
+  // 实验引擎只出「当前预览机位」的单张（执行方案第 6 节：多视角先禁用）。
+  // 这样预检与实际提交的机位永远一致，不会出现「预检说 1 张、实际提交 8 条」。
+  if(isExperimentalEngine())return [selectedView()];
+  return selectedViews();
+}
 function sourceSize(){
   const size=state.sourceSize;if(!size)return null;
   const scale=Math.min(1,1024/Math.max(size.width,size.height));
@@ -620,6 +626,11 @@ function applyEngineConstraints(){
   for(const id of ["countSelect","qualitySelect","sizeSelect","viewSelect",
                    "viewPickPreview","viewPickStandard","viewPickAll","viewPickNone",
                    "passSelectedButton","passSixButton","partRenderButton","sectionPassMake"])lock(id,experimental);
+  // 视角多选的勾选框也要锁：实验引擎只出当前预览机位，勾了也不生效
+  for(const cb of document.querySelectorAll('#viewChecks input[type="checkbox"]')){
+    if(experimental){if(cb.dataset.engineLocked===undefined)cb.dataset.engineLocked=cb.disabled?"1":"0";cb.disabled=true;}
+    else if(cb.dataset.engineLocked!==undefined){cb.disabled=cb.dataset.engineLocked==="1";delete cb.dataset.engineLocked;}
+  }
   const sizeCustom=$("sizeCustom");if(sizeCustom)sizeCustom.disabled=experimental;
   renderEngineResolutionField(experimental);
 }
@@ -671,12 +682,18 @@ function renderPreflight(){
   else if(!selectedCmf().ai_editable){messages.push("当前材质仅支持真渲染，不能提交 AI 出图。");ready=false;}
   if(mode==="image"){
     if(experimental){
-      const inputRel=state.sourceType==="image"?(item?.source?.rel||""):(row?.files?.clay||"");
-      if(!inputRel){
-        messages.push(state.sourceType==="image"
-          ?"实验引擎需要一张产品图片作为输入，请先上传产品图片。"
-          :`实验引擎需要「${VIEW_ZH[selectedView()]||selectedView()}」的白模截图（clay.png），请先用稳定模式生成该机位结构图。`);
-        ready=false;
+      // 逐机位检查输入图（views 在实验引擎下就是「当前预览机位」这一个）
+      if(state.sourceType==="image"){
+        if(!item?.source?.rel){
+          messages.push("实验引擎需要一张产品图片作为输入，请先上传产品图片。");
+          ready=false;
+        }
+      }else{
+        const missing=views.filter(v=>!item?.views?.find(r=>r.view===v)?.files?.clay);
+        if(missing.length){
+          messages.push(`实验引擎需要${missing.map(v=>VIEW_ZH[v]||v).join("、")}的白模截图（clay.png），这些机位还没有：先用「补齐所选视角结构图」生成，或换一个已有白模截图的机位。`);
+          ready=false;
+        }
       }
       messages.push("实验模式（Qwen-Image-2.1）：一次只出 1 张，用于试材质 / 灯光 / 氛围；形状由输入图自身约束，不对几何精度作承诺。");
     }else{
@@ -910,12 +927,14 @@ function buildPayload(sku,view,variant,mode){
   //   不带 depth/normal/denoise/width/height —— 服务端按 render_defaults.qwen21_edit 填基线，
   //   这里只传提示词、输入图、种子与分辨率预算。
   if(isExperimentalEngine()){
+    // ★ 按**本次要出的机位**取输入图，不能用当前预览机位 —— 否则会出现
+    //   「拿 side_left 的图去出 3q4_left 的任务」这种张冠李戴（2026-09-29 实测踩到）。
     const inputRel=state.sourceType==="image"
       ?(selectedItem()?.source?.rel||"")
-      :(viewInfo()?.files?.clay||"");
+      :(selectedItem()?.views?.find(r=>r.view===view)?.files?.clay||"");
     if(!inputRel)throw new Error(state.sourceType==="image"
       ?"实验引擎需要一张产品图片作为输入，请先上传产品图片。"
-      :`实验引擎需要${VIEW_ZH[view]||view}的白模截图（clay.png），请先生成该机位结构图。`);
+      :`实验引擎需要「${VIEW_ZH[view]||view}」的白模截图（clay.png），该机位还没有，请先生成它的结构图。`);
     const qwenPositive=[
       `Professional e-commerce product photograph of ${sku}, ${VIEW_EN[view]||view}.`,
       "Keep the silhouette, camera angle, part count, openings and hole positions exactly as the input image shows.",
@@ -968,7 +987,7 @@ function buildPayload(sku,view,variant,mode){
 }
 async function generate(){
   renderPreflight();if($("generateButton").disabled)return;
-  const sku=state.sku,views=renderViews(),perView=Number($("countSelect").value),count=perView*views.length,mode=getMode();
+  const sku=state.sku,views=renderViews(),perView=isExperimentalEngine()?1:Number($("countSelect").value),count=perView*views.length,mode=getMode();
   const tasks=views.flatMap(view=>Array.from({length:perView},(_,variant)=>{const payload=buildPayload(sku,view,variant,mode);return{sku,view,variant,positive:payload.positive,negative:payload.negative,payload};}));
   state.running=true;state.runCount=count;renderPreflight();announce(`正在加入并生成 ${count} 张图片`);
   try{

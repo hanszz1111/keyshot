@@ -198,6 +198,20 @@ def main():
           _qwf2["5"]["inputs"]["resolution"] == 832 and
           {"positive", "seed", "resolution"} <= set(_qapplied))
 
+    # ★ 2026-09-29 回归钉：实验引擎输入图的**路径口径**。
+    #   项目约定 pass 图路径相对 assets/passes，形如 `<SKU>/<机位>/clay.png`，**不带 passes/ 前缀**
+    #   （与 payload 的 depth_img 一致，见 _asset_path 注释）。
+    #   曾经错写成要求 `passes/` 开头 → 界面上传的正确路径 100% 被判「缺少输入图片」，
+    #   用户看到的就是「千问渲染必定失败」（24 条 failed）。这条断言防止再犯。
+    check("实验引擎输入图路径口径与 depth_img 一致（不带 passes/ 前缀必须通过）",
+          S.qwen_input_ok("AI渲染1/front/clay.png") is True and      # ← 曾被误判 False 的就是这个
+          S.qwen_input_ok("stl_5/side/clay.png") is True and
+          S.qwen_input_ok("source/stl_2/a.png") is True and
+          S.qwen_input_ok("AI渲染1/front/depth.png") is False and    # 只收 clay 截图与产品图
+          S.qwen_input_ok("") is False and
+          S.qwen_input_ok(None) is False,
+          "带 passes/ 与否都能过，但绝不能反过来要求必须带")
+
     # 实验引擎不可用时的阻断：**必须报错，不能静默降级成 SDXL 出图**。
     # 这里强制把 enabled 置 false，保证结果不受用户当前配置影响（可用于离线自检）。
     _real_engines = S.render_engines
@@ -243,6 +257,14 @@ def main():
         app_js = f.read()
     check("补齐所选视角会检查整组三通道而非仅深度",
           'filter(view=>!item.views?.find(row=>row.view===view)?.ok)' in app_js)
+
+    # 2026-09-29 回归钉：实验引擎必须按**目标机位**取白模截图，且只出单张。
+    # 曾经用「预览机位」取图 → 出现「任务标记 3q4_left、输入图却是 side_left」的张冠李戴。
+    check("实验引擎按目标机位取白模截图、且限制为单张",
+          "find(r=>r.view===view)?.files?.clay" in app_js and
+          "isExperimentalEngine()?1:" in app_js and
+          'isExperimentalEngine())return [selectedView()]' in app_js,
+          "三个点：按 view 取图 / perView=1 / 只出当前机位")
 
     st, body = req("GET", f"/api/card?sku={TEST_SKU}")
     check("GET /api/card 单张读取", st == 200 and json.loads(body)["asset"]["sku"] == TEST_SKU)

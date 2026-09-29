@@ -134,6 +134,29 @@ def main():
             json.dump(sample, f)
         check("自动重生成后旧手工记录失效", "无有效结构" in S._pass_manifest_issue(tmp))
 
+    # ---- 大纲 §4：设计语言 / 布光预设（v3.8）----
+    st, body = req("GET", "/api/designs")
+    dd = json.loads(body)
+    dp = dd.get("presets") or []
+    check("GET /api/designs 返回设计/布光预设",
+          st == 200 and len(dp) >= 4 and
+          all(p.get("id") and p.get("name") and p.get("prompt") and p.get("lighting") for p in dp),
+          "预设 %d 套 / 共用负面约束 %d 条" % (len(dp), len(dd.get("negative_common") or [])))
+    _ids = [p["id"] for p in dp]
+    check("设计预设 ID 唯一且都带背景与阴影定义",
+          len(_ids) == len(set(_ids)) and all(p.get("background") and p.get("shadow") for p in dp))
+    _pd = {"positive": "BASE", "negative": "blurry", "_meta": {"design": _ids[0]}}
+    _dn, _de = S.apply_design(_pd)
+    check("apply_design 把预设提示词并进正/负面（后端合并，前端只传 id）",
+          _de is None and bool(_dn) and _pd["positive"].startswith("BASE")
+          and len(_pd["positive"]) > len("BASE") and "invented" in _pd["negative"])
+    _pd2 = {"positive": "X", "negative": "Y", "_meta": {}}
+    check("未选设计预设时载荷原样不变（向后兼容）",
+          S.apply_design(_pd2) == (None, None) and _pd2["positive"] == "X" and _pd2["negative"] == "Y")
+    _pd3 = {"positive": "X", "negative": "Y", "_meta": {"design": "no_such_id"}}
+    check("未知设计预设报中文错误而不是静默忽略",
+          "未知" in (S.apply_design(_pd3)[1] or ""))
+
     # ---- v3.5：出图引擎注册表 + engine_id 兼容性契约（不需要 GPU / 实验实例）----
     st, body = req("GET", "/api/renderers")
     rd = json.loads(body)

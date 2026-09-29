@@ -1,0 +1,137 @@
+{
+  "_comment": "设计语言 / 布光预设库（大纲 §4）。只定义「怎么把已有几何拍好」——布光、机位、背景、反射组织、边缘高光、阴影、细节优先级，**绝不描述 CAD 中不存在的结构**（不加筋条、不加倒角、不加开孔）。",
+  "_usage": "web/server.py 的 GET /api/designs 提供给前端；出图时把 design.prompt 追加到正向提示词、design.negative 合并进负面提示词。没有选设计预设时行为与以前完全一致。",
+  "_adr": "ADR-002：丝印 / LOGO / 刻度 / 量程 / 认证标识 / 透明件一律不在这里描述，仍由真渲染 + 图层回贴负责。",
+
+  "_negative_common_note": "所有设计预设共用的额外负面约束：抑制 AI「补结构」。原项目 NEGATIVE 已含 invented text / fake logo，这里补的是工业品特有的臆造件。",
+  "negative_common": [
+    "invented ventilation holes",
+    "invented screws or screw heads",
+    "invented seams or stitching",
+    "invented labels or engraved text",
+    "extra buttons or dials",
+    "extra openings or slots",
+    "toy-like plastic look",
+    "oversized surface grain",
+    "warped or rounded-off edges",
+    "fake glossy reflections on matte surfaces"
+  ],
+
+  "presets": [
+    {
+      "id": "precision_instrument",
+      "name": "精密仪器",
+      "summary": "高控制力布光，强调尺寸精度与加工质感；表面干净、反射克制，适合激光水平仪、测距仪一类量测工具。",
+      "lighting": "large softbox key at 45° from upper left, weak fill from the right, tight rim light along both edges",
+      "background": "light neutral grey seamless, subtle vertical gradient, no visible horizon",
+      "reflection": "controlled reflections only — long narrow highlights on metal trim, low-contrast sheen on plastic",
+      "edge_highlight": "thin continuous specular line along chamfers and part boundaries to read the silhouette",
+      "shadow": "soft contact shadow directly under the base, short and dense, no cast shadow across the background",
+      "detail_priority": [
+        "part boundary lines and chamfers",
+        "surface finish uniformity",
+        "control/button definition",
+        "material contrast between plastic and metal"
+      ],
+      "prompt": "Precision instrument product photography; large softbox key light from upper left with tight rim light along both edges; controlled narrow highlights on metal trim and low-contrast sheen on plastic; thin continuous specular line along chamfers to read the silhouette; soft short contact shadow under the base; light neutral grey seamless background with subtle vertical gradient; sharp focus across the whole product; industrial metrology grade presentation.",
+      "negative": [
+        "harsh specular blowout",
+        "coloured lighting",
+        "busy background props",
+        "vignetting"
+      ]
+    },
+    {
+      "id": "outdoor_durable",
+      "name": "户外耐用",
+      "summary": "略强方向感的户外光，材质对比更明确，突出抗摔、防水、耐候的气质；不改结构，只改光照与质感表达。",
+      "lighting": "single directional key from upper right with clear falloff, cool sky fill, distinct rim on the shadow side",
+      "background": "matte dark grey or weathered concrete-like seamless surface, slight texture, blurred",
+      "reflection": "broader but still diffused highlights; rubber and grip areas read flat and non-reflective",
+      "edge_highlight": "strong rim light to separate the product from a darker background",
+      "shadow": "longer directional contact shadow to imply outdoor sun angle",
+      "detail_priority": [
+        "grip and overmould texture",
+        "impact-resistant corner thickness",
+        "material durability cues",
+        "silhouette readability against dark background"
+      ],
+      "prompt": "Rugged outdoor product photography; single directional key light from upper right with clear falloff, cool sky fill and a distinct rim on the shadow side; broader diffused highlights, flat non-reflective rubber grip areas; strong rim light separating the product from a darker matte background; longer directional contact shadow implying an outdoor sun angle; weathered matte surface with subtle texture, blurred; durable industrial tool presentation.",
+      "negative": [
+        "studio-clean white background",
+        "multiple light sources",
+        "glossy showroom finish",
+        "floating product"
+      ]
+    },
+    {
+      "id": "lab_equipment",
+      "name": "实验室设备",
+      "summary": "干净、均匀、无色彩倾向的临床感布光，适合强调读数、面板与洁净材质。",
+      "lighting": "even overhead diffusion plus two symmetric side fills, near-shadowless key, no colour cast",
+      "background": "pure white or very light cool grey seamless, absolutely even",
+      "reflection": "soft broad highlights occupying at most a third of each surface, no hot spots",
+      "edge_highlight": "minimal — silhouette carried by slight tonal separation rather than a specular line",
+      "shadow": "very faint even contact shadow, almost ambient",
+      "detail_priority": [
+        "panel and readout clarity",
+        "cleanliness and absence of dust",
+        "uniform surface finish",
+        "precise part alignment"
+      ],
+      "prompt": "Clinical laboratory equipment photography; even overhead diffusion with two symmetric side fills producing a near-shadowless key and no colour cast; soft broad highlights covering no more than a third of any surface with no hot spots; minimal edge specular, silhouette carried by gentle tonal separation; very faint even contact shadow; pure white seamless background; absolutely even and dust-free presentation.",
+      "negative": [
+        "warm or coloured light",
+        "dramatic contrast",
+        "visible dust or scratches",
+        "dark background"
+      ]
+    },
+    {
+      "id": "restrained_industrial_minimal",
+      "name": "克制高端工业极简",
+      "summary": "低对比、大留白、只靠材质与边缘高光说话；适合做主图或品牌调性图。",
+      "lighting": "one very large bounceless soft source overhead-left, extremely soft gradient falloff, no secondary source",
+      "background": "near-flat light grey with generous empty space around the product",
+      "reflection": "single long soft highlight running along the main body, everything else matte",
+      "edge_highlight": "subtle, only on the upper-left facing chamfer",
+      "shadow": "minimal diffuse shadow, no hard edges, low opacity",
+      "detail_priority": [
+        "overall form and proportion",
+        "material honesty (matte stays matte)",
+        "generous negative space",
+        "restraint — nothing decorative added"
+      ],
+      "prompt": "Restrained high-end industrial minimalism; one very large soft overhead-left source with extremely soft gradient falloff and no secondary source; single long soft highlight along the main body with everything else fully matte; subtle edge highlight only on the upper-left chamfer; minimal diffuse low-opacity shadow; near-flat light grey background with generous empty space around the product; quiet, expensive, brand-level presentation.",
+      "negative": [
+        "high contrast",
+        "graphic or neon elements",
+        "multiple highlights",
+        "crowded composition"
+      ]
+    },
+    {
+      "id": "process_detail",
+      "name": "局部工艺特写",
+      "summary": "近距离展示现有加工痕迹（拉丝方向、注塑纹、倒角高光、材质交界），用于详情页工艺说明位。",
+      "lighting": "low-angle grazing light to reveal surface micro-structure, one soft fill to keep shadows open",
+      "background": "uncluttered neutral, out of focus",
+      "reflection": "grazing highlights that follow the actual machining direction",
+      "edge_highlight": "crisp highlight along chamfers and the material transition line",
+      "shadow": "tight contact shadow under the featured detail only",
+      "detail_priority": [
+        "brushed direction consistency",
+        "injection-moulding grain",
+        "chamfer highlight",
+        "material interface boundary"
+      ],
+      "prompt": "Close-up process detail photography of an existing surface; low-angle grazing light revealing surface micro-structure with one soft fill keeping shadows open; grazing highlights following the actual machining direction; crisp highlight along chamfers and material transition lines; tight contact shadow under the featured detail; uncluttered out-of-focus neutral background; macro-level focus on the existing finish, no added geometry.",
+      "negative": [
+        "whole-product wide shot",
+        "shallow depth of field hiding the detail",
+        "added scratches or wear marks",
+        "water droplets"
+      ]
+    }
+  ]
+}

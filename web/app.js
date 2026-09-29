@@ -134,7 +134,7 @@ function errorMessage(error){return error instanceof Error?error.message:String(
 
 async function refreshAll(){
   try{
-    await Promise.all([loadViewPresets(),loadCmfPresets(),loadRenderers()]);
+    await Promise.all([loadViewPresets(),loadCmfPresets(),loadRenderers(),loadDesignPresets()]);
     const [assets,tasks,comfy,ui]=await Promise.all([
       api("/api/assets"),api("/api/tasks?limit=300"),api("/api/comfy/status"),api("/api/ui/info")
     ]);
@@ -339,6 +339,31 @@ async function loadCmfPresets(){
   updateBodyCmfInfo();
 }
 function selectedCmf(){return cmfPresets.find(p=>p.id===$("materialSelect").value)||null;}
+/* --- 大纲 §4：设计语言 / 布光预设 ---
+   前端只传 id，提示词与负面约束由**服务端**合并 —— 两边各拼一份迟早会不一致，
+   「选了却没生效」这种问题最难查。 */
+let designPresets=[];
+async function loadDesignPresets(){
+  try{
+    const d=await api("/api/designs");
+    designPresets=d.presets||[];
+  }catch(error){designPresets=[];console.warn("[形照] 设计预设读取失败：",errorMessage(error));}
+  const sel=$("designSelect");if(!sel)return;
+  const keep=sel.value;
+  clear(sel);
+  sel.append(new Option("不指定（沿用默认影棚）",""));
+  for(const p of designPresets)sel.append(new Option(p.name,p.id));
+  sel.value=designPresets.some(p=>p.id===keep)?keep:"";
+  renderDesignInfo();
+}
+function selectedDesign(){return designPresets.find(p=>p.id===$("designSelect").value)||null;}
+function renderDesignInfo(){
+  const el=$("designDescription");if(!el)return;
+  const d=selectedDesign();
+  el.textContent=d
+    ?`${d.summary}（提示词与负面约束由服务端合并；共 ${designPresets.length} 套可选）`
+    :"只调整布光、背景、反射与阴影的表达方式，不会改变产品结构。";
+}
 function updateBodyCmfInfo(){
   const preset=selectedCmf();if(!preset)return;
   $("cmfDescription").textContent=`${preset.base} · ${preset.finish} · ${preset.process} · 纹理 ${preset.texture.kind}/${preset.texture.direction}。3D 仅近似显示颜色与反射，真实细纹需在成图核对。`;
@@ -916,6 +941,7 @@ function buildPayload(sku,view,variant,mode){
   const payload={positive,negative:NEGATIVE,seed:(Math.floor(Date.now()/1000)+variant)%2147483647,
     width:dim.width,height:dim.height,
     _meta:{sku,view,variant,mode,ui_version:"2.0",engine_id:currentEngine(),style:state.style,description,
+      design:($("designSelect")||{}).value||"",
       output:{width:dim.width,height:dim.height,source:dim.source},
       quality:qualityKey,cmf_preset_id:material.id,cmf_texture:material.texture,
       // ★ 大纲 P0-2：把最终生效的采样参数也写进任务，日志里可复现；
@@ -949,6 +975,7 @@ function buildPayload(sku,view,variant,mode){
       source_img:inputRel,
       resolution:Number(($("qwenResolution")||{}).value||768),
       _meta:{sku,view,variant,mode:"image",ui_version:"2.0",engine_id:currentEngine(),
+        design:($("designSelect")||{}).value||"",
         style:state.style,description,cmf_preset_id:material.id,cmf_texture:material.texture,
         input_kind:state.sourceType==="image"?"photo":"clay",
         experimental:true,sampling:null,reference:null,
@@ -1262,6 +1289,7 @@ $("heroCanvas").addEventListener("pointerup",e=>{
 });
 $("partClear").addEventListener("click",()=>setPickedPart(null));
 window.addEventListener("resize",()=>{if(state.preview==="model3d")resize3D();});
+$("designSelect").addEventListener("change",()=>{renderDesignInfo();renderPreflight();});
 $("materialSelect").addEventListener("change",()=>{
   const preset=selectedCmf();if(!preset)return;
   $("bodyColor").value=preset.color;

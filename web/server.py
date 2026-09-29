@@ -987,6 +987,52 @@ def clear_tasks():
 COMFY = os.environ.get("COMFY_HOST", "http://127.0.0.1:8188")
 CONFIG_DIR = os.path.join(ROOT, "config")
 CMF_PRESETS_PATH = os.path.join(CONFIG_DIR, "cmf_presets.json")
+# 大纲 §4（2026-09-29）：设计语言 / 布光预设。只描述「怎么把已有几何拍好」——
+# 布光、背景、反射组织、边缘高光、阴影、细节优先级，**不描述 CAD 中不存在的结构**；
+# 丝印 / 刻度 / 透明件仍按 ADR-002 走真渲染。
+DESIGN_PRESETS_PATH = os.path.join(CONFIG_DIR, "design_presets.json")
+
+
+def load_design_presets():
+    """读设计/布光预设。缺失或损坏 → 返回空表，不影响出图（只是没得选）。"""
+    try:
+        with open(DESIGN_PRESETS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {"presets": [], "negative_common": []}
+    presets = data.get("presets")
+    return {"presets": presets if isinstance(presets, list) else [],
+            "negative_common": data.get("negative_common") or []}
+
+
+def apply_design(payload):
+    """把设计预设的提示词片段并入载荷。返回 (预设名, 错误)。
+
+    放在**后端**做：前端只传 `_meta.design` 这个 id，避免两边各拼一份提示词
+    （口径一旦不一致，「选了设计预设却没生效」这种问题很难查）。
+    未选设计预设时原样返回 —— 行为与以前完全一致。
+    """
+    meta = payload.get("_meta") or {}
+    did = meta.get("design") or ""
+    if not did:
+        return None, None
+    data = load_design_presets()
+    preset = next((p for p in data["presets"] if p.get("id") == did), None)
+    if not preset:
+        return None, "未知的设计预设「%s」" % did
+    pos = (payload.get("positive") or "").strip()
+    neg = (payload.get("negative") or "").strip()
+    extra_pos = (preset.get("prompt") or "").strip()
+    extra_neg = [str(v) for v in (preset.get("negative") or [])]
+    extra_neg += [str(v) for v in (data.get("negative_common") or [])]
+    if extra_pos:
+        payload["positive"] = (pos + " " + extra_pos).strip()
+    if extra_neg:
+        payload["negative"] = (neg + (", " if neg else "") + ", ".join(extra_neg)).strip()
+    meta["design"] = did
+    meta["design_name"] = preset.get("name") or did
+    payload["_meta"] = meta
+    return preset.get("name") or did, None
 
 
 def load_cmf_presets():
@@ -1615,6 +1661,11 @@ def comfy_submit(tid):
     if not t:
         raise RuntimeError("任务不存在：#%s" % tid)
     payload = json.loads(t.get("payload") or "{}")
+    # 大纲 §4：设计/布光预设。选定后由**后端**把提示词片段并进载荷（前端只传 id）。
+    # 放在引擎分流**之前**：稳定链路与实验引擎都适用。
+    design_name, design_err = apply_design(payload)
+    if design_err:
+        raise RuntimeError(design_err)
     # 引擎分流（v3.5）：实验引擎与稳定链路完全分开 —— 不同端口、不同工作流、不同参数。
     _eng = (payload.get("_meta") or {}).get("engine_id") or "sdxl_controlled"
     if _eng != "sdxl_controlled":
@@ -1785,6 +1836,7 @@ def comfy_submit(tid):
         "checkpoint": ckpt,
         "applied": applied, "skipped": skipped,
         "roi": roi_info,
+        "design": design_name,
     }
 
 
@@ -3071,6 +3123,10 @@ class Handler(SimpleHTTPRequestHandler):
                     return self.send_json(load_cmf_presets())
                 except (OSError, ValueError) as exc:
                     return self.send_json({"presets": [], "error": str(exc)}, 500)
+            if p == "/api/designs":
+                # 大纲 §4：设计语言 / 布光预设（只读）。文件坏了返回空表而不是 500 ——
+                # 没有设计预设时出图照常，不应因此挡住主流程。
+                return self.send_json(load_design_presets())
             if p == "/api/renderers":
                 # 出图引擎注册表（v3.5，只读）：前端下拉、状态文字与禁用规则都读这里。
                 # available/reason 由**服务端**探测得出，不依赖浏览器本地状态。

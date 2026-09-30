@@ -3,13 +3,18 @@
 """离线测试 CMF 对象 ID 配色图；运行环境需安装 numpy/Pillow。"""
 import json
 import os
+import sys
 import tempfile
 import unittest
 
 import numpy as np
 from PIL import Image
 
-from cmf_guide import make_guide
+# 同 cmf_guide.py：嵌入式 Python（ComfyUI python_embeded 带 _pth）不会把脚本目录
+# 放进 sys.path，这里显式补上，否则 `from cmf_guide import ...` 会 ModuleNotFoundError。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from cmf_guide import make_guide  # noqa: E402
 
 
 class CmfGuideTest(unittest.TestCase):

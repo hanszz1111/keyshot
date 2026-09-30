@@ -8,11 +8,21 @@
 import argparse
 import json
 import os
+import sys
 
 import numpy as np
 from PIL import Image
 
-from objectid_mask import read_ids
+# ★★ 必须显式把脚本目录加进 sys.path（2026-09-30 修，对应 v3.20）★★
+# 本服务在 Windows 上用 ComfyUI 的**嵌入式 Python** 跑子进程；嵌入式发行版带
+# `python3xx._pth`，而 **_pth 模式下 Python 不会把脚本所在目录放进 sys.path**
+# （实测 sys.path[0] 是 ComfyUI 工作目录）。于是 `from objectid_mask import read_ids`
+# 直接 ModuleNotFoundError → 界面报「多材质配色参考生成失败」，同系列后续机位
+# 又因「主视图失败」被连带阻断，一次坏掉一整组。
+# 托管 Python 不带 _pth，所以本机自检与 Mac 端都测不出来 —— 只有真跑生产才暴露。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from objectid_mask import read_ids  # noqa: E402  （必须在上面那句之后）
 
 
 def hex_rgb(value):

@@ -32,7 +32,7 @@ def hex_rgb(value):
 
 
 def make_guide(clay_path, objectid_path, manifest_path, scheme_path, default_color, out_path,
-               background_color="#F3F5F6"):
+               background_color="#F3F5F6", normal_path=None):
     with open(manifest_path, "r", encoding="utf-8") as f:
         mapping = json.load(f).get("objectid_map") or {}
     if os.path.isfile(scheme_path):
@@ -46,10 +46,27 @@ def make_guide(clay_path, objectid_path, manifest_path, scheme_path, default_col
         raise ValueError("白模与对象 ID 图尺寸不一致，请重新生成同机位结构图")
     base = clay[..., :3].astype(np.float32)
     luma = base[..., 0] * .2126 + base[..., 1] * .7152 + base[..., 2] * .0722
-    # 保留白模原有影棚明暗；平色分区由整数对象 ID 决定，不用 AI 猜。
-    shade = np.clip(luma / 225.0, .18, 1.12)
-    output = clay.copy()
     foreground = ids != 0
+    # 保留未过曝白模的影棚明暗，但不给材质色乘出 >1 的泛白高光。
+    # 白模高光剪切后已丢失体积信息：若有同机位法线，用法线的确定性柔和侧光补回。
+    shade = np.clip(luma / 235.0, .35, 1.0)
+    normals = None
+    if normal_path and os.path.isfile(normal_path):
+        normal_image = np.asarray(Image.open(normal_path).convert("RGB"), dtype=np.float32)
+        if normal_image.shape[:2] != (height, width):
+            raise ValueError("法线与白模尺寸不一致，请重新生成同机位结构图")
+        normals = normal_image / 127.5 - 1.0
+        length = np.linalg.norm(normals, axis=2)
+        valid = foreground & (length > .5)
+        normals = normals / np.maximum(length[..., None], 1e-6)
+        light = np.array([.38, -.24, .89], dtype=np.float32)
+        light /= np.linalg.norm(light)
+        normal_shade = .69 + .31 * np.clip(np.sum(normals * light, axis=2), 0, 1)
+        # 只在高光接近剪切时接管；正常光影仍由真实 clay 提供。
+        clipped = np.clip((luma - 232.0) / 20.0, 0, 1)
+        blend = np.where(valid, clipped, 0)
+        shade = shade * (1.0 - blend) + normal_shade * blend
+    output = clay.copy()
     # Qwen 的第一参考必须是稳定影棚底色；透明/黑色白模背景会被模型当成纹理继续生成。
     output[..., :3][~foreground] = hex_rgb(background_color).astype(np.uint8)
     output[..., 3] = 255
@@ -74,11 +91,20 @@ def make_guide(clay_path, objectid_path, manifest_path, scheme_path, default_col
     detail = np.zeros_like(edges)
     detail[:, 1:] |= (np.abs(luma[:, 1:] - luma[:, :-1]) > 46) & foreground[:, 1:] & foreground[:, :-1]
     detail[1:, :] |= (np.abs(luma[1:, :] - luma[:-1, :]) > 46) & foreground[1:, :] & foreground[:-1, :]
+    if normals is not None:
+        # 法线突变可补回被过曝抹掉的凹槽/折面；同一平滑曲面的缓变不画黑线。
+        delta_x = np.linalg.norm(normals[:, 1:] - normals[:, :-1], axis=2)
+        delta_y = np.linalg.norm(normals[1:, :] - normals[:-1, :], axis=2)
+        detail[:, 1:] |= (delta_x > .48) & foreground[:, 1:] & foreground[:, :-1]
+        detail[1:, :] |= (delta_y > .48) & foreground[1:, :] & foreground[:-1, :]
     output[..., :3][edges] = np.minimum(output[..., :3][edges], 65)
     output[..., :3][detail & ~edges] = np.minimum(output[..., :3][detail & ~edges], 98)
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     Image.fromarray(output, "RGBA").save(out_path)
-    return {"parts": len(found), "width": width, "height": height}
+    return {"parts": len(found), "width": width, "height": height,
+            "normal_used": normals is not None,
+            "clipped_foreground_pct": round(float(np.count_nonzero(foreground & (luma >= 252))) /
+                                            max(1, int(np.count_nonzero(foreground))) * 100, 2)}
 
 
 def main():
@@ -86,9 +112,10 @@ def main():
     for key in ("clay", "objectid", "manifest", "scheme", "default_color", "out"):
         parser.add_argument("--" + key.replace("_", "-"), required=True)
     parser.add_argument("--background-color", default="#F3F5F6")
+    parser.add_argument("--normal")
     args = parser.parse_args()
     result = make_guide(args.clay, args.objectid, args.manifest, args.scheme,
-                        args.default_color, args.out, args.background_color)
+                        args.default_color, args.out, args.background_color, args.normal)
     print(json.dumps(result, ensure_ascii=False))
 
 

@@ -841,6 +841,8 @@ function renderEngineHint(){
     ?"主力模式：同一组先生成主视图，再用其材质/配色作为其余机位的第二参考；当前机位白模始终作为结构参考。张数、质量和尺寸可选，8GB 显卡会顺序生成。"
     :"当前不可用："+(e.reason||"未知原因"),"engine-status"));
   el.append(document.createElement("br"));
+  el.append(text("span","精度提示：白模结构图和分区决定可控上限；50 步是更慢的实验档，不保证比 35 步更贴合原模型。建议先用同种子对比，再提高像素预算。","engine-license"));
+  el.append(document.createElement("br"));
   el.append(text("span","权重采用 Qwen Research License（非商用）：个人研究试用可用；转为收费客户项目、对外服务或正式商业交付前，须先核对许可与 ADR-008。","engine-license"));
 }
 /* 只有仍不支持的局部掩膜和结构约束模式锁住；张数/质量/尺寸都是真实参数。 */
@@ -869,7 +871,7 @@ function applyEngineConstraints(){
   }
   for(const o of $("qualitySelect").options){
     if(!o.dataset.stableLabel)o.dataset.stableLabel=o.textContent;
-    o.textContent=experimental?({draft:"草稿 · 15 步",standard:"标准 · 25 步",fine:"精细 · 35 步",max:"最高 · 50 步"}[o.value]||o.textContent):o.dataset.stableLabel;
+    o.textContent=experimental?({draft:"草稿 · 15 步",standard:"标准 · 25 步",fine:"精细 · 35 步",max:"实验 · 50 步（更慢，精度不保证）"}[o.value]||o.textContent):o.dataset.stableLabel;
   }
   if(state.lastEngine&&state.lastEngine!==currentEngine()){
     if(state.lastEngine==="qwen21_edit_local")state.qwenCount=$("countSelect").value;
@@ -879,7 +881,16 @@ function applyEngineConstraints(){
   state.lastEngine=currentEngine();
   const custom=$("sizeCustomField");if(custom)custom.hidden=experimental||size.value!=="custom";
   const sizeCustom=$("sizeCustom");if(sizeCustom)sizeCustom.disabled=experimental;
+  $("qwenSeedField").hidden=!experimental;
+  $("qwenSeed").disabled=!experimental;
   updateSizeHint();
+}
+function fixedQwenSeed(){
+  const raw=$("qwenSeed").value.trim();
+  if(!raw)return null;
+  const value=Number(raw);
+  if(!Number.isInteger(value)||value<1||value>2147483500)throw new Error("固定种子须为 1–2147483500 的整数，或留空自动生成");
+  return value;
 }
 function onEngineChange(){
   state.engineManuallySelected=true;
@@ -915,6 +926,8 @@ function renderPreflight(){
     // 引擎可用性先判：不可用就没必要继续谈材质与图片
     if(!engine||!engine.available){messages.push("实验引擎当前不可用："+((engine&&engine.reason)||"未知原因"));ready=false;}
     if(engine&&engine.disabled_reason)messages.push("能力范围："+engine.disabled_reason);
+    try{const seed=fixedQwenSeed();if(seed!==null)messages.push(`本次固定种子 ${seed}；可用相同种子对比质量档。`);}
+    catch(error){messages.push(error.message);ready=false;}
   }
   if(!item){messages.push(mode==="image"?(state.sourceType==="image"?"先上传产品图片。":"先选择产品或导入白模。"):"先选择产品或导入白模。 ");ready=false;}
   if(!experimental&&!state.comfy.online){messages.push("稳定渲染服务未连接；启动后可出图。");ready=false;}
@@ -1209,7 +1222,7 @@ function buildPayload(sku,view,variant,mode,series=null){
     ].filter(Boolean).join(" ");
     return {
       positive:qwenPositive,negative:NEGATIVE,
-      seed:series?(series.seed_base+variant)%2147483647:(Math.floor(Date.now()/1000)+variant)%2147483647,
+      seed:series?(series.seed_base+variant)%2147483647:((fixedQwenSeed()??Math.floor(Date.now()/1000))+variant)%2147483647,
       source_img:inputRel,
       resolution:Number(($("sizeSelect").value||"qwen:768").split(":")[1]||768),
       steps:QWEN_STEPS[qualityKey]||25,
@@ -1300,7 +1313,7 @@ async function generate(){
       throw new Error("补结构图期间产品、模型或机位选择已变化；结构图已保存，请确认选择后再点生成");
     }
     const series=experimental&&sourceType==="model"&&views.length>1
-      ?{id:`series-${Date.now()}-${Math.random().toString(16).slice(2,10)}`,anchor_view:views.includes("front")?"front":views[0],seed_base:Math.floor(Date.now()/1000)}
+      ?{id:`series-${Date.now()}-${Math.random().toString(16).slice(2,10)}`,anchor_view:views.includes("front")?"front":views[0],seed_base:fixedQwenSeed()??Math.floor(Date.now()/1000)}
       :null;
     const ordered=series?[series.anchor_view,...views.filter(v=>v!==series.anchor_view)]:views;
     // 千问按候选系列执行：第 1 张先出主视图，后续同系列各机位引用它的 CMF。
@@ -1557,6 +1570,7 @@ $("sizeSelect").addEventListener("change",()=>{
 });
 $("sizeCustom").addEventListener("input",()=>{updateSizeHint();renderPreflight();});
 $("qualitySelect").addEventListener("change",renderPreflight);
+$("qwenSeed").addEventListener("input",renderPreflight);
 /* ---- 出图视角：任意多选 ---- */
 function buildViewChecks(){
   const box=$("viewChecks");if(!box||box.dataset.built==="1")return;

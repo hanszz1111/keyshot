@@ -2735,12 +2735,15 @@ def make_cmf_guide(sku, view, meta):
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
         raise RuntimeError("主体颜色无效，无法建立多材质配色参考")
     folder = os.path.join(PASSES_DIR, sku, view)
-    clay, oid, manifest = (os.path.join(folder, name) for name in
-                           ("clay.png", "objectid.png", "pass_manifest.json"))
+    clay, oid, manifest, normal = (os.path.join(folder, name) for name in
+                                   ("clay.png", "objectid.png", "pass_manifest.json", "normal.png"))
     if any(not os.path.isfile(path) for path in (clay, oid, manifest)):
         raise RuntimeError("当前机位缺少白模/对象 ID/结构清单，无法建立多材质参考")
-    source = ["guide-v2-lines-clean-bg", scheme["fingerprint"], str(scheme["version"]), color.upper(), background]
-    for path in (clay, oid, manifest):
+    source = ["guide-v3-normal-highlight", scheme["fingerprint"], str(scheme["version"]), color.upper(), background]
+    for path in (clay, oid, manifest, normal):
+        if not os.path.isfile(path):
+            source.append("missing:" + os.path.basename(path))
+            continue
         st = os.stat(path)
         source.extend((str(st.st_size), str(st.st_mtime_ns)))
     digest = hashlib.sha256("|".join(source).encode("utf-8")).hexdigest()[:16]
@@ -2752,9 +2755,12 @@ def make_cmf_guide(sku, view, meta):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + "." + uuid.uuid4().hex + ".png"
     try:
-        proc = subprocess.run([sys.executable, tool, "--clay", clay, "--objectid", oid,
-                               "--manifest", manifest, "--scheme", _cmf_scheme_path(sku),
-                               "--default-color", color, "--background-color", background, "--out", tmp],
+        cmd = [sys.executable, tool, "--clay", clay, "--objectid", oid,
+               "--manifest", manifest, "--scheme", _cmf_scheme_path(sku),
+               "--default-color", color, "--background-color", background, "--out", tmp]
+        if os.path.isfile(normal):
+            cmd.extend(("--normal", normal))
+        proc = subprocess.run(cmd,
                               capture_output=True, text=True, errors="replace", timeout=120)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("多材质配色参考生成超时") from exc

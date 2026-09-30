@@ -140,6 +140,11 @@
             <input id="sizeCustom" name="sizeCustom" type="text" placeholder="例如 1232x752" autocomplete="off">
           </div>
           <p class="field-help" id="sizeHint">跟随结构图的实际比例，避免拉伸产品。</p>
+          <div id="qwenSeedField" hidden>
+            <label for="qwenSeed" class="field-label">固定种子（可选，对照画质用）</label>
+            <input id="qwenSeed" name="qwenSeed" type="number" min="1" max="2147483500" step="1" inputmode="numeric" placeholder="留空则每次自动生成">
+            <p class="field-help">比较 35 / 50 步时填同一个数字；多视角会使用同一候选系列的种子，方便核对同一产品。</p>
+          </div>
           <div class="batch-field" id="batchField">
             <div class="batch-head"><span class="field-label">出图视角（可多选）</span><span class="batch-actions"><button type="button" class="mini-button" id="viewPickPreview">仅预览视角</button><button type="button" class="mini-button" id="viewPickStandard">4 标准</button><button type="button" class="mini-button" id="viewPickCommon">8 常用（含 3/4）</button><button type="button" class="mini-button" id="viewPickAll">全选</button><button type="button" class="mini-button" id="viewPickNone">清空</button><button type="button" class="mini-button" id="passSelectedButton">补齐所选视角结构图</button><button type="button" class="mini-button" id="passSixButton">出六视图结构图</button></span></div>
             <div class="view-checks" id="viewChecks"></div>

@@ -415,6 +415,13 @@ def main():
 
     with open(os.path.join(os.path.dirname(__file__), "app.js"), encoding="utf-8") as f:
         app_js = f.read()
+    with open(os.path.join(os.path.dirname(__file__), "index.html"), encoding="utf-8") as f:
+        app_html = f.read()
+    check("千问固定种子可用于同条件步数对照且非法值被阻断",
+          'id="qwenSeed"' in app_html and
+          'function fixedQwenSeed()' in app_js and
+          'seed_base:fixedQwenSeed()??Math.floor(Date.now()/1000)' in app_js and
+          'try{const seed=fixedQwenSeed()' in app_js)
     check("补齐所选视角会检查整组三通道而非仅深度",
           'filter(view=>!item.views?.find(row=>row.view===view)?.ok)' in app_js)
     check("自动出图前会补齐白模、深度和法线整组",

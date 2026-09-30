@@ -157,6 +157,8 @@
           </div>
           <div id="preflight" class="preflight" role="status" aria-live="polite">正在检查白模、结构图与渲染服务…</div>
           <button type="button" class="primary-button" id="generateButton" disabled>开始生成 4 张</button>
+          <button type="button" class="line-button shape-batch-button" id="productSceneButton">生成所选视角的保形图</button>
+          <p class="field-help">保形图由同一原模型、同一套材质和灯光生成；不调用千问，适合先检查八面的外形与配色。</p>
           <div class="render-progress" id="renderProgress" hidden role="status" aria-live="polite"><div class="render-progress-head"><strong id="renderProgressLabel">正在准备</strong><span id="renderProgressEta">预计时间计算中</span></div><progress id="renderProgressBar" max="100" value="0"></progress><small>进度按已完成任务计算；单张图的采样进度暂不可读取。</small></div>
           <p class="field-help centered">生成结果会保存到现有项目的 outputs 文件夹。</p>
         </div>
@@ -210,7 +212,7 @@
           <span id="comparePercent">50%</span>
         </div>
 
-        <section class="results-section" aria-labelledby="resultsTitle"><div class="results-head"><div><span class="stage-kicker">渲染结果</span><h2 id="resultsTitle">最近的候选图</h2></div><span id="resultCount">0 张</span></div><div id="resultsGrid" class="results-grid"><div class="results-empty">出图后，候选图片会出现在这里。可以逐张查看和下载。</div></div></section>
+        <section class="results-section" aria-labelledby="resultsTitle"><div class="results-head"><div><span class="stage-kicker">渲染结果</span><h2 id="resultsTitle">最近的候选图</h2></div><span id="resultCount">0 张</span></div><div id="productSceneGrid" class="results-grid product-scene-grid" hidden></div><div id="resultsGrid" class="results-grid"><div class="results-empty">出图后，候选图片会出现在这里。可以逐张查看和下载。</div></div></section>
       </section>
     </main>
 

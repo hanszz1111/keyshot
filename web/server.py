@@ -21,6 +21,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -1765,7 +1766,8 @@ def _submit_qwen(tid, payload, engine_id):
                                      meta.get("cmf_preset_id"), meta.get("body_color"), meta.get("style"))
         except (ValueError, OSError) as exc:
             raise RuntimeError("真材质底图已失效：%s" % exc) from exc
-        if rel != spec["rel"] or not product_base_fresh(spec):
+        if (rel != spec["rel"] or not product_base_fresh(spec) or
+                (meta.get("product_scene_id") and meta["product_scene_id"] != spec["scene_id"])):
             raise RuntimeError("真材质底图与当前模型、机位或 CMF 方案不匹配，请重新生成底图")
     # 输入可以是产品图，也可以是该机位的白模截图（执行方案第 5 节：同机位白模或产品照片）。
     # 路径形态由 qwen_input_ok() 判定（口径与 depth_img 一致，不带 passes/ 前缀），
@@ -2830,12 +2832,17 @@ def product_base_spec(sku, view, body_cmf, body_color, style):
         raise ValueError("结构图清单缺少有效尺寸")
     with open(CMF_PRESETS_PATH, "rb") as stream:
         preset_hash = hashlib.sha256(stream.read()).hexdigest()
-    signature = {
-        "algorithm": "product-pbr-v1", "sku": sku, "view": view,
+    scene_signature = {
+        "algorithm": "product-pbr-scene-v2", "sku": sku,
         "model": scheme["fingerprint"], "scheme_version": scheme["version"],
         "assignments": scheme["assignments"], "body_cmf": body_cmf,
         "body_color": body_color.upper(), "style": style,
         "preset_sha256": preset_hash,
+        "lighting": "blender-pass-studio-v1", "samples": 48,
+    }
+    scene_id = hashlib.sha256(json.dumps(scene_signature, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    signature = {
+        "algorithm": "product-pbr-v2", "scene_id": scene_id, "view": view,
         "manifest_mtime_ns": os.stat(manifest_path).st_mtime_ns,
         "camera": camera, "resolution": dimensions,
     }
@@ -2843,6 +2850,7 @@ def product_base_spec(sku, view, body_cmf, body_color, style):
     rel = "_成品底图/%s/%s/%s_product.png" % (sku, view, digest)
     return {"rel": rel, "path": os.path.join(PRODUCT_BASE_DIR, sku, view, digest + "_product.png"),
             "camera": camera, "resolution": dimensions, "scheme": scheme,
+            "scene_id": scene_id,
             "body_cmf": body_cmf, "body_color": body_color.upper(), "style": style,
             "background": PRODUCT_BG[style]}
 
@@ -2884,11 +2892,156 @@ def _run_product_base_once(spec, src, exe):
             os.remove(tmp)
 
 
+def _run_product_base_scene(specs, src, exe, progress=None):
+    """一个 Blender 进程导模/赋材一次，切相机输出同一场景的多张底图。"""
+    if not specs or len({spec["scene_id"] for spec in specs}) != 1:
+        raise ValueError("八面底图必须共享同一模型、CMF 与灯光场景")
+    missing = [spec for spec in specs if not product_base_fresh(spec)]
+    if not missing:
+        return
+    render_src = src
+    if os.path.splitext(src)[1].lower() in (".stp", ".step") and not blender_has_stepper():
+        render_src = convert_step(src)
+    os.makedirs(PRODUCT_BASE_DIR, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="product-scene-", dir=PRODUCT_BASE_DIR) as work:
+        job_file = os.path.join(work, "batch.json")
+        progress_file = os.path.join(work, "progress.json")
+        log_file = os.path.join(work, "blender.log")
+        items = []
+        for index, spec in enumerate(missing):
+            items.append({"view": spec["rel"].split("/")[2], "camera": spec["camera"],
+                          "resolution": spec["resolution"],
+                          "output": os.path.join(work, "%02d.png" % index)})
+        with open(job_file, "w", encoding="utf-8") as stream:
+            json.dump({"scene_id": specs[0]["scene_id"], "views": items,
+                       "progress": progress_file}, stream, ensure_ascii=False)
+        first = specs[0]
+        args = [exe, "-b", "-P", BLENDER_SCRIPT, "--", "--model", render_src,
+                "--product-batch", job_file, "--cmf-scheme", _cmf_scheme_path(first["scheme"]["sku"]),
+                "--cmf-presets", CMF_PRESETS_PATH, "--body-cmf", first["body_cmf"],
+                "--body-color", first["body_color"], "--background-color", first["background"],
+                "--samples", "48", "--no-gpu"]
+        with open(log_file, "w+", encoding="utf-8", errors="replace") as log_stream:
+            proc = subprocess.Popen(args, stdout=log_stream, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 1800 * len(missing)
+                while True:
+                    try:
+                        code = proc.wait(timeout=2)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if time.monotonic() > deadline:
+                            proc.kill()
+                            raise RuntimeError("真材质底图批量渲染超时")
+                        if progress and os.path.isfile(progress_file):
+                            try:
+                                with open(progress_file, "r", encoding="utf-8") as stream:
+                                    progress(int(json.load(stream).get("completed", 0)))
+                            except (OSError, ValueError, TypeError):
+                                pass
+                if code:
+                    log_stream.seek(0)
+                    raise RuntimeError("真材质八面渲染失败：" + log_stream.read()[-600:])
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+        for spec, item in zip(missing, items):
+            if _png_size(item["output"]) != tuple(spec["resolution"]):
+                raise RuntimeError("真材质底图缺失或尺寸错误：" + item["view"])
+        # 产物先完整校验，再次核对所有机位的源模型/材质/相机签名，才发布。
+        for spec in specs:
+            current = product_base_spec(spec["scheme"]["sku"], spec["rel"].split("/")[2],
+                                        spec["body_cmf"], spec["body_color"], spec["style"])
+            if current["rel"] != spec["rel"] or current["scene_id"] != spec["scene_id"]:
+                raise RuntimeError("批量渲染期间模型、机位或材质方案改变；已丢弃本批未发布底图")
+        published = []
+        try:
+            for spec, item in zip(missing, items):
+                os.makedirs(os.path.dirname(spec["path"]), exist_ok=True)
+                os.replace(item["output"], spec["path"])
+                published.append(spec["path"])
+        except OSError:
+            for path in published:
+                os.unlink(path)
+            raise
+        if progress:
+            progress(len(missing))
+
+
+def _write_product_scene_report(specs):
+    """只记录可验证的结构契约；不把它称作 AI 画质/轮廓自动评分。"""
+    scene_id = specs[0]["scene_id"]
+    sku = specs[0]["scheme"]["sku"]
+    rel = "_成品底图/%s/%s_场景报告.json" % (sku, scene_id)
+    path = os.path.join(PRODUCT_BASE_DIR, sku, scene_id + "_场景报告.json")
+    report = {"scene_id": scene_id, "sku": sku, "model_sha256": specs[0]["scheme"]["fingerprint"],
+              "cmf_version": specs[0]["scheme"]["version"], "lighting": "blender-pass-studio-v1",
+              "body_cmf": specs[0]["body_cmf"], "body_color": specs[0]["body_color"],
+              "style": specs[0]["style"],
+              "checks": {"same_scene": len({s["scene_id"] for s in specs}) == 1,
+                         "all_png_dimensions": all(product_base_fresh(s) for s in specs)},
+              "views": {s["rel"].split("/")[2]: {"image": s["rel"], "camera": s["camera"],
+                                                "resolution": s["resolution"]} for s in specs}}
+    if not all(report["checks"].values()):
+        raise RuntimeError("八面场景检查未通过，缺少机位或底图尺寸不匹配")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    temp = path + "." + uuid.uuid4().hex + ".tmp"
+    try:
+        with open(temp, "w", encoding="utf-8") as stream:
+            json.dump(report, stream, ensure_ascii=False, indent=2)
+        os.replace(temp, path)
+    finally:
+        if os.path.isfile(temp):
+            os.remove(temp)
+    return rel
+
+
+def latest_product_scene(sku):
+    """供网页恢复最近一组已通过尺寸/机位校验的保形底图。"""
+    if not sku or safe_file(sku) != sku:
+        return {}
+    folder = os.path.join(PRODUCT_BASE_DIR, sku)
+    paths = sorted(glob.glob(os.path.join(folder, "*_场景报告.json")),
+                   key=os.path.getmtime, reverse=True)
+    for path in paths[:10]:
+        try:
+            with open(path, "r", encoding="utf-8") as stream:
+                report = json.load(stream)
+            if report.get("sku") != sku or not re.fullmatch(r"[0-9a-f]{16}", report.get("scene_id", "")):
+                continue
+            outputs = {}
+            for view, item in (report.get("views") or {}).items():
+                rel = item.get("image", "")
+                expected = "_成品底图/%s/%s/" % (sku, view)
+                if view not in VIEW_KEYS or not rel.startswith(expected) or not re.fullmatch(r"[0-9a-f]{16}_product\.png", rel[len(expected):]):
+                    break
+                png = os.path.join(ASSETS, rel.replace("/", os.sep))
+                if _png_size(png) != tuple(item.get("resolution") or []):
+                    break
+                current = product_base_spec(sku, view, report.get("body_cmf"),
+                                            report.get("body_color"), report.get("style"))
+                if current["scene_id"] != report["scene_id"] or current["rel"] != rel:
+                    break
+                outputs[view] = rel
+            else:
+                if outputs:
+                    return {"scene_id": report["scene_id"], "outputs": outputs,
+                            "body_cmf": report["body_cmf"], "body_color": report["body_color"],
+                            "style": report["style"],
+                            "report": "_成品底图/%s/%s_场景报告.json" % (sku, report["scene_id"])}
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+    return {}
+
+
 def start_product_base_batch(sku, views, body_cmf, body_color, style):
     global _pass_state
     if not isinstance(views, list) or not views or len(views) > 10 or len(set(views)) != len(views):
         raise ValueError("请选择 1–10 个不重复机位")
     specs = [product_base_spec(sku, view, body_cmf, body_color, style) for view in views]
+    if len({spec["scene_id"] for spec in specs}) != 1:
+        raise ValueError("所选机位没有共享同一产品场景，请核对模型和 CMF 方案")
     src, exe = _resolve_pass_model(sku, specs[0]["scheme"]["model"])
     if qwen_task_running():
         raise ValueError("千问任务正在运行，请等它完成后再生成真材质底图")
@@ -2896,33 +3049,38 @@ def start_product_base_batch(sku, views, body_cmf, body_color, style):
         if _pass_state["status"] == "running":
             raise ValueError("已有 Blender 任务正在运行，请等它完成")
         _pass_state = {"status": "running", "kind": "product_base", "sku": sku,
-                       "view": ",".join(views), "message": "正在生成真材质底图…",
+                       "view": ",".join(views), "scene_id": specs[0]["scene_id"],
+                       "message": "正在同一产品场景中生成真材质底图…",
                        "batch": {"total": len(specs), "index": 0, "done": [], "failed": []},
                        "outputs": {}, "started_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
     def worker():
         global _pass_state
         outputs, errors = {}, []
-        for index, spec in enumerate(specs):
-            view = views[index]
-            with _pass_lock:
-                _pass_state["batch"]["index"] = index
-                _pass_state["message"] = "真材质底图 %d/%d：%s" % (index + 1, len(specs), view)
-            try:
-                if not product_base_fresh(spec):
-                    _run_product_base_once(spec, src, exe)
+        report_rel = ""
+        try:
+            if len(specs) > 1:
+                cached = sum(product_base_fresh(spec) for spec in specs)
+                def on_progress(completed):
+                    with _pass_lock:
+                        _pass_state["batch"]["index"] = min(len(specs), cached + completed)
+                        _pass_state["message"] = "同一场景已渲染 %d/%d 个机位" % (min(len(specs), cached + completed), len(specs))
+                _run_product_base_scene(specs, src, exe, on_progress)
+            elif not product_base_fresh(specs[0]):
+                _run_product_base_once(specs[0], src, exe)
+            for spec in specs:
+                view = spec["rel"].split("/")[2]
                 current = product_base_spec(sku, view, body_cmf, body_color, style)
-                if current["rel"] != spec["rel"]:
-                    raise RuntimeError("CMF 或结构图在准备期间改变，请重新生成")
+                if current["rel"] != spec["rel"] or not product_base_fresh(spec):
+                    raise RuntimeError("CMF、机位或底图在准备期间改变：" + view)
                 outputs[view] = spec["rel"]
-            except Exception as exc:
-                errors.append({"view": view, "reason": str(exc)[:300]})
-            with _pass_lock:
-                _pass_state["batch"]["done"] = list(outputs)
-                _pass_state["batch"]["failed"] = list(errors)
+            report_rel = _write_product_scene_report(specs)
+        except Exception as exc:
+            errors.append({"view": "batch", "reason": str(exc)[:300]})
         with _pass_lock:
             _pass_state = {"status": "failed" if errors else "done", "kind": "product_base",
-                           "sku": sku, "view": ",".join(views), "outputs": outputs,
+                           "sku": sku, "view": ",".join(views), "scene_id": specs[0]["scene_id"],
+                           "report": report_rel, "outputs": outputs if not errors else {},
                            "message": "；".join("%s：%s" % (e["view"], e["reason"]) for e in errors) if errors else "真材质底图已就绪",
                            "batch": {"total": len(specs), "index": len(specs), "done": list(outputs), "failed": errors},
                            "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -3837,6 +3995,8 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json(comfy_poll(int(q.get("id", ["0"])[0])))
             if p == "/api/comfy/file":
                 return self.serve_output(q.get("rel", [""])[0])
+            if p == "/api/ui/product/gallery":
+                return self.send_json(latest_product_scene(q.get("sku", [""])[0]))
             if p == "/api/ui/info":
                 exe = blender_executable()
                 return self.send_json({"blender": bool(exe), "blender_path": exe or "",

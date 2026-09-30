@@ -841,6 +841,8 @@ function renderEngineHint(){
     ?"主力模式：同一组先生成主视图，再用其材质/配色作为其余机位的第二参考；当前机位白模始终作为结构参考。张数、质量和尺寸可选，8GB 显卡会顺序生成。"
     :"当前不可用："+(e.reason||"未知原因"),"engine-status"));
   el.append(document.createElement("br"));
+  el.append(text("span","精度提示：白模结构图和分区决定可控上限；50 步是更慢的实验档，不保证比 35 步更贴合原模型。建议先用同种子对比，再提高像素预算。","engine-license"));
+  el.append(document.createElement("br"));
   el.append(text("span","权重采用 Qwen Research License（非商用）：个人研究试用可用；转为收费客户项目、对外服务或正式商业交付前，须先核对许可与 ADR-008。","engine-license"));
 }
 /* 只有仍不支持的局部掩膜和结构约束模式锁住；张数/质量/尺寸都是真实参数。 */
@@ -869,7 +871,7 @@ function applyEngineConstraints(){
   }
   for(const o of $("qualitySelect").options){
     if(!o.dataset.stableLabel)o.dataset.stableLabel=o.textContent;
-    o.textContent=experimental?({draft:"草稿 · 15 步",standard:"标准 · 25 步",fine:"精细 · 35 步",max:"最高 · 50 步"}[o.value]||o.textContent):o.dataset.stableLabel;
+    o.textContent=experimental?({draft:"草稿 · 15 步",standard:"标准 · 25 步",fine:"精细 · 35 步",max:"实验 · 50 步（更慢，精度不保证）"}[o.value]||o.textContent):o.dataset.stableLabel;
   }
   if(state.lastEngine&&state.lastEngine!==currentEngine()){
     if(state.lastEngine==="qwen21_edit_local")state.qwenCount=$("countSelect").value;
@@ -879,7 +881,18 @@ function applyEngineConstraints(){
   state.lastEngine=currentEngine();
   const custom=$("sizeCustomField");if(custom)custom.hidden=experimental||size.value!=="custom";
   const sizeCustom=$("sizeCustom");if(sizeCustom)sizeCustom.disabled=experimental;
+  $("qwenSeedField").hidden=!experimental;
+  $("qwenSeed").disabled=!experimental;
+  $("qwenBaseField").hidden=!experimental||state.sourceType!=="model";
+  $("qwenBaseSelect").disabled=!experimental||state.sourceType!=="model";
   updateSizeHint();
+}
+function fixedQwenSeed(){
+  const raw=$("qwenSeed").value.trim();
+  if(!raw)return null;
+  const value=Number(raw);
+  if(!Number.isInteger(value)||value<1||value>2147483500)throw new Error("固定种子须为 1–2147483500 的整数，或留空自动生成");
+  return value;
 }
 function onEngineChange(){
   state.engineManuallySelected=true;
@@ -915,6 +928,8 @@ function renderPreflight(){
     // 引擎可用性先判：不可用就没必要继续谈材质与图片
     if(!engine||!engine.available){messages.push("实验引擎当前不可用："+((engine&&engine.reason)||"未知原因"));ready=false;}
     if(engine&&engine.disabled_reason)messages.push("能力范围："+engine.disabled_reason);
+    try{const seed=fixedQwenSeed();if(seed!==null)messages.push(`本次固定种子 ${seed}；可用相同种子对比质量档。`);}
+    catch(error){messages.push(error.message);ready=false;}
   }
   if(!item){messages.push(mode==="image"?(state.sourceType==="image"?"先上传产品图片。":"先选择产品或导入白模。"):"先选择产品或导入白模。 ");ready=false;}
   if(!experimental&&!state.comfy.online){messages.push("稳定渲染服务未连接；启动后可出图。");ready=false;}
@@ -929,6 +944,8 @@ function renderPreflight(){
         }
       }
       messages.push("千问：每个候选系列共用一套材质/配色/灯光设定；多机位时先出主视图，其他机位同时参考各自白模与该主视图。AI 仍可能出现色差或结构变化，需逐图核对。");
+      if(state.sourceType==="model"&&$("qwenBaseSelect").value==="product")
+        messages.push("真材质底图：先按 CAD 网格和部件 CMF 逐机位渲染产品，再作为千问第一参考；最终 AI 图仍须检查孔位与材料边界。");
       if(state.sourceType==="model"&&views.length>1&&Number(($("sizeSelect").value||"qwen:768").split(":")[1])>768)
         messages.push("多机位双参考会增加显存占用；4060 Ti 8GB 建议先用 768 完成一组，896/992 需实机确认不会显存不足。");
     }else{
@@ -1151,7 +1168,7 @@ function updateSizeHint(){
   const src={pass:"该机位结构图的实际尺寸",preset:"你选的固定预设",custom:"你的自定义值",fallback:"结构图缺失，暂用默认 1232×752"}[d.source]||"";
   el.textContent=`本次实际出图 ${d.width} × ${d.height}（来源：${src}）。宽高会被对齐到 8 的倍数；与结构图同比例才不会把产品拉变形。`;
 }
-function buildPayload(sku,view,variant,mode,series=null){
+function buildPayload(sku,view,variant,mode,series=null,productBases=null){
   const description=$("description").value.trim();const style=STYLE[state.style],material=selectedCmf(),lighting=LIGHT[$("lightSelect").value];
   if(!material)throw new Error("材质库尚未就绪，请刷新页面");
   if(!material.ai_editable)throw new Error(`「${material.name}」仅支持真渲染，当前 AI 出图不可用`);
@@ -1190,9 +1207,9 @@ function buildPayload(sku,view,variant,mode,series=null){
   if(isExperimentalEngine()){
     // ★ 按**本次要出的机位**取输入图，不能用当前预览机位 —— 否则会出现
     //   「拿 side_left 的图去出 3q4_left 的任务」这种张冠李戴（2026-09-29 实测踩到）。
-    const inputRel=state.sourceType==="image"
+    const inputRel=productBases?.[view]||(state.sourceType==="image"
       ?(selectedItem()?.source?.rel||"")
-      :(selectedItem()?.views?.find(r=>r.view===view)?.files?.clay||"");
+      :(selectedItem()?.views?.find(r=>r.view===view)?.files?.clay||""));
     if(!inputRel)throw new Error(state.sourceType==="image"
       ?"实验引擎需要一张产品图片作为输入，请先上传产品图片。"
       :`实验引擎需要「${VIEW_ZH[view]||view}」的白模截图（clay.png），该机位还没有，请先生成它的结构图。`);
@@ -1204,12 +1221,14 @@ function buildPayload(sku,view,variant,mode,series=null){
         ?"<image1> is the target camera and geometry, including any supplied deterministic CMF colour zones: preserve its silhouette, part count, openings, hole positions and visible sides. <image2> is the same product from another angle: transfer ONLY product identity, material placement, exact colours, texture and studio lighting. Do not copy <image2>'s camera angle or geometry over <image1>."
         :"Use the input image as the target camera and geometry; if it contains deterministic CMF colour zones, preserve their part boundaries. Preserve silhouette, part count, openings, hole positions and visible sides.",
       identity,lighting+".",style.text+".",
-      "Treat the dark structural lines and colour-zone boundaries in <image1> as fixed product geometry and parting lines. Keep each line in its original location; do not add or remove seams. Photorealistic material response, controlled highlights, clean contact shadow, sharp focus, uniform spotless seamless studio background without stains or texture. Do not invent controls, seams, text or logos.",
+      productBases
+        ?"<image1> is a CAD-geometry render with assigned physical materials. Preserve its product silhouette, holes, actual part boundaries and material placement; only refine plausible surface micro-detail and studio lighting. Never redesign the product or move a material to another part."
+        :"Treat the dark structural lines and colour-zone boundaries in <image1> as fixed product geometry and parting lines. Keep each line in its original location; do not add or remove seams. Photorealistic material response, controlled highlights, clean contact shadow, sharp focus, uniform spotless seamless studio background without stains or texture. Do not invent controls, seams, text or logos.",
       description?`User's design requirements (retain exact intent): ${description}`:""
     ].filter(Boolean).join(" ");
     return {
       positive:qwenPositive,negative:NEGATIVE,
-      seed:series?(series.seed_base+variant)%2147483647:(Math.floor(Date.now()/1000)+variant)%2147483647,
+      seed:series?(series.seed_base+variant)%2147483647:((fixedQwenSeed()??Math.floor(Date.now()/1000))+variant)%2147483647,
       source_img:inputRel,
       resolution:Number(($("sizeSelect").value||"qwen:768").split(":")[1]||768),
       steps:QWEN_STEPS[qualityKey]||25,
@@ -1217,7 +1236,7 @@ function buildPayload(sku,view,variant,mode,series=null){
         design:($("designSelect")||{}).value||"",
         style:state.style,description,quality:qualityKey,cmf_preset_id:material.id,body_color:color,cmf_texture:material.texture,
         cmf_scheme:schemeRef,
-        input_kind:state.sourceType==="image"?"photo":"clay",
+        input_kind:state.sourceType==="image"?"photo":productBases?"product_base":"clay",
         series:series?{id:series.id,anchor_view:series.anchor_view,seed_base:series.seed_base}:null,
         experimental:true,sampling:{steps:QWEN_STEPS[qualityKey]||25,cfg:1.0},reference:null,
         note:"千问逐机位出图：目标机位白模锁视角，主视图只辅助 CMF/产品身份；无深度 ControlNet，几何精度需人工验收。"}
@@ -1282,10 +1301,33 @@ async function ensureRequiredPasses(sku,views,mode,experimental){
     return;
   }
 }
+async function ensureProductBases(sku,views,materialId,color,style){
+  await post("/api/ui/product/batch",{sku,views,body_cmf:materialId,body_color:color,style});
+  announce(`正在按原模型逐机位生成 ${views.length} 张真材质底图，完成后自动继续千问出图。`);
+  while(true){
+    await pause(2500);
+    const job=await api("/api/ui/pass/status");
+    state.passJob=job;
+    if(job.kind!=="product_base"||job.sku!==sku)throw new Error("真材质底图任务已被其他 Blender 作业替换，请检查后重试");
+    if(job.status==="running"){
+      const batch=job.batch||{};
+      const progress=`正在生成真材质底图 ${Math.min((batch.index||0)+1,batch.total||views.length)}/${batch.total||views.length}`;
+      $("passJobStatus").textContent=progress;announce(progress);
+      continue;
+    }
+    $("passJobStatus").textContent=job.message||"真材质底图任务已结束";
+    if(job.status!=="done")throw new Error(job.message||"真材质底图生成失败");
+    const outputs=job.outputs||{};
+    if(views.some(view=>!outputs[view]))throw new Error("真材质底图缺少所选机位，请重新生成");
+    return outputs;
+  }
+}
 async function generate(){
   renderPreflight();if($("generateButton").disabled)return;
   const sku=state.sku,views=renderViews(),experimental=isExperimentalEngine(),engineId=currentEngine();
   const perView=Number($("countSelect").value),count=perView*views.length,mode=getMode(),sourceType=state.sourceType;
+  const useProductBase=experimental&&sourceType==="model"&&$("qwenBaseSelect").value==="product";
+  const selectedMaterial=selectedCmf()?.id,selectedColor=$("bodyColor").value,selectedStyle=state.style;
   state.running=true;state.runCount=count;renderPreflight();
   try{
     await ensureRequiredPasses(sku,views,mode,experimental);
@@ -1299,14 +1341,22 @@ async function generate(){
     if(state.sku!==sku||state.sourceType!==sourceType||currentEngine()!==engineId||renderViews().join("|")!==views.join("|")){
       throw new Error("补结构图期间产品、模型或机位选择已变化；结构图已保存，请确认选择后再点生成");
     }
+    let productBases=null;
+    if(useProductBase){
+      if(selectedCmf()?.id!==selectedMaterial||$("bodyColor").value!==selectedColor||state.style!==selectedStyle||$("qwenBaseSelect").value!=="product")
+        throw new Error("准备期间材质、颜色或底图模式已改变，请确认后重新开始");
+      productBases=await ensureProductBases(sku,views,selectedMaterial,selectedColor,selectedStyle);
+      if(state.sku!==sku||currentEngine()!==engineId||selectedCmf()?.id!==selectedMaterial||$("bodyColor").value!==selectedColor||state.style!==selectedStyle)
+        throw new Error("底图生成期间产品或材质设置已改变，请确认后重新开始");
+    }
     const series=experimental&&sourceType==="model"&&views.length>1
-      ?{id:`series-${Date.now()}-${Math.random().toString(16).slice(2,10)}`,anchor_view:views.includes("front")?"front":views[0],seed_base:Math.floor(Date.now()/1000)}
+      ?{id:`series-${Date.now()}-${Math.random().toString(16).slice(2,10)}`,anchor_view:views.includes("front")?"front":views[0],seed_base:fixedQwenSeed()??Math.floor(Date.now()/1000)}
       :null;
     const ordered=series?[series.anchor_view,...views.filter(v=>v!==series.anchor_view)]:views;
     // 千问按候选系列执行：第 1 张先出主视图，后续同系列各机位引用它的 CMF。
     const tasks=series
-      ?Array.from({length:perView},(_,variant)=>ordered.map(view=>{const payload=buildPayload(sku,view,variant,mode,series);return{sku,view,variant,positive:payload.positive,negative:payload.negative,payload};})).flat()
-      :views.flatMap(view=>Array.from({length:perView},(_,variant)=>{const payload=buildPayload(sku,view,variant,mode);return{sku,view,variant,positive:payload.positive,negative:payload.negative,payload};}));
+      ?Array.from({length:perView},(_,variant)=>ordered.map(view=>{const payload=buildPayload(sku,view,variant,mode,series,productBases);return{sku,view,variant,positive:payload.positive,negative:payload.negative,payload};})).flat()
+      :views.flatMap(view=>Array.from({length:perView},(_,variant)=>{const payload=buildPayload(sku,view,variant,mode,null,productBases);return{sku,view,variant,positive:payload.positive,negative:payload.negative,payload};}));
     announce(`正在加入并生成 ${count} 张图片`);
     const inserted=await post("/api/tasks",{tasks});await refreshTasks();
     const ids=new Set(inserted.ids||[]);
@@ -1341,7 +1391,7 @@ async function executeTask(task){
   const payload=typeof task.payload==="string"?JSON.parse(task.payload):(task.payload||{});
   const mode=payload._meta?.mode;
   if(!["controlled","explore","image"].includes(mode))throw new Error("旧版任务请到旧控制台执行");
-  if(mode==="image"&&(!payload.source_img||!(payload.source_img.startsWith("source/")||payload.source_img.endsWith("/clay.png"))))throw new Error("图片改图任务缺少源图");
+  if(mode==="image"&&(!payload.source_img||!(payload.source_img.startsWith("source/")||payload.source_img.endsWith("/clay.png")||/^_成品底图\/[^/]+\/[^/]+\/[0-9a-f]{16}_product\.png$/.test(payload.source_img))))throw new Error("图片改图任务缺少源图");
   if(mode==="controlled"){
     const assets=await api("/api/assets");const item=assets.items.find(x=>x.sku===task.sku);
     const row=item?.views?.find(x=>x.view===task.view);
@@ -1414,6 +1464,7 @@ function setSourceType(kind){
   const intro=$("refIntro");
   if(intro)intro.textContent=kind==="image"?"可选：再上传一张风格参考图，借鉴配色、材质与灯光。产品原图仍是出图主体。":"借鉴配色、材质与光照；结构约束仍以你的白模为准。未装参考图组件时，仅将提取的色彩与影调写入提示词。";
   renderSource();renderPassReadiness();renderPreflight();renderResults();renderHero();renderCmfScheme();
+  applyEngineConstraints();
   if(kind==="model"&&state.sku)loadCmfScheme(state.sku).catch(()=>{});
 }
 function openDrawer(){lastFocus=document.activeElement;$("drawerBackdrop").hidden=false;$("queueDrawer").hidden=false;$("closeQueueButton").focus();refreshPassJob();}
@@ -1557,6 +1608,8 @@ $("sizeSelect").addEventListener("change",()=>{
 });
 $("sizeCustom").addEventListener("input",()=>{updateSizeHint();renderPreflight();});
 $("qualitySelect").addEventListener("change",renderPreflight);
+$("qwenBaseSelect").addEventListener("change",renderPreflight);
+$("qwenSeed").addEventListener("input",renderPreflight);
 /* ---- 出图视角：任意多选 ---- */
 function buildViewChecks(){
   const box=$("viewChecks");if(!box||box.dataset.built==="1")return;

@@ -1710,6 +1710,25 @@ def qwen_series_anchor(task, meta):
             return {"task_id": row["id"], "output": rel}
         except (ValueError, TypeError, AttributeError):
             continue
+    # 关联机位失败时带上同组主视图的真正报错，避免用户只看到“主视图失败”。
+    with DB_LOCK, db() as con:
+        failed = con.execute(
+            "SELECT id, payload, err FROM tasks WHERE sku=? AND view=? AND variant=? "
+            "AND status='failed' ORDER BY id DESC LIMIT 200",
+            (sku, anchor_view, variant),
+        ).fetchall()
+    for row in failed:
+        try:
+            candidate = json.loads(row["payload"] or "{}")
+            cm = candidate.get("_meta") or {}
+            cs = cm.get("series") or {}
+            if (cm.get("engine_id") == "qwen21_edit_local" and cs.get("id") == sid
+                    and cs.get("anchor_view") == anchor_view):
+                reason = str(row["err"] or "未记录具体原因").strip().replace("\n", " ")[:280]
+                raise RuntimeError("同组主视图 #%s 失败：%s。请修复后重新生成整组。" %
+                                   (row["id"], reason))
+        except (ValueError, TypeError, AttributeError):
+            continue
     raise RuntimeError("同组主视图尚未完成；请先完成主视图，再继续其他机位")
 
 

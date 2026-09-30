@@ -274,12 +274,17 @@ function partCmfOf(mesh){
   return (partCmfTable[selectedView()]||{})[String(idx)]||null;
 }
 function updateSelectionVisuals(){
-  for(const helper of hero3d.selectionHelpers||[]){hero3d.scene?.remove(helper);helper.dispose?.();}
-  hero3d.selectionHelpers=[];
-  if(!hero3d.lib||!hero3d.scene)return;
+  for(const overlay of hero3d.selectionOverlays||[])overlay.parent?.remove(overlay);
+  hero3d.selectionOverlays=[];
+  if(!hero3d.lib||!hero3d.model||!hero3d.matSelection)return;
   for(const mesh of hero3d.selection||[]){
-    const helper=new hero3d.lib.THREE.BoxHelper(mesh,0x00bcd4);
-    hero3d.scene.add(helper);hero3d.selectionHelpers.push(helper);
+    // 与网格共用几何体，只盖一层半透明青色。整块表面可见、原 CMF 颜色仍在底下，
+    // 取消选择只移除覆盖层，不触碰用户保存的真实材质。
+    const overlay=new hero3d.lib.THREE.Mesh(mesh.geometry,hero3d.matSelection);
+    overlay.userData.selectionOverlay=true;
+    overlay.raycast=()=>{};
+    overlay.renderOrder=1;
+    mesh.add(overlay);hero3d.selectionOverlays.push(overlay);
   }
 }
 function setPickedPart(mesh,additive=false,keepExisting=false){
@@ -447,7 +452,7 @@ function applyPartCmfPreview(){
 function applyCmfSchemeToModel(){
   if(!hero3d.model||!hero3d.matBase||hero3d.sku!==state.sku)return;
   hero3d.model.traverse(mesh=>{
-    if(!mesh.isMesh)return;
+    if(!mesh.isMesh||mesh.userData.selectionOverlay)return;
     const assignment=state.cmfScheme&&!state.cmfScheme.stale?state.cmfScheme.assignments?.[schemePartName(mesh)]:null;
     const preset=assignment&&cmfPresets.find(p=>p.id===assignment.cmf);
     if(!preset){mesh.material=hero3d.matBase;return;}
@@ -702,7 +707,8 @@ async function showModel3D(sku){
     // 共享材质：2530 个部件各 new 一个太浪费；选中高亮时只替换那一个 mesh。
     hero3d.matBase=new THREE.MeshStandardMaterial({color:0xedeff0,roughness:0.58,metalness:0.03,side:THREE.DoubleSide});
     updateBodyCmfInfo();
-    hero3d.matPick=new THREE.MeshStandardMaterial({color:0x4b8ef7,roughness:0.42,metalness:0.06,side:THREE.DoubleSide,emissive:0x1d4ed8,emissiveIntensity:0.32});
+    hero3d.matSelection=new THREE.MeshBasicMaterial({color:0x06b6d4,transparent:true,opacity:0.58,
+      depthWrite:false,depthTest:true,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-2});
     hero3d.raycaster=new THREE.Raycaster();
   }
   if(hero3d.sku!==sku){
@@ -1605,7 +1611,7 @@ function boxSelectParts(a,b,additive){
   if(!additive)hero3d.selection=new Set();
   let count=0;
   hero3d.model?.traverse(mesh=>{
-    if(!mesh.isMesh||!mesh.visible||count>=500)return;
+    if(!mesh.isMesh||mesh.userData.selectionOverlay||!mesh.visible||count>=500)return;
     if(!mesh.geometry.boundingBox)mesh.geometry.computeBoundingBox();
     mesh.updateWorldMatrix(true,false);
     const box=mesh.geometry.boundingBox;

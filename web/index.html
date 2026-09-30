@@ -66,6 +66,13 @@
           <label for="materialSelect" class="field-label" style="margin-top:14px">主体材质（CMF 预设）</label>
           <select id="materialSelect" name="material" autocomplete="off"><option value="">正在读取材质库…</option></select>
           <p class="field-help" id="cmfDescription">材质库会同时用于出图提示词、参数卡和 3D 近似预览；纹理方向与真实工艺仍需核对。</p>
+          <div class="cmf-scheme" id="cmfSchemePanel" hidden>
+            <div class="cmf-scheme-head"><strong>部位材质</strong><button type="button" class="mini-button" id="cmfPickPart">到 3D 中选部件</button></div>
+            <p class="field-help">先设主体材质，再逐个覆盖握持区、按键等部位。以下分配会用于所有机位；AI 成图仍需核对材质边界。</p>
+            <div id="cmfSchemeList" class="cmf-scheme-list" aria-live="polite">选择白模后可设置。</div>
+            <p class="field-help" id="cmfSchemeStatus"></p>
+            <button type="button" class="mini-button" id="cmfResetButton" hidden>旧方案已失效，重新建立</button>
+          </div>
           <label for="designSelect" class="field-label" style="margin-top:14px">设计语言（布光与质感）</label>
           <select id="designSelect" name="design" autocomplete="off"><option value="">不指定（沿用默认影棚）</option></select>
           <p class="field-help" id="designDescription">只调整布光、背景、反射与阴影的表达方式，<b>不会改变产品结构</b>。</p>
@@ -162,6 +169,13 @@
             <div class="part-cmf" id="partCmf">
               <label class="field-label" for="partCmfSelect">该部件材质（CMF）</label>
               <select id="partCmfSelect"></select>
+              <label class="field-label" for="partLabelInput">部位名称</label>
+              <input id="partLabelInput" type="text" maxlength="40" placeholder="例如：握持区">
+              <label class="field-label" for="partColorInput">此部位颜色</label>
+              <input id="partColorInput" type="color" value="#26292c">
+              <button type="button" class="mini-button" id="savePartCmfButton">保存到整机方案</button>
+              <button type="button" class="mini-button" id="removePartCmfButton">恢复主体材质</button>
+              <p class="part-cmf-help">同名模型部件会沿用到其他机位；更换模型后需要重新核对。</p>
               <label class="field-label" for="partBaseSelect" style="margin-top:10px">局部编辑底图</label>
               <select id="partBaseSelect"><option value="">正在读取候选图…</option></select>
               <p class="part-cmf-help" id="partBaseHelp">优先在已有成图上继续改；选「白模」属于实验模式，未选区域仍是白模，不等于整机换材。</p>

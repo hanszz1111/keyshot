@@ -26,6 +26,7 @@ import server as S  # noqa: E402
 PORT = 8799
 BASE = f"http://127.0.0.1:{PORT}"
 TEST_SKU = "_selftest"
+CMF_TEST_SKU = "selftestcmf"
 PASS, FAIL = [], []
 
 
@@ -109,6 +110,63 @@ def main():
           st == 200 and len(presets) >= 14 and len(legacy) >= 12 and
           all(p.get("texture") and p.get("process") for p in presets) and
           all(not p["ai_editable"] for p in presets if p["id"] in ("glass_clear", "chrome_mirror")))
+    # 跨视角整机 CMF：测试数据只写 _selftest 专属目录，结束时统一清理。
+    model_dir = os.path.join(S.MODELS_DIR, CMF_TEST_SKU)
+    os.makedirs(model_dir, exist_ok=True)
+    model_path = os.path.join(model_dir, "part.obj")
+    with open(model_path, "w", encoding="utf-8") as f:
+        f.write("o selftest\nv 0 0 0\n")
+    for view, front_id, grip_id in (("front", "1", "2"), ("side", "7", "3")):
+        folder = os.path.join(S.PASSES_DIR, CMF_TEST_SKU, view)
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "pass_manifest.json"), "w", encoding="utf-8") as f:
+            json.dump({"pass_format_version": S.PASS_FORMAT_VERSION,
+                       "depth_encoding": {"encoding": "near_white_far_dark_bg_black_v2",
+                                          "background": 0.0, "foreground_pixels": 4, "pixels": 16},
+                       "objectid_map": {front_id: "FrontShell", grip_id: "Grip"}}, f)
+        with open(os.path.join(folder, "objectid.png"), "wb") as f:
+            f.write(b"selftest-placeholder; guide image decoding is tested separately")
+    st, body = req("GET", "/api/cmf/scheme?sku=" + CMF_TEST_SKU)
+    empty_scheme = json.loads(body)
+    check("新产品 CMF 方案为空且绑定源模型", st == 200 and empty_scheme["version"] == 0 and
+          len(empty_scheme["fingerprint"]) == 64 and not empty_scheme["assignments"])
+    st, body = req("POST", "/api/cmf/scheme", {"sku": CMF_TEST_SKU, "view": "front", "part": 2,
+        "cmf": "rubber_matte", "label": "握持区", "color": "#252729"})
+    scheme = json.loads(body)
+    check("保存握持区胶皮到跨机位方案", st == 200 and scheme.get("version") == 1 and
+          scheme.get("assignments", {}).get("Grip", {}).get("color") == "#252729")
+    st, body = req("POST", "/api/cmf/scheme/check", {"sku": CMF_TEST_SKU,
+        "views": ["front", "side"], "version": scheme.get("version"),
+        "fingerprint": scheme.get("fingerprint")})
+    check("不同机位部件号不同但同名部件仍可复用", st == 200 and json.loads(body).get("ok"))
+    st, body = req("POST", "/api/cmf/scheme/check", {"sku": CMF_TEST_SKU,
+        "views": ["3q4_left"], "version": scheme.get("version"),
+        "fingerprint": scheme.get("fingerprint")})
+    check("缺少机位部件映射时先阻断整批任务", st == 400 and
+          "部件映射" in json.loads(body).get("error", ""))
+    old_payload = {"positive": "product", "_meta": {"cmf_scheme":
+                   {"version": scheme["version"], "fingerprint": scheme["fingerprint"]}}}
+    S.validate_cmf_task({"sku": CMF_TEST_SKU, "view": "side"}, old_payload)
+    check("任务提示词包含已核对的部位和材质", "握持区" in old_payload["positive"] and
+          "matte rubber" in old_payload["positive"])
+    st, body = req("POST", "/api/cmf/scheme", {"sku": CMF_TEST_SKU, "view": "front", "part": 1,
+        "cmf": "plastic_fine_matte", "label": "前壳", "color": "#373D42"})
+    check("方案更新后版本递增", st == 200 and json.loads(body).get("version") == 2)
+    st, body = req("POST", "/api/cmf/scheme", {"sku": CMF_TEST_SKU, "view": "front", "part": 1,
+        "action": "remove"})
+    removed = json.loads(body)
+    check("恢复主体材质只移除选中部件", st == 200 and removed.get("version") == 3 and
+          "FrontShell" not in removed.get("assignments", {}) and "Grip" in removed.get("assignments", {}))
+    st, body = req("POST", "/api/cmf/scheme/check", {"sku": CMF_TEST_SKU,
+        "views": ["side"], "version": 1, "fingerprint": scheme["fingerprint"]})
+    check("旧任务版本被阻断", st == 400 and "已改变" in json.loads(body).get("error", ""))
+    with open(model_path, "a", encoding="utf-8") as f:
+        f.write("v 1 0 0\n")
+    st, body = req("GET", "/api/cmf/scheme?sku=" + CMF_TEST_SKU)
+    check("源模型变化后方案标记失效", st == 200 and json.loads(body).get("stale") is True)
+    st, body = req("POST", "/api/cmf/scheme", {"sku": CMF_TEST_SKU, "action": "reset"})
+    check("确认重建方案后旧版本备份且新方案为空", st == 200 and
+          json.loads(body).get("version") == 4 and not json.loads(body).get("assignments"))
     with tempfile.TemporaryDirectory() as tmp:
         manifest = os.path.join(tmp, "pass_manifest.json")
         sample = {"pass_format_version": S.PASS_FORMAT_VERSION,
@@ -287,6 +345,8 @@ def main():
           S.qwen_input_ok("AI渲染1/front/clay.png") is True and      # ← 曾被误判 False 的就是这个
           S.qwen_input_ok("stl_5/side/clay.png") is True and
           S.qwen_input_ok("source/stl_2/a.png") is True and
+          S.qwen_input_ok("_部件/stl_5/side/guides/0123456789abcdef_cmf_guide.png") is True and
+          S.qwen_input_ok("_部件/stl_5/front/guides/not-a-hash_cmf_guide.png") is False and
           S.qwen_input_ok("AI渲染1/front/depth.png") is False and    # 只收 clay 截图与产品图
           S.qwen_input_ok("") is False and
           S.qwen_input_ok(None) is False,
@@ -538,6 +598,17 @@ def _cleanup_selftest():
             shutil.rmtree(part_ws, ignore_errors=True)
     except Exception as e:
         print(f"  [警告] 清理自检部件工作区失败：{e}")
+    try:
+        for root in (S.MODELS_DIR, S.PASSES_DIR):
+            target = os.path.join(root, CMF_TEST_SKU)
+            if os.path.isdir(target):
+                shutil.rmtree(target, ignore_errors=True)
+        if os.path.isdir(S.CMF_SCHEME_DIR):
+            for name in os.listdir(S.CMF_SCHEME_DIR):
+                if name == CMF_TEST_SKU + ".json" or name.startswith(CMF_TEST_SKU + ".json.backup-"):
+                    os.remove(os.path.join(S.CMF_SCHEME_DIR, name))
+    except Exception as e:
+        print(f"  [警告] 清理自检 CMF 样本失败：{e}")
 
 
 def run():

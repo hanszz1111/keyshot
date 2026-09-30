@@ -464,8 +464,8 @@ def load_view_presets():
         {"key": "back",          "label": "背面",       "azimuth": 180.0, "elevation": 8.0,   "group": "six",     "renderable": True},
         {"key": "side",          "label": "右侧",       "azimuth": 90.0,  "elevation": 8.0,   "group": "six",     "renderable": True},
         {"key": "side_left",     "label": "左侧",       "azimuth": -90.0, "elevation": 8.0,   "group": "six",     "renderable": True},
-        {"key": "top",           "label": "俯视",       "azimuth": 0.0,   "elevation": 80.0,  "group": "six",     "renderable": True},
-        {"key": "bottom",        "label": "仰视",       "azimuth": 0.0,   "elevation": -25.0, "group": "six",     "renderable": True},
+        {"key": "top",           "label": "俯视",       "azimuth": 0.0,   "elevation": 90.0,  "group": "six",     "renderable": True},
+        {"key": "bottom",        "label": "仰视",       "azimuth": 0.0,   "elevation": -90.0, "group": "six",     "renderable": True},
         {"key": "3q4_left",      "label": "左前 3/4",   "azimuth": -45.0, "elevation": 15.0,  "group": "quarter", "renderable": True},
         {"key": "3q4_right",     "label": "右前 3/4",   "azimuth": 45.0,  "elevation": 15.0,  "group": "quarter", "renderable": True},
         {"key": "detail_keypad", "label": "按键特写",   "azimuth": -30.0, "elevation": 35.0,  "group": "detail",  "renderable": True},
@@ -1734,7 +1734,7 @@ def _submit_qwen(tid, payload, engine_id):
             raise RuntimeError("实验引擎不接受结构图/掩膜载荷（%s），请改用稳定模式。" % k)
 
     rel = payload.get("source_img") or ""
-    if meta.get("cmf_scheme") and meta.get("input_kind") == "clay":
+    if meta.get("input_kind") == "clay":
         task_for_guide = task_by_id(tid)
         rel = make_cmf_guide(task_for_guide["sku"], task_for_guide["view"], meta)
         meta["cmf_guide"] = rel
@@ -1808,7 +1808,7 @@ def _submit_qwen(tid, payload, engine_id):
                                    "appearance_ref_output": anchor["output"]})
     if meta.get("cmf_guide"):
         update_task_run_meta(tid, {"cmf_guide": meta["cmf_guide"],
-                                   "cmf_scheme_version": meta["cmf_scheme"]["version"]})
+                                   "cmf_scheme_version": (meta.get("cmf_scheme") or {}).get("version")})
     return {
         "ok": True, "id": tid, "prompt_id": pid,
         "engine_id": engine_id, "mode": "qwen21_edit", "host": host,
@@ -2570,10 +2570,15 @@ def load_cmf_scheme(sku):
 
 
 def save_cmf_assignment(sku, view, part_id, cmf_id, label, color):
-    if not view or not re.fullmatch(r"\d+", str(part_id or "")):
-        raise ValueError("请先在当前 3D 视角选中一个部件")
+    return save_cmf_assignments(sku, view, [{"part": part_id, "label": label}], cmf_id, color)
+
+
+def save_cmf_assignments(sku, view, parts, cmf_id, color):
+    """一次校验、一次写入，避免批量选区只保存一部分。"""
+    if not view or not isinstance(parts, list) or not 1 <= len(parts) <= 500:
+        raise ValueError("请在当前 3D 视角选择 1–500 个部件")
     index = parts_index(sku, view)
-    if index["view"] != view or str(part_id) not in index["parts"]:
+    if index["view"] != view:
         raise ValueError("当前机位的部件索引不存在，请先补齐该视角结构图")
     issue = _pass_manifest_issue(os.path.join(PASSES_DIR, sku, view))
     if issue:
@@ -2583,20 +2588,26 @@ def save_cmf_assignment(sku, view, part_id, cmf_id, label, color):
         raise ValueError("材质预设不存在")
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", str(color or "")):
         raise ValueError("颜色须为 #RRGGBB")
-    label = str(label or "").strip()
-    if not label or len(label) > 40 or any(ord(c) < 32 for c in label):
-        raise ValueError("部位名称须为 1–40 个可见字符")
-    name = index["parts"][str(part_id)]
-    if not name:
-        raise ValueError("部件没有稳定名称，不能跨机位绑定")
+    checked = {}
+    for part in parts:
+        if not isinstance(part, dict) or not re.fullmatch(r"\d+", str(part.get("part") or "")):
+            raise ValueError("选区里有无效部件编号")
+        name = index["parts"].get(str(part["part"]))
+        if not name:
+            raise ValueError("选区里有部件缺少稳定名称或索引；请先补齐该视角结构图")
+        label = str(part.get("label") or name).strip()
+        if not label or len(label) > 40 or any(ord(c) < 32 for c in label):
+            raise ValueError("部位名称须为 1–40 个可见字符")
+        checked[name] = label
     with CMF_SCHEME_LOCK:
         scheme = load_cmf_scheme(sku)
         if scheme["stale"]:
             raise ValueError("源模型已改变；请先重新核对并建立材质方案")
         assignments = dict(scheme["assignments"])
-        if len(assignments) >= 5000 and name not in assignments:
+        if len(set(assignments) | set(checked)) > 5000:
             raise ValueError("部件分配已达上限")
-        assignments[name] = {"label": label, "cmf": cmf_id, "color": color.upper()}
+        for name, label in checked.items():
+            assignments[name] = {"label": label, "cmf": cmf_id, "color": color.upper()}
         result = {"sku": sku, "model": scheme["model"],
                   "fingerprint": scheme["fingerprint"], "version": scheme["version"] + 1,
                   "assignments": assignments}
@@ -2701,6 +2712,7 @@ def make_cmf_guide(sku, view, meta):
     """为千问构造同机位的确定性配色参考；原白模与 pass 一律不改。"""
     scheme = load_cmf_scheme(sku)
     color = str(meta.get("body_color") or "")
+    background = {"white": "#FFFFFF", "dark": "#25292E"}.get(meta.get("style"), "#F3F5F6")
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
         raise RuntimeError("主体颜色无效，无法建立多材质配色参考")
     folder = os.path.join(PASSES_DIR, sku, view)
@@ -2708,7 +2720,7 @@ def make_cmf_guide(sku, view, meta):
                            ("clay.png", "objectid.png", "pass_manifest.json"))
     if any(not os.path.isfile(path) for path in (clay, oid, manifest)):
         raise RuntimeError("当前机位缺少白模/对象 ID/结构清单，无法建立多材质参考")
-    source = [scheme["fingerprint"], str(scheme["version"]), color.upper()]
+    source = ["guide-v2-lines-clean-bg", scheme["fingerprint"], str(scheme["version"]), color.upper(), background]
     for path in (clay, oid, manifest):
         st = os.stat(path)
         source.extend((str(st.st_size), str(st.st_mtime_ns)))
@@ -2723,7 +2735,7 @@ def make_cmf_guide(sku, view, meta):
     try:
         proc = subprocess.run([sys.executable, tool, "--clay", clay, "--objectid", oid,
                                "--manifest", manifest, "--scheme", _cmf_scheme_path(sku),
-                               "--default-color", color, "--out", tmp],
+                               "--default-color", color, "--background-color", background, "--out", tmp],
                               capture_output=True, text=True, errors="replace", timeout=120)
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("多材质配色参考生成超时") from exc
@@ -3716,6 +3728,9 @@ class Handler(SimpleHTTPRequestHandler):
                     if b.get("action") == "remove":
                         return self.send_json({"ok": True, **remove_cmf_assignment(
                             b.get("sku"), b.get("view"), b.get("part"))})
+                    if b.get("action") == "assign_many":
+                        return self.send_json({"ok": True, **save_cmf_assignments(
+                            b.get("sku"), b.get("view"), b.get("parts"), b.get("cmf"), b.get("color"))})
                     return self.send_json({"ok": True, **save_cmf_assignment(
                         b.get("sku"), b.get("view"), b.get("part"), b.get("cmf"),
                         b.get("label"), b.get("color"))})

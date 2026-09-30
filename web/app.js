@@ -17,8 +17,8 @@ const VIEW_ANGLES_3D = {
   "3q4_right":[45,   15],
   side:       [90,    8],
   side_left:  [-90,   8],
-  top:        [0,    80],
-  bottom:     [0,   -25],
+  top:        [0,    90],
+  bottom:     [0,   -90],
   isometric:  [-45,  35]
 };
 const ALL_VIEWS = ["front","back","side","side_left","top","bottom","3q4_left","3q4_right","detail_keypad","detail_window"];
@@ -273,38 +273,63 @@ function partCmfOf(mesh){
   if(idx==null)return null;
   return (partCmfTable[selectedView()]||{})[String(idx)]||null;
 }
-function setPickedPart(mesh){
-  if(hero3d.pickedMesh&&hero3d.pickedMesh!==mesh&&hero3d.matBase){
-    restorePartCmfPreview(hero3d.pickedMesh);
+function updateSelectionVisuals(){
+  for(const helper of hero3d.selectionHelpers||[]){hero3d.scene?.remove(helper);helper.dispose?.();}
+  hero3d.selectionHelpers=[];
+  if(!hero3d.lib||!hero3d.scene)return;
+  for(const mesh of hero3d.selection||[]){
+    const helper=new hero3d.lib.THREE.BoxHelper(mesh,0x00bcd4);
+    hero3d.scene.add(helper);hero3d.selectionHelpers.push(helper);
   }
-  hero3d.pickedMesh=mesh||null;
+}
+function setPickedPart(mesh,additive=false,keepExisting=false){
+  if(!hero3d.selection)hero3d.selection=new Set();
+  if(!additive)hero3d.selection.clear();
   if(mesh){
-    // 大纲 §3 P1：已保存过 CMF 的部件直接显示该材质的近似效果；
-    // 没有分配时退回原来的高亮材质（高亮与近似预览不叠加）
+    if(additive&&!keepExisting&&hero3d.selection.has(mesh))hero3d.selection.delete(mesh);
+    else hero3d.selection.add(mesh);
+  }
+  hero3d.pickedMesh=hero3d.selection.has(mesh)?mesh:[...hero3d.selection].at(-1)||null;
+  applyCmfSchemeToModel();
+  updateSelectionVisuals();
+  if($("applyPaletteToPartsButton"))$("applyPaletteToPartsButton").disabled=!(hero3d.selection.size&&state.ref.palette?.length);
+  mesh=hero3d.pickedMesh;
+  if(mesh){
     const saved=partCmfOf(mesh);
     if(saved&&saved.cmf&&cmfPresets.some(p=>p.id===saved.cmf)){
       const sel=$("partCmfSelect");
       if(sel)sel.value=saved.cmf;
       $("partColorInput").value=saved.color||cmfPresets.find(p=>p.id===saved.cmf)?.color||"#26292c";
-      applyPartCmfPreview();
-    }else if(hero3d.matPick){
+    }else{
       $("partCmfSelect").value=$("materialSelect").value;
       $("partColorInput").value=cmfPresets.find(p=>p.id===$("partCmfSelect").value)?.color||"#26292c";
-      mesh.material=hero3d.matPick;
     }
   }
   const box=$("partInfo");if(!box)return;
   if(!mesh){box.hidden=true;return;}
   box.hidden=false;
+  const chosen=[...hero3d.selection];
+  $("partRenderButton").disabled=chosen.length!==1;
+  $("partRenderButton").title=chosen.length!==1?"局部重绘暂只支持单个部件；批量选区可统一设置材质":"";
+  const list=$("selectedPartList");clear(list);
+  for(const part of chosen.slice(0,30)){
+    const assignment=partCmfOf(part),chip=text("button",part.name||"未命名","selected-part-chip");
+    chip.type="button";chip.title=`从选区移除 ${part.name||"部件"}`;
+    chip.style.setProperty("--part-color",assignment?.color||"#00bcd4");
+    chip.addEventListener("click",()=>setPickedPart(part,true));list.append(chip);
+  }
+  if(chosen.length>30)list.append(text("small",`其余 ${chosen.length-30} 个部件已选中`));
   const g=mesh.geometry;
   const tris=Math.round((g.index?g.index.count:(g.attributes.position||{count:0}).count)/3);
   const idx=hero3d.nameToIndex?hero3d.nameToIndex[normPartName(mesh.name)]:null;
   const saved2=partCmfOf(mesh);
   const cmfName=saved2&&saved2.cmf?(cmfPresets.find(p=>p.id===saved2.cmf)||{}).name:"";
-  $("partLabelInput").value=saved2?.label||mesh.name||"";
+  $("partLabelInput").value=chosen.length>1?"":saved2?.label||mesh.name||"";
+  $("partLabelInput").disabled=chosen.length>1;
+  $("partLabelInput").placeholder=chosen.length>1?"批量时沿用各部件名称":"例如：握持区";
   $("partColorInput").value=saved2?.color||cmfPresets.find(p=>p.id===$("partCmfSelect").value)?.color||"#26292c";
-  $("partName").textContent=mesh.name||"(未命名)";
-  $("partMeta").textContent=`部件 #${idx==null?"—":idx} · ${tris.toLocaleString()} 个三角面`+
+  $("partName").textContent=chosen.length>1?`已选 ${chosen.length} 个部件`:mesh.name||"(未命名)";
+  $("partMeta").textContent=(chosen.length>1?"Shift+点击可增减；框选可批量选择 · ":"")+`部件 #${idx==null?"—":idx} · ${tris.toLocaleString()} 个三角面`+
     (hero3d.partsTotal?` · 全模型共 ${hero3d.partsTotal} 个`:"")+
     (cmfName?` · 已存材质：${cmfName}`:"")+
     (idx==null&&hero3d.partsNote?`（${hero3d.partsNote}）`:"");
@@ -399,9 +424,13 @@ async function savePartCmf(sku, view, partId, cmfId, color){
   }catch(error){announce("部件材质保存失败："+errorMessage(error));return false;}
 }
 function applyPartCmfPreview(){
-  const mesh=hero3d.pickedMesh;if(!mesh)return;
+  const meshes=[...(hero3d.selection||[])];if(!meshes.length)return;
   const preset=cmfPresets.find(p=>p.id===$("partCmfSelect").value);
-  if(!preset||!mesh.material)return;
+  if(!preset)return;
+  $("selectedPartList")?.querySelectorAll(".selected-part-chip").forEach(chip=>
+    chip.style.setProperty("--part-color",$("partColorInput").value));
+  for(const mesh of meshes){
+  if(!mesh.material)continue;
   if(!mesh.userData)mesh.userData={};
   if(!mesh.userData.cmfOrig)mesh.userData.cmfOrig=mesh.material;
   if(!mesh.userData.cmfClone)mesh.userData.cmfClone=mesh.material.clone();
@@ -413,6 +442,7 @@ function applyPartCmfPreview(){
     m.needsUpdate=true;
   }catch(error){/* 近似预览失败不影响出图 */}
   mesh.material=m;
+  }
 }
 function applyCmfSchemeToModel(){
   if(!hero3d.model||!hero3d.matBase||hero3d.sku!==state.sku)return;
@@ -704,6 +734,7 @@ async function showModel3D(sku){
       if(o.isMesh)o.material=hero3d.matBase;
     });
     hero3d.pickedMesh=null;
+    hero3d.selection?.clear();
     setPickedPart(null);
     const holder=new THREE.Group();
     holder.add(root);
@@ -1167,7 +1198,7 @@ function buildPayload(sku,view,variant,mode,series=null){
         ?"<image1> is the target camera and geometry, including any supplied deterministic CMF colour zones: preserve its silhouette, part count, openings, hole positions and visible sides. <image2> is the same product from another angle: transfer ONLY product identity, material placement, exact colours, texture and studio lighting. Do not copy <image2>'s camera angle or geometry over <image1>."
         :"Use the input image as the target camera and geometry; if it contains deterministic CMF colour zones, preserve their part boundaries. Preserve silhouette, part count, openings, hole positions and visible sides.",
       identity,lighting+".",style.text+".",
-      "Photorealistic material response, controlled highlights, clean contact shadow, sharp focus. Do not invent controls, seams, text or logos.",
+      "Treat the dark structural lines and colour-zone boundaries in <image1> as fixed product geometry and parting lines. Keep each line in its original location; do not add or remove seams. Photorealistic material response, controlled highlights, clean contact shadow, sharp focus, uniform spotless seamless studio background without stains or texture. Do not invent controls, seams, text or logos.",
       description?`User's design requirements (retain exact intent): ${description}`:""
     ].filter(Boolean).join(" ");
     return {
@@ -1560,15 +1591,58 @@ $("view3dBar").addEventListener("click",event=>{
 /* 部件拾取：必须区分「拖动旋转」和「点击选择」——
    按下到抬起位移超过阈值就当成旋转，不做拾取。 */
 let _pickDown=null;
-$("heroCanvas").addEventListener("pointerdown",e=>{_pickDown={x:e.clientX,y:e.clientY};});
+let boxSelectMode=false;
+$("boxSelectButton").addEventListener("click",()=>{
+  boxSelectMode=!boxSelectMode;
+  $("boxSelectButton").setAttribute("aria-pressed",String(boxSelectMode));
+  $("boxSelectButton").classList.toggle("is-active",boxSelectMode);
+  if(hero3d.controls)hero3d.controls.enabled=!boxSelectMode;
+  announce(boxSelectMode?"拖动鼠标框选部件；再次点击“框选部件”可恢复旋转。":"已恢复拖动旋转；Shift+点击仍可多选。");
+});
+function boxSelectParts(a,b,additive){
+  const canvas=$("heroCanvas"),rect=canvas.getBoundingClientRect();
+  const left=Math.min(a.x,b.x),right=Math.max(a.x,b.x),top=Math.min(a.y,b.y),bottom=Math.max(a.y,b.y);
+  if(!additive)hero3d.selection=new Set();
+  let count=0;
+  hero3d.model?.traverse(mesh=>{
+    if(!mesh.isMesh||!mesh.visible||count>=500)return;
+    if(!mesh.geometry.boundingBox)mesh.geometry.computeBoundingBox();
+    mesh.updateWorldMatrix(true,false);
+    const box=mesh.geometry.boundingBox;
+    if(!box)return;
+    const center=box.getCenter(new hero3d.lib.THREE.Vector3()).applyMatrix4(mesh.matrixWorld).project(hero3d.camera);
+    if(center.z < -1 || center.z > 1)return;
+    const x=rect.left+(center.x+1)*rect.width/2,y=rect.top+(1-center.y)*rect.height/2;
+    if(x>=left&&x<=right&&y>=top&&y<=bottom){hero3d.selection.add(mesh);count++;}
+  });
+  setPickedPart([...hero3d.selection].at(-1)||null,true,true);
+  announce(count?`已框选 ${count} 个部件；可直接统一指定材质和颜色。`:"框内没有部件中心，试着放大选区。");
+}
+$("heroCanvas").addEventListener("pointerdown",e=>{
+  _pickDown={x:e.clientX,y:e.clientY,shift:e.shiftKey};
+  if(boxSelectMode){$("heroCanvas").setPointerCapture(e.pointerId);$("selectionRect").hidden=false;}
+});
+$("heroCanvas").addEventListener("pointermove",e=>{
+  if(!_pickDown||!boxSelectMode)return;
+  const host=$("hero").getBoundingClientRect(),r=$("selectionRect");
+  r.style.left=`${Math.min(_pickDown.x,e.clientX)-host.left}px`;
+  r.style.top=`${Math.min(_pickDown.y,e.clientY)-host.top}px`;
+  r.style.width=`${Math.abs(e.clientX-_pickDown.x)}px`;
+  r.style.height=`${Math.abs(e.clientY-_pickDown.y)}px`;
+});
 $("heroCanvas").addEventListener("pointerup",e=>{
   if(!_pickDown)return;
   const moved=Math.hypot(e.clientX-_pickDown.x,e.clientY-_pickDown.y);
+  const down=_pickDown;
   _pickDown=null;
-  if(moved>5)return;                       // 拖动过 → 那是旋转
+  $("selectionRect").hidden=true;
   if(state.preview!=="model3d")return;
-  setPickedPart(pickAt(e.clientX,e.clientY));   // 点空白处即取消选择
+  if(boxSelectMode&&moved>5){boxSelectParts(down,{x:e.clientX,y:e.clientY},down.shift);return;}
+  if(moved>5)return;                       // 普通模式拖动过 → 旋转
+  const picked=pickAt(e.clientX,e.clientY);
+  if(picked)setPickedPart(picked,down.shift);
 });
+$("heroCanvas").addEventListener("pointercancel",()=>{_pickDown=null;$("selectionRect").hidden=true;});
 $("partClear").addEventListener("click",()=>setPickedPart(null));
 $("cmfPickPart").addEventListener("click",()=>{setPreview("model3d");$("hero").scrollIntoView({behavior:"smooth",block:"center"});announce("在 3D 模型上点击要换材质的部件。");});
 $("cmfResetButton").addEventListener("click",async()=>{
@@ -1588,14 +1662,19 @@ $("savePartCmfButton").addEventListener("click",async()=>{
   const ps=pickedPartState();
   const preset=cmfPresets.find(p=>p.id===$("partCmfSelect").value);
   if(!ps||ps.partId==null||!preset)return announce("请先在 3D 模型上点选一个部件。");
+  const parts=[...(hero3d.selection||[])].map(mesh=>({
+    part:hero3d.nameToIndex?.[normPartName(mesh.name)],
+    label:hero3d.selection.size===1?$("partLabelInput").value:mesh.name
+  }));
+  if(parts.some(item=>item.part==null))return announce("选区中有未建立索引的部件，请先补齐当前视角结构图。");
   const button=$("savePartCmfButton");setBusy(button,true,"正在保存…");
   try{
-    const scheme=await post("/api/cmf/scheme",{sku:ps.sku,view:ps.view,part:ps.partId,
-      cmf:preset.id,label:$("partLabelInput").value,color:$("partColorInput").value});
-    state.cmfScheme=scheme;renderCmfScheme();applyCmfSchemeToModel();setPickedPart(hero3d.pickedMesh);
-    announce(`已将“${$("partLabelInput").value}”设为${preset.name}，所有机位会沿用此方案。${preset.ai_editable===false?"该材质仅适合真渲染，AI 出图仍需人工核对。":""}`);
+    const scheme=await post("/api/cmf/scheme",{sku:ps.sku,view:ps.view,action:"assign_many",parts,
+      cmf:preset.id,color:$("partColorInput").value});
+    state.cmfScheme=scheme;renderCmfScheme();applyCmfSchemeToModel();updateSelectionVisuals();
+    announce(`已将 ${parts.length} 个部件设为${preset.name}，所有机位会沿用此方案。${preset.ai_editable===false?"该材质仅适合真渲染，AI 出图仍需人工核对。":""}`);
   }catch(error){announce("保存部位材质失败："+errorMessage(error));}
-  finally{setBusy(button,false,"保存到整机方案");}
+  finally{setBusy(button,false,"应用材质到选中部件");}
 });
 $("removePartCmfButton").addEventListener("click",async()=>{
   const ps=pickedPartState();
@@ -1933,15 +2012,17 @@ function renderRefPanel(){
     clear(pal);
     for(const p of (state.ref.palette||[])){
       const b=document.createElement("button");b.type="button";
-      b.title=`${p.hex}（占比 ${p.share}%）— 点一下设为主体色`;
-      b.setAttribute("aria-label",`将主体色设为 ${p.hex}，参考图占比 ${p.share}%`);
+      b.title=`${p.hex}（占比 ${p.share}%）— 选中参考色`;
+      b.setAttribute("aria-label",`选中参考色 ${p.hex}，占比 ${p.share}%`);
+      b.setAttribute("aria-pressed",String((state.ref.selectedColor||state.ref.palette[0]?.hex)===p.hex));
       const i=document.createElement("i");i.style.background=p.hex;b.append(i);
-      b.onclick=()=>{$("bodyColor").value=p.hex.toLowerCase();$("bodyColorValue").textContent=p.hex;announce(`主体色已设为 ${p.hex}`);};
+      b.onclick=()=>{state.ref.selectedColor=p.hex;renderRefPanel();announce(`已选择参考色 ${p.hex}；可应用到主体或选中部件。`);};
       pal.append(b);
     }
   }
   const apply=$("applyPaletteButton");
   if(apply)apply.disabled=!(state.ref.palette||[]).length;
+  if($("applyPaletteToPartsButton"))$("applyPaletteToPartsButton").disabled=!(state.ref.palette?.length&&hero3d.selection?.size);
   const note=$("refNote");
   if(note){
     const iadapterOn=!!(state.comfy&&state.comfy.ipadapter_ok);
@@ -1966,7 +2047,7 @@ async function uploadReference(file){
     const res=await api(`/api/refs/upload?sku=${encodeURIComponent(sku)}&name=${encodeURIComponent(file.name)}`,
       {method:"POST",headers:{"Content-Type":"application/octet-stream"},body:file});
     URL.revokeObjectURL(url);
-    state.ref.rel=res.saved;state.ref.palette=info.palette;state.ref.lum=info.lum;
+    state.ref.rel=res.saved;state.ref.palette=info.palette;state.ref.selectedColor=info.palette[0]?.hex||"";state.ref.lum=info.lum;
     state.ref.bg=info.bg;state.ref.sat=info.sat;
     if(!state.ref.strength)state.ref.strength="L2_material";
     renderRefPanel();renderPreflight();
@@ -1982,7 +2063,7 @@ async function loadExistingRef(){
     const newest=items[items.length-1];
     const img=await loadImage(passUrl(newest.rel));
     const info=extractPalette(img);
-    state.ref.rel=newest.rel;state.ref.palette=info.palette;
+    state.ref.rel=newest.rel;state.ref.palette=info.palette;state.ref.selectedColor=info.palette[0]?.hex||"";
     state.ref.lum=info.lum;state.ref.bg=info.bg;state.ref.sat=info.sat;
     renderRefPanel();
   }catch{state.ref={rel:"",palette:[],strength:"L2_material"};renderRefPanel();}
@@ -1992,10 +2073,17 @@ $("chooseRefButton")?.addEventListener("click",()=>$("refFile").click());
 $("refFile")?.addEventListener("change",event=>uploadReference(event.target.files[0]));
 $("refStrength")?.addEventListener("change",event=>{state.ref.strength=event.target.value;renderPreflight();});
 $("applyPaletteButton")?.addEventListener("click",()=>{
-  const p=(state.ref.palette||[])[0];
+  const p=(state.ref.palette||[]).find(item=>item.hex===state.ref.selectedColor)||state.ref.palette?.[0];
   if(!p)return;
   $("bodyColor").value=p.hex.toLowerCase();$("bodyColorValue").textContent=p.hex;
   announce(`主体色已设为参考图主色 ${p.hex}`);
+});
+$("applyPaletteToPartsButton")?.addEventListener("click",()=>{
+  const p=(state.ref.palette||[]).find(item=>item.hex===state.ref.selectedColor)||state.ref.palette?.[0];
+  if(!p||!hero3d.selection?.size)return announce("先在 3D 中选好部件和参考色。");
+  $("partColorInput").value=p.hex.toLowerCase();
+  applyPartCmfPreview();
+  $("savePartCmfButton").click();
 });
 
 /* =========================================================

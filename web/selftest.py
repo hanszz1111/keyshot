@@ -103,6 +103,9 @@ def main():
           st == 200 and len(keys) == len(set(keys)) and
           all(v in keys for v in ("3q4_left", "3q4_right", "side", "side_left")) and
           len([v for v in views if v.get("group") == "six"]) == 6)
+    angles = {v["key"]: v["elevation"] for v in views}
+    check("俯视和仰视为精确正交方向", angles.get("top") == 90.0 and
+          angles.get("bottom") == -90.0)
     st, body = req("GET", "/api/cmf")
     presets = json.loads(body).get("presets", [])
     legacy = {alias for p in presets for alias in p.get("legacy_ids", [])}
@@ -135,6 +138,21 @@ def main():
     scheme = json.loads(body)
     check("保存握持区胶皮到跨机位方案", st == 200 and scheme.get("version") == 1 and
           scheme.get("assignments", {}).get("Grip", {}).get("color") == "#252729")
+    st, body = req("POST", "/api/cmf/scheme", {"sku": CMF_TEST_SKU, "view": "front",
+        "action": "assign_many", "parts": [{"part": 1, "label": "前壳"}, {"part": 2, "label": "握持区"}],
+        "cmf": "plastic_fine_matte", "color": "#6A7880"})
+    batch = json.loads(body)
+    check("批量材质一次写入且两个部件同色", st == 200 and batch.get("version") == 2 and
+          all(batch.get("assignments", {}).get(name, {}).get("color") == "#6A7880"
+              for name in ("FrontShell", "Grip")))
+    st, body = req("POST", "/api/cmf/scheme", {"sku": CMF_TEST_SKU, "view": "front",
+        "action": "assign_many", "parts": [{"part": 1}, {"part": 999}],
+        "cmf": "plastic_fine_matte", "color": "#000000"})
+    check("批量选区含无效部件时整体拒绝", st == 400 and
+          S.load_cmf_scheme(CMF_TEST_SKU)["version"] == 2)
+    st, body = req("POST", "/api/cmf/scheme", {"sku": CMF_TEST_SKU, "view": "front", "part": 2,
+        "cmf": "rubber_matte", "label": "握持区", "color": "#252729"})
+    scheme = json.loads(body)
     st, body = req("POST", "/api/cmf/scheme/check", {"sku": CMF_TEST_SKU,
         "views": ["front", "side"], "version": scheme.get("version"),
         "fingerprint": scheme.get("fingerprint")})
@@ -151,11 +169,11 @@ def main():
           "matte rubber" in old_payload["positive"])
     st, body = req("POST", "/api/cmf/scheme", {"sku": CMF_TEST_SKU, "view": "front", "part": 1,
         "cmf": "plastic_fine_matte", "label": "前壳", "color": "#373D42"})
-    check("方案更新后版本递增", st == 200 and json.loads(body).get("version") == 2)
+    check("方案更新后版本递增", st == 200 and json.loads(body).get("version") == scheme["version"] + 1)
     st, body = req("POST", "/api/cmf/scheme", {"sku": CMF_TEST_SKU, "view": "front", "part": 1,
         "action": "remove"})
     removed = json.loads(body)
-    check("恢复主体材质只移除选中部件", st == 200 and removed.get("version") == 3 and
+    check("恢复主体材质只移除选中部件", st == 200 and removed.get("version") == scheme["version"] + 2 and
           "FrontShell" not in removed.get("assignments", {}) and "Grip" in removed.get("assignments", {}))
     st, body = req("POST", "/api/cmf/scheme/check", {"sku": CMF_TEST_SKU,
         "views": ["side"], "version": 1, "fingerprint": scheme["fingerprint"]})
@@ -166,7 +184,7 @@ def main():
     check("源模型变化后方案标记失效", st == 200 and json.loads(body).get("stale") is True)
     st, body = req("POST", "/api/cmf/scheme", {"sku": CMF_TEST_SKU, "action": "reset"})
     check("确认重建方案后旧版本备份且新方案为空", st == 200 and
-          json.loads(body).get("version") == 4 and not json.loads(body).get("assignments"))
+          json.loads(body).get("version") == scheme["version"] + 3 and not json.loads(body).get("assignments"))
     with tempfile.TemporaryDirectory() as tmp:
         manifest = os.path.join(tmp, "pass_manifest.json")
         sample = {"pass_format_version": S.PASS_FORMAT_VERSION,

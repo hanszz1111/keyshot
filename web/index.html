@@ -106,6 +106,7 @@
                 <div class="palette" id="refPalette"></div>
                 <div class="ref-actions">
                   <button type="button" class="line-button" id="applyPaletteButton" disabled>把主色应用到主体色</button>
+                  <button type="button" class="line-button" id="applyPaletteToPartsButton" disabled>把选中参考色应用到部件</button>
                 </div>
                 <p class="field-help" id="refNote">上传参考图后会自动提取调色板。</p>
               </div>
@@ -157,15 +158,18 @@
           <div class="hero-empty" id="heroEmpty"><div class="wire-product" aria-hidden="true"><span class="wire-ring"></span><span class="wire-body"></span><span class="wire-foot"></span></div><strong>你的产品，从这里开始</strong><p>导入白模，或选择已有产品。这里会显示结构预览与生成的图片。</p></div>
           <img id="heroImage" alt="当前产品预览" width="1232" height="752" hidden>
           <canvas id="heroCanvas" hidden aria-label="可自由旋转的白模预览"></canvas>
+          <div id="selectionRect" class="selection-rect" hidden aria-hidden="true"></div>
           <div class="view-3d-bar" id="view3dBar" hidden role="group" aria-label="3D 视角">
             <button type="button" data-cam="isometric">等轴</button>
             <button type="button" data-cam="reset">复位</button>
             <button type="button" data-cam="spin" id="camSpinButton">自动转</button>
+            <button type="button" id="boxSelectButton" aria-pressed="false" title="开启后拖拽框选部件，再次点击返回旋转">框选部件</button>
             <span class="view-3d-readout" id="view3dReadout">—</span>
           </div>
           <div class="part-info" id="partInfo" hidden>
-            <div class="part-info-head"><span class="part-dot" aria-hidden="true"></span><strong id="partName">—</strong><button type="button" class="mini-button" id="partClear">取消</button></div>
+            <div class="part-info-head"><span class="part-dot" aria-hidden="true"></span><strong id="partName">—</strong><button type="button" class="mini-button" id="partClear">清空选区</button></div>
             <span class="part-meta" id="partMeta">—</span>
+            <div id="selectedPartList" class="selected-part-list" aria-live="polite"></div>
             <div class="part-cmf" id="partCmf">
               <label class="field-label" for="partCmfSelect">该部件材质（CMF）</label>
               <select id="partCmfSelect"></select>
@@ -173,7 +177,7 @@
               <input id="partLabelInput" type="text" maxlength="40" placeholder="例如：握持区">
               <label class="field-label" for="partColorInput">此部位颜色</label>
               <input id="partColorInput" type="color" value="#26292c">
-              <button type="button" class="mini-button" id="savePartCmfButton">保存到整机方案</button>
+              <button type="button" class="mini-button" id="savePartCmfButton">应用材质到选中部件</button>
               <button type="button" class="mini-button" id="removePartCmfButton">恢复主体材质</button>
               <p class="part-cmf-help">同名模型部件会沿用到其他机位；更换模型后需要重新核对。</p>
               <label class="field-label" for="partBaseSelect" style="margin-top:10px">局部编辑底图</label>

@@ -78,8 +78,8 @@ VIEW_ANGLES = {
     "3q4_right":     (45.0,  15.0),
     "side":          (90.0,   8.0),     # 右侧（历史沿用，不要改）
     "side_left":     (-90.0,  8.0),     # 左侧
-    "top":           (0.0,   80.0),
-    "bottom":        (0.0,  -25.0),     # 仰视：负仰角 = 相机在物体下方
+    "top":           (0.0,   90.0),
+    "bottom":        (0.0,  -90.0),     # 真正的正仰视，强制正交投影
     "detail_keypad": (-30.0, 35.0),
     "detail_window": (30.0,  30.0),
 }
@@ -603,6 +603,8 @@ def main():
         args.azimuth = default_az
     if args.elevation is None:
         args.elevation = default_el
+    if view in ("top", "bottom") and abs(args.elevation) == 90.0:
+        args.ortho = True
 
     outdir = os.path.join(pass_root, args.sku, view)
     tmpdir = os.path.join(outdir, "_raw")

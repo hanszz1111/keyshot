@@ -20,7 +20,7 @@
 .view-3d-readout{font-size:11px;color:#5a6f79;padding-left:5px;font-variant-numeric:tabular-nums;white-space:nowrap}
 .view-3d-bar[hidden]{display:none}
 /* 部件拾取信息卡：点中部件后显示它叫什么、是第几号、多少个三角面 */
-.part-info{position:absolute;left:14px;top:14px;z-index:3;background:rgba(255,255,255,.95);border:1px solid var(--line);border-radius:9px;padding:8px 10px;max-width:min(320px,62%);box-shadow:0 3px 10px rgba(20,37,46,.07)}
+.part-info{position:absolute;left:14px;top:14px;z-index:3;background:rgba(255,255,255,.95);border:1px solid var(--line);border-radius:9px;padding:8px 10px;max-width:min(320px,62%);max-height:calc(100% - 28px);overflow:auto;box-shadow:0 3px 10px rgba(20,37,46,.07)}
 .part-info-head{display:flex;align-items:center;gap:7px}
 .part-info-head strong{font-size:12.5px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .part-info-head .mini-button{margin-left:auto;flex:none}
@@ -31,6 +31,11 @@
 .part-cmf .part-render{margin-top:7px;width:100%;padding:7px 8px}
 .part-cmf-help{font-size:10.5px;color:var(--muted);margin:6px 0 0;line-height:1.5}
 .part-info[hidden]{display:none}
+.selection-rect{position:absolute;z-index:4;pointer-events:none;border:1px solid #00a6bd;background:rgba(0,188,212,.14);box-shadow:0 0 0 1px rgba(255,255,255,.8) inset}
+.selection-rect[hidden]{display:none}
+.selected-part-list{display:flex;flex-wrap:wrap;gap:4px;max-height:70px;overflow:auto;margin-top:7px}
+.selected-part-chip{border:1px solid #ccd9dd;border-left:5px solid var(--part-color,#00bcd4);border-radius:4px;background:#f6f9fa;padding:3px 6px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink);font-size:10px;cursor:pointer}
+.selected-part-chip:focus-visible{outline:2px solid #086e85;outline-offset:2px}
 .part-cmf input[type=text]{width:100%;box-sizing:border-box;min-height:32px;border:1px solid #cbd5d8;border-radius:7px;padding:5px 8px;background:#fff;color:var(--ink)}
 .part-cmf input[type=color]{width:100%;height:32px;border:1px solid #cbd5d8;border-radius:7px;padding:3px;background:#fff}
 .part-cmf .field-label{display:block;margin-top:9px}
@@ -108,6 +113,7 @@ pre.code{margin:10px 0 0;padding:11px;background:#1e292e;color:#dbe6ea;border-ra
 .palette button{padding:0;border:0;background:none;line-height:0;cursor:pointer;border-radius:6px}
 .palette button i{width:26px;height:26px;border-radius:6px;border:1px solid rgba(0,0,0,.14);display:block}
 .palette button:hover i{outline:2px solid var(--blue);outline-offset:1px}
+.palette button[aria-pressed="true"] i{outline:2px solid #087f91;outline-offset:2px}
 .source-switch{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#e9eef0;padding:4px;border-radius:10px;margin:0 0 17px}
 .source-switch button{border:0;border-radius:7px;background:transparent;color:var(--muted);padding:9px 8px;font-size:12px;font-weight:700}
 .source-switch button.is-active{background:#fff;color:var(--blue-dark);box-shadow:0 1px 4px rgba(30,41,46,.12)}

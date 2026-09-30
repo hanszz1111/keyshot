@@ -464,6 +464,14 @@ def main():
         except RuntimeError as exc:
             rejected = "主视图尚未完成" in str(exc)
         check("不同系列不能串用旧主视图", rejected)
+        S.update_task(anchor_id, status="failed", err="引导图依赖无法加载")
+        try:
+            S.qwen_series_anchor({"sku": TEST_SKU, "view": "3q4_left", "variant": 0},
+                                 {"series": {"id": sid, "anchor_view": "front"}})
+            explained = False
+        except RuntimeError as exc:
+            explained = "引导图依赖无法加载" in str(exc) and "主视图 #" in str(exc)
+        check("关联机位显示同组主视图的原始失败原因", explained)
     finally:
         S._output_path = _real_output_path
         with S.DB_LOCK, S.db() as con:

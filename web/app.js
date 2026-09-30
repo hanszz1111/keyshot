@@ -255,6 +255,17 @@ function resize3D(){
   hero3d.renderer.setSize(w,h,false);
   hero3d.camera.aspect=w/h;
   hero3d.camera.updateProjectionMatrix();
+  if(hero3d.model&&hero3d.fitRadius){
+    const vfov=hero3d.camera.fov*Math.PI/180;
+    const hfov=2*Math.atan(Math.tan(vfov/2)*hero3d.camera.aspect);
+    hero3d.homeDist=hero3d.fitRadius/Math.sin(Math.min(vfov,hfov)/2)*1.15;
+    hero3d.controls.maxDistance=Math.max(40,hero3d.homeDist*8);
+    const offset=hero3d.camera.position.clone().sub(hero3d.controls.target);
+    if(offset.length()>0&&offset.length()<hero3d.homeDist){
+      hero3d.camera.position.copy(hero3d.controls.target).add(offset.setLength(hero3d.homeDist));
+      hero3d.controls.update();
+    }
+  }
 }
 function stop3D(){if(hero3d.raf){cancelAnimationFrame(hero3d.raf);hero3d.raf=0;}}
 /* ---------------- 部件拾取 ----------------
@@ -296,7 +307,6 @@ function setPickedPart(mesh,additive=false,keepExisting=false){
   }
   hero3d.pickedMesh=hero3d.selection.has(mesh)?mesh:[...hero3d.selection].at(-1)||null;
   applyCmfSchemeToModel();
-  updateSelectionVisuals();
   if($("applyPaletteToPartsButton"))$("applyPaletteToPartsButton").disabled=!(hero3d.selection.size&&state.ref.palette?.length);
   mesh=hero3d.pickedMesh;
   if(mesh){
@@ -311,15 +321,17 @@ function setPickedPart(mesh,additive=false,keepExisting=false){
     }
   }
   const box=$("partInfo");if(!box)return;
-  if(!mesh){box.hidden=true;return;}
+  if(!mesh){box.hidden=true;updateSelectionVisuals();return;}
   box.hidden=false;
   const chosen=[...hero3d.selection];
   $("partRenderButton").disabled=chosen.length!==1;
   $("partRenderButton").title=chosen.length!==1?"局部重绘暂只支持单个部件；批量选区可统一设置材质":"";
   const list=$("selectedPartList");clear(list);
   for(const part of chosen.slice(0,30)){
-    const assignment=partCmfOf(part),chip=text("button",part.name||"未命名","selected-part-chip");
+    const assignment=partCmfOf(part),material=cmfPresets.find(p=>p.id===assignment?.cmf)?.name||"未指定材质";
+    const chip=text("button",`${assignment?.label||part.name||"未命名"} · ${material} · ${(assignment?.color||$("partColorInput").value).toUpperCase()}`,"selected-part-chip");
     chip.type="button";chip.title=`从选区移除 ${part.name||"部件"}`;
+    chip.dataset.partLabel=assignment?.label||part.name||"未命名";
     chip.style.setProperty("--part-color",assignment?.color||"#00bcd4");
     chip.addEventListener("click",()=>setPickedPart(part,true));list.append(chip);
   }
@@ -338,6 +350,8 @@ function setPickedPart(mesh,additive=false,keepExisting=false){
     (hero3d.partsTotal?` · 全模型共 ${hero3d.partsTotal} 个`:"")+
     (cmfName?` · 已存材质：${cmfName}`:"")+
     (idx==null&&hero3d.partsNote?`（${hero3d.partsNote}）`:"");
+  applyPartCmfPreview();
+  updateSelectionVisuals();
 }
 function pickAt(clientX,clientY){
   const canvas=$("heroCanvas");
@@ -432,8 +446,10 @@ function applyPartCmfPreview(){
   const meshes=[...(hero3d.selection||[])];if(!meshes.length)return;
   const preset=cmfPresets.find(p=>p.id===$("partCmfSelect").value);
   if(!preset)return;
-  $("selectedPartList")?.querySelectorAll(".selected-part-chip").forEach(chip=>
-    chip.style.setProperty("--part-color",$("partColorInput").value));
+  $("selectedPartList")?.querySelectorAll(".selected-part-chip").forEach(chip=>{
+    chip.style.setProperty("--part-color",$("partColorInput").value);
+    chip.textContent=`${chip.dataset.partLabel} · ${preset.name} · ${$("partColorInput").value.toUpperCase()}`;
+  });
   for(const mesh of meshes){
   if(!mesh.material)continue;
   if(!mesh.userData)mesh.userData={};
@@ -447,6 +463,13 @@ function applyPartCmfPreview(){
     m.needsUpdate=true;
   }catch(error){/* 近似预览失败不影响出图 */}
   mesh.material=m;
+  }
+  const summary=$("partSelectionSummary");
+  if(summary){
+    const label=meshes.length===1?($("partLabelInput").value.trim()||meshes[0].name||"未命名部件"):`${meshes.length} 个已选部件`;
+    const saved=meshes.every(mesh=>{const row=partCmfOf(mesh);return row?.cmf===preset.id&&row?.color?.toLowerCase()===$("partColorInput").value.toLowerCase()&&(meshes.length>1||($("partLabelInput").value.trim()||mesh.name)===(row.label||mesh.name));});
+    summary.textContent=`${label} · ${preset.name} · ${$("partColorInput").value.toUpperCase()}（${saved?"已保存":"预览，未保存"}）`;
+    summary.style.setProperty("--selection-color",$("partColorInput").value);
   }
 }
 function applyCmfSchemeToModel(){
@@ -643,6 +666,7 @@ function setCameraToView(key){
   if(!hero3d.lib||!hero3d.camera)return;
   if(hero3d.controls?.autoRotate){hero3d.controls.autoRotate=false;$("camSpinButton").classList.remove("is-active");}
   const {THREE}=hero3d.lib;
+  resize3D();
   const d=hero3d.homeDist||4.2;
   const a=VIEW_ANGLES_3D[key==="reset"?"3q4_left":key];
   if(!a)return;
@@ -707,7 +731,7 @@ async function showModel3D(sku){
     // 共享材质：2530 个部件各 new 一个太浪费；选中高亮时只替换那一个 mesh。
     hero3d.matBase=new THREE.MeshStandardMaterial({color:0xedeff0,roughness:0.58,metalness:0.03,side:THREE.DoubleSide});
     updateBodyCmfInfo();
-    hero3d.matSelection=new THREE.MeshBasicMaterial({color:0x06b6d4,transparent:true,opacity:0.58,
+    hero3d.matSelection=new THREE.MeshBasicMaterial({color:0x06b6d4,transparent:true,opacity:0.16,
       depthWrite:false,depthTest:true,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2,polygonOffsetUnits:-2});
     hero3d.raycaster=new THREE.Raycaster();
   }
@@ -758,8 +782,8 @@ async function showModel3D(sku){
     applyCmfSchemeToModel();
     // 按包围球 + 垂直 FOV 算相机距离，留 15% 余量
     const radius=0.5*Math.hypot(size.x,size.y,size.z)*s;
-    const dist=radius/Math.sin(THREE.MathUtils.degToRad(35/2))*1.15;
-    hero3d.homeDist=dist;
+    hero3d.fitRadius=radius;
+    resize3D();
     setCameraToView(VIEW_ANGLES_3D[selectedView()]?selectedView():"3q4_left");
     loadPartsIndex(sku, selectedView());   // 部件索引绑定当前机位（大纲 3.1）
     loadPartBases(sku, selectedView());    // 候选底图版本链（大纲 §2 P1）
@@ -1094,13 +1118,17 @@ function renderResults(){
     }
     for(const task of group.items){
     const card=text("article","","result-card"),thumb=text("div","","result-thumb");const rel=outputRel(task);
-    if(task.status==="done"&&rel){const img=document.createElement("img");img.src=outputUrl(rel);img.alt=`${task.sku} ${VIEW_ZH[task.view]||task.view} 候选图 ${task.variant+1}`;img.loading="lazy";img.width=320;img.height=200;thumb.append(img);}
+    if(task.status==="done"&&rel){const open=text("button","","result-open");open.type="button";open.setAttribute("aria-label",`查看大图：${VIEW_ZH[task.view]||task.view} 候选 ${task.variant+1}`);open.onclick=()=>showImageViewer(task,rel);const img=document.createElement("img");img.src=outputUrl(rel);img.alt=`${task.sku} ${VIEW_ZH[task.view]||task.view} 候选图 ${task.variant+1}`;img.loading="lazy";img.width=320;img.height=200;open.append(img);thumb.append(open);}
     else{thumb.append(text("span",task.status==="failed"?"生成失败":task.status==="running"?"生成中…":"等待生成"));}
     thumb.append(text("span",({done:"已完成",running:"生成中",failed:"失败",pending:"待运行"})[task.status]||task.status,"task-state"));
     const body=text("div","","result-card-body");body.append(text("strong",`候选 ${task.variant+1} · ${VIEW_ZH[task.view]||task.view}`));
     if(task.err)body.append(text("small",task.err.slice(0,90)));
     const actions=text("div","","result-actions");
-    if(rel){const preview=text("button","查看大图");preview.type="button";preview.onclick=()=>{state.selectedTask=task.id;setPreview("result");$("hero").scrollIntoView({behavior:"smooth",block:"center"});};actions.append(preview);
+    if(rel){const preview=text("button","查看大图");preview.type="button";preview.onclick=()=>showImageViewer(task,rel);actions.append(preview);
+      const payload=typeof task.payload==="string"?(()=>{try{return JSON.parse(task.payload);}catch{return {};}})():task.payload||{};
+      if(payload._meta?.input_kind==="product_base"&&/^_成品底图\/[^/]+\/[^/]+\/[0-9a-f]{16}_product\.png$/.test(payload.source_img||"")){
+        const base=text("button","查看原模型保形图");base.type="button";base.onclick=()=>showImageViewer(task,payload.source_img,true);actions.append(base);
+      }
       if(state.sourceType!=="image"&&isUsablePass(viewInfo()?.files?.clay)){
         const compare=text("button","对比白模");compare.type="button";
         compare.onclick=()=>{state.selectedTask=task.id;setPreview("compare");$("hero").scrollIntoView({behavior:"smooth",block:"center"});};
@@ -1111,6 +1139,23 @@ function renderResults(){
     body.append(actions);card.append(thumb,body);grid.append(card);
     }
   }
+}
+function showImageViewer(task,rel,isAsset=false){
+  const dialog=$("imageViewer"),img=$("imageViewerImage");
+  img.src=isAsset?`/api/assets/file?rel=${encodeURIComponent(rel)}`:outputUrl(rel);
+  img.alt=`${task.sku} ${VIEW_ZH[task.view]||task.view} ${isAsset?"原模型保形底图":`候选图 ${task.variant+1}`}`;
+  $("imageViewerTitle").textContent=`${task.sku} · ${VIEW_ZH[task.view]||task.view} · ${isAsset?"原模型保形底图":`候选 ${task.variant+1}`}`;
+  if(!dialog.open)dialog.showModal();
+}
+function updateRenderProgress(phase,done,total,startedAt,taskStartedAt,durations){
+  const box=$("renderProgress");box.hidden=false;
+  const percent=total?Math.round(done/total*100):0;
+  $("renderProgressBar").value=percent;
+  $("renderProgressLabel").textContent=`${phase} · ${done}/${total} 张（${percent}%）`;
+  const elapsed=Math.max(0,Math.round((Date.now()-startedAt)/1000));
+  const avg=durations.length?durations.reduce((a,b)=>a+b,0)/durations.length:0;
+  const remaining=avg?Math.max(0,Math.round(avg*(total-done)-(taskStartedAt?(Date.now()-taskStartedAt)/1000:0))):null;
+  $("renderProgressEta").textContent=remaining==null?`已用 ${elapsed} 秒 · 首张完成后估时`:`已用 ${elapsed} 秒 · 预计还需约 ${Math.ceil(remaining/60)} 分钟`;
 }
 function renderTasks(){
   $("queueCount").textContent=String(state.tasks.filter(t=>t.status==="pending"||t.status==="running").length);
@@ -1329,6 +1374,8 @@ async function generate(){
   const useProductBase=experimental&&sourceType==="model"&&$("qwenBaseSelect").value==="product";
   const selectedMaterial=selectedCmf()?.id,selectedColor=$("bodyColor").value,selectedStyle=state.style;
   state.running=true;state.runCount=count;renderPreflight();
+  const batchStarted=Date.now(),durations=[];
+  updateRenderProgress("准备结构图/底图",0,count,batchStarted,0,durations);
   try{
     await ensureRequiredPasses(sku,views,mode,experimental);
     if(sourceType==="model"){
@@ -1366,9 +1413,14 @@ async function generate(){
     for(let i=0;i<created.length;i++){
       state.runCount=count-i;renderPreflight();
       const task=created[i];
+      const taskStarted=Date.now();
+      updateRenderProgress("正在生成",i,count,batchStarted,taskStarted,durations);
+      const ticker=setInterval(()=>updateRenderProgress("正在生成",i,count,batchStarted,taskStarted,durations),1000);
       if(series&&task.view!==series.anchor_view&&blockedAnchors.has(task.variant)){
         if(blockedAnchors.get(task.variant)==="failed")
           await post("/api/task/status",{id:task.id,status:"failed",err:"同系列主视图失败，未生成其他机位以避免外观不一致"});
+        clearInterval(ticker);
+        updateRenderProgress("正在生成",i+1,count,batchStarted,0,durations);
         continue;
       }
       try{
@@ -1382,10 +1434,11 @@ async function generate(){
         if(series&&task.view===series.anchor_view)blockedAnchors.set(task.variant,"failed");
         announce(`${VIEW_ZH[task.view]||task.view}候选 ${task.variant+1} 未完成：${errorMessage(error)}；继续下一张。`);
       }
+      finally{clearInterval(ticker);durations.push((Date.now()-taskStarted)/1000);updateRenderProgress("正在生成",i+1,count,batchStarted,0,durations);}
     }
     announce(`${count} 张任务处理结束，请查看候选结果。`);
   }catch(error){announce("生成中断："+errorMessage(error));}
-  finally{state.running=false;state.runCount=0;renderPreflight();await refreshTasks();}
+  finally{state.running=false;state.runCount=0;renderPreflight();$("renderProgress").hidden=true;await refreshTasks();}
 }
 async function executeTask(task){
   const payload=typeof task.payload==="string"?JSON.parse(task.payload):(task.payload||{});
@@ -1717,6 +1770,7 @@ $("partCmfSelect").addEventListener("change",()=>{
   applyPartCmfPreview();
 });
 $("partColorInput").addEventListener("input",applyPartCmfPreview);
+$("partLabelInput").addEventListener("input",applyPartCmfPreview);
 $("savePartCmfButton").addEventListener("click",async()=>{
   const ps=pickedPartState();
   const preset=cmfPresets.find(p=>p.id===$("partCmfSelect").value);
@@ -1730,7 +1784,7 @@ $("savePartCmfButton").addEventListener("click",async()=>{
   try{
     const scheme=await post("/api/cmf/scheme",{sku:ps.sku,view:ps.view,action:"assign_many",parts,
       cmf:preset.id,color:$("partColorInput").value});
-    state.cmfScheme=scheme;renderCmfScheme();applyCmfSchemeToModel();updateSelectionVisuals();
+    state.cmfScheme=scheme;renderCmfScheme();applyCmfSchemeToModel();applyPartCmfPreview();updateSelectionVisuals();
     announce(`已将 ${parts.length} 个部件设为${preset.name}，所有机位会沿用此方案。${preset.ai_editable===false?"该材质仅适合真渲染，AI 出图仍需人工核对。":""}`);
   }catch(error){announce("保存部位材质失败："+errorMessage(error));}
   finally{setBusy(button,false,"应用材质到选中部件");}
@@ -1755,6 +1809,8 @@ $("bodyColor").addEventListener("input",event=>{$("bodyColorValue").textContent=
 $("refreshButton").addEventListener("click",refreshAll);
 $("refreshTasksButton").addEventListener("click",refreshTasks);
 $("generateButton").addEventListener("click",generate);
+$("closeImageViewer").addEventListener("click",()=>$("imageViewer").close());
+$("imageViewer").addEventListener("click",event=>{if(event.target===$("imageViewer"))event.currentTarget.close();});
 $("chooseModelButton").addEventListener("click",()=>$("modelFile").click());
 $("modelFile").addEventListener("change",event=>uploadModel(event.target.files[0]));
 $("chooseImageButton").addEventListener("click",()=>$("imageFile").click());

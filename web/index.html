@@ -157,6 +157,7 @@
           </div>
           <div id="preflight" class="preflight" role="status" aria-live="polite">正在检查白模、结构图与渲染服务…</div>
           <button type="button" class="primary-button" id="generateButton" disabled>开始生成 4 张</button>
+          <div class="render-progress" id="renderProgress" hidden role="status" aria-live="polite"><div class="render-progress-head"><strong id="renderProgressLabel">正在准备</strong><span id="renderProgressEta">预计时间计算中</span></div><progress id="renderProgressBar" max="100" value="0"></progress><small>进度按已完成任务计算；单张图的采样进度暂不可读取。</small></div>
           <p class="field-help centered">生成结果会保存到现有项目的 outputs 文件夹。</p>
         </div>
       </section>
@@ -179,7 +180,8 @@
           <div class="part-info" id="partInfo" hidden>
             <div class="part-info-head"><span class="part-dot" aria-hidden="true"></span><strong id="partName">—</strong><button type="button" class="mini-button" id="partClear">清空选区</button></div>
             <span class="part-meta" id="partMeta">—</span>
-            <p class="part-cmf-help">整块青色表示当前选区，不会写入最终材质。取消选择即可查看真实颜色。</p>
+            <p class="part-cmf-help">选中后先在模型上预览颜色；点击“应用材质”才会保存到所有机位。</p>
+            <div class="part-selection-summary" id="partSelectionSummary" aria-live="polite"></div>
             <div id="selectedPartList" class="selected-part-list" aria-live="polite"></div>
             <div class="part-cmf" id="partCmf">
               <label class="field-label" for="partCmfSelect">该部件材质（CMF）</label>
@@ -211,6 +213,8 @@
         <section class="results-section" aria-labelledby="resultsTitle"><div class="results-head"><div><span class="stage-kicker">渲染结果</span><h2 id="resultsTitle">最近的候选图</h2></div><span id="resultCount">0 张</span></div><div id="resultsGrid" class="results-grid"><div class="results-empty">出图后，候选图片会出现在这里。可以逐张查看和下载。</div></div></section>
       </section>
     </main>
+
+    <dialog id="imageViewer" class="image-viewer" aria-labelledby="imageViewerTitle"><div class="image-viewer-head"><strong id="imageViewerTitle">查看大图</strong><button type="button" id="closeImageViewer" aria-label="关闭大图">关闭 ×</button></div><img id="imageViewerImage" alt="放大的产品渲染图"><p>按 Esc 关闭 · 原图按比例完整显示</p></dialog>
 
     <div id="statusMessage" class="notice" role="status" aria-live="polite"></div>
   </div>

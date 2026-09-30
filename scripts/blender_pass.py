@@ -365,7 +365,16 @@ def setup_camera(args, center, size):
         cam_data.sensor_fit = "AUTO"
         fov_h = 2.0 * math.atan((cam_data.sensor_width / 2.0) / cam_data.lens)
         fov_v = 2.0 * math.atan((cam_data.sensor_width / (2.0 * aspect)) / cam_data.lens)
-        dist = max(hw / math.tan(fov_h / 2.0), hu / math.tan(fov_v / 2.0)) * args.fit
+        # 透视取景必须逐个包围盒角点计入「靠近镜头」的深度；只按中心平面
+        # 的投影宽高求距离，会让长机身/3/4 机位的前端越过画框。
+        dist = 0.0
+        for sx in (-1.0, 1.0):
+            for sy in (-1.0, 1.0):
+                for sz in (-1.0, 1.0):
+                    v = mathutils.Vector((sx * half.x, sy * half.y, sz * half.z))
+                    needed = max(abs(v.dot(xc)) / math.tan(fov_h / 2.0),
+                                 abs(v.dot(yc)) / math.tan(fov_v / 2.0))
+                    dist = max(dist, v.dot(direction) + needed * args.fit)
         dist = max(dist, size.length * 0.5)
 
     cam.location = center + direction * dist

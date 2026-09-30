@@ -119,7 +119,7 @@ pre.code{margin:10px 0 0;padding:11px;background:#1e292e;color:#dbe6ea;border-ra
 .source-switch button.is-active{background:#fff;color:var(--blue-dark);box-shadow:0 1px 4px rgba(30,41,46,.12)}
 .source-switch button:hover:not(.is-active){color:var(--ink)}
 .row-fields.is-single{grid-template-columns:1fr}
-#qwenSeedField{margin-top:12px}#qwenSeed{width:100%;height:42px;padding:0 12px;border:1px solid #cbd5d8;border-radius:10px;background:#fff;color:var(--ink)}#qwenSeed:focus{outline:2px solid var(--blue);outline-offset:1px}
+#qwenBaseField,#qwenSeedField{margin-top:12px}#qwenSeed{width:100%;height:42px;padding:0 12px;border:1px solid #cbd5d8;border-radius:10px;background:#fff;color:var(--ink)}#qwenSeed:focus{outline:2px solid var(--blue);outline-offset:1px}
 .image-settings{border:1px solid #cbd9ed;background:#f5f8fe;border-radius:10px;padding:13px 14px;margin:2px 0 15px}
 .image-settings .field-label{display:flex;justify-content:space-between;margin-bottom:5px}
 .image-settings output{color:var(--blue-dark);font-variant-numeric:tabular-nums}

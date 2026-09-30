@@ -127,6 +127,13 @@ def parse_args():
                     help="顺带把导入后的模型导出为 GLB，供网页 3D 预览使用。"
                          "只导出几何（不含相机/灯光），源文件不被修改。"
                          "网页只读这个已验证的 GLB，不直接读原始 STEP/3DM。")
+    ap.add_argument("--product-render", metavar="PATH",
+                    help="按 CMF 方案真渲染一张独立产品底图；不修改已有结构 pass")
+    ap.add_argument("--cmf-scheme", help="跨机位 CMF 方案 JSON，网格名必须与导入模型一致")
+    ap.add_argument("--cmf-presets", help="项目统一 CMF 预设 JSON")
+    ap.add_argument("--body-cmf", help="未单独指定部件时使用的预设 ID")
+    ap.add_argument("--body-color", help="未单独指定部件时的 #RRGGBB 颜色")
+    ap.add_argument("--background-color", default="#F3F5F6", help="产品底图的纯净背景色")
     return ap.parse_args(argv)
 
 
@@ -414,6 +421,94 @@ def assign_pass_index():
     return mapping
 
 
+def _linear_rgb(value):
+    if not isinstance(value, str) or len(value) != 7 or value[0] != "#":
+        raise ValueError("CMF 颜色必须是 #RRGGBB")
+    channels = [int(value[i:i + 2], 16) / 255.0 for i in (1, 3, 5)]
+    return tuple(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+                 for c in channels)
+
+
+def apply_product_cmf(args):
+    """按稳定网格名赋 Principled BSDF；不猜缺失部件，也不改变源文件。"""
+    if not all((args.cmf_scheme, args.cmf_presets, args.body_cmf, args.body_color)):
+        raise ValueError("产品底图缺少 CMF 方案、预设或主体材质/颜色")
+    if os.path.isfile(args.cmf_scheme):
+        with open(args.cmf_scheme, "r", encoding="utf-8") as stream:
+            scheme = json.load(stream)
+    else:
+        scheme = {"assignments": {}}
+    with open(args.cmf_presets, "r", encoding="utf-8") as stream:
+        presets = {p["id"]: p for p in json.load(stream)["presets"]}
+    assignments = scheme.get("assignments") or {}
+    meshes = {obj.name: obj for obj in bpy.data.objects if obj.type == "MESH"}
+    missing = set(assignments) - set(meshes)
+    if missing:
+        raise ValueError("CMF 方案里有 %d 个网格在本次导入中不存在" % len(missing))
+    material_cache = {}
+    for name, obj in meshes.items():
+        assigned = assignments.get(name) or {}
+        preset_id = assigned.get("cmf") or args.body_cmf
+        preset = presets.get(preset_id)
+        if preset is None:
+            raise ValueError("未知 CMF 预设：%s" % preset_id)
+        color = assigned.get("color") or args.body_color
+        key = (preset_id, color.upper())
+        mat = material_cache.get(key)
+        if mat is None:
+            mat = bpy.data.materials.new("CMF_%s_%s" % (preset_id, color[1:]))
+            mat.use_nodes = True
+            nodes = mat.node_tree.nodes
+            nodes.clear()
+            bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+            bsdf.inputs["Base Color"].default_value = (*_linear_rgb(color), 1.0)
+            bsdf.inputs["Metallic"].default_value = max(0.0, min(1.0, float(preset["metalness"])))
+            bsdf.inputs["Roughness"].default_value = max(0.02, min(1.0, float(preset["roughness"])))
+            if preset_id == "glass_clear":
+                transmission = bsdf.inputs.get("Transmission Weight") or bsdf.inputs.get("Transmission")
+                if transmission:
+                    transmission.default_value = 1.0
+            output = nodes.new("ShaderNodeOutputMaterial")
+            mat.node_tree.links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
+            mat.diffuse_color = (*_linear_rgb(color), 1.0)
+            material_cache[key] = mat
+        if obj.data.users > 1:
+            obj.data = obj.data.copy()  # 共享 Mesh 不能让一个部件的材质覆盖其他实例
+        obj.data.materials.clear()
+        obj.data.materials.append(mat)
+    log("CMF 真材质：%d 网格 / %d 种 Principled 材质 / %d 个指定部件" %
+        (len(meshes), len(material_cache), len(assignments)))
+
+
+def render_product_base(args, center, size):
+    """与结构图共用模型、机位、取景；透明渲染后合成统一背景。"""
+    apply_product_cmf(args)
+    setup_world()
+    setup_lights(center, max(size.length / 2.0, 1e-3))
+    setup_camera(args, center, size)
+    setup_render(args)
+    scene = bpy.context.scene
+    scene.render.film_transparent = True
+    scene.use_nodes = True
+    tree = scene.node_tree
+    tree.nodes.clear()
+    layer = tree.nodes.new("CompositorNodeRLayers")
+    background = tree.nodes.new("CompositorNodeRGB")
+    background.outputs[0].default_value = (*_linear_rgb(args.background_color), 1.0)
+    over = tree.nodes.new("CompositorNodeAlphaOver")
+    composite = tree.nodes.new("CompositorNodeComposite")
+    tree.links.new(background.outputs[0], over.inputs[1])
+    tree.links.new(layer.outputs["Image"], over.inputs[2])
+    tree.links.new(over.outputs[0], composite.inputs[0])
+    dest = os.path.abspath(args.product_render)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    scene.render.filepath = dest
+    bpy.ops.render.render(write_still=True)
+    if not os.path.isfile(dest) or os.path.getsize(dest) == 0:
+        raise RuntimeError("产品底图未产出")
+    log("产品底图：%s（%d B）" % (dest, os.path.getsize(dest)))
+
+
 def setup_render(args):
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
@@ -638,6 +733,10 @@ def main():
         log(f"最大边长 {m:.2f} → {unit}")
         log(f"轴向估计：X={size.x:.2f} Y={size.y:.2f} Z={size.z:.2f}（长边通常为枪身/光轴方向）")
         log("=" * 60)
+        return 0
+
+    if args.product_render:
+        render_product_base(args, center, size)
         return 0
 
     if args.thumb:

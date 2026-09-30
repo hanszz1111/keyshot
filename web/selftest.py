@@ -417,6 +417,12 @@ def main():
         app_js = f.read()
     with open(os.path.join(os.path.dirname(__file__), "index.html"), encoding="utf-8") as f:
         app_html = f.read()
+    st, body = req("POST", "/api/ui/product/batch", {"sku": TEST_SKU, "views": []})
+    check("真材质底图批处理入口拒绝空机位", st == 400 and "机位" in json.loads(body).get("error", ""))
+    check("千问真材质底图为可选项且逐机位引用",
+          'id="qwenBaseSelect"' in app_html and
+          'await ensureProductBases(sku,views,selectedMaterial,selectedColor,selectedStyle)' in app_js and
+          'input_kind:state.sourceType==="image"?"photo":productBases?"product_base":"clay"' in app_js)
     check("千问固定种子可用于同条件步数对照且非法值被阻断",
           'id="qwenSeed"' in app_html and
           'function fixedQwenSeed()' in app_js and

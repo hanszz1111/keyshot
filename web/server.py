@@ -1656,19 +1656,24 @@ def qwen_input_ok(rel):
     rel = str(rel or "").strip()
     if not rel:
         return False
-    return rel.startswith("source/") or rel.endswith("/clay.png")
+    return (rel.startswith("source/") or rel.endswith("/clay.png") or
+            bool(re.fullmatch(r"_部件/[^/]+/[^/]+/guides/[0-9a-f]{16}_cmf_guide\.png", rel)))
 
 
 def qwen_clay_input_issue(tid, rel):
     """白模输入必须属于任务自己的 SKU/机位，且不能使用过期结构图。"""
     rel = str(rel or "").replace("\\", "/")
-    if not rel.endswith("/clay.png"):
+    is_guide = bool(re.fullmatch(r"_部件/[^/]+/[^/]+/guides/[0-9a-f]{16}_cmf_guide\.png", rel))
+    if not rel.endswith("/clay.png") and not is_guide:
         return ""
     task = task_by_id(tid)
     if not task:
         return "实验引擎任务不存在"
     sku, view = str(task.get("sku") or ""), str(task.get("view") or "")
-    if rel != "%s/%s/clay.png" % (sku, view):
+    if is_guide:
+        if not rel.startswith("_部件/%s/%s/guides/" % (safe_file(sku), safe_file(view))):
+            return "实验引擎输入的材质参考与任务产品或机位不一致"
+    elif rel != "%s/%s/clay.png" % (sku, view):
         return "实验引擎输入的白模与任务产品或机位不一致，请重新建立任务"
     return _pass_manifest_issue(os.path.join(PASSES_DIR, sku, view))
 
@@ -1729,6 +1734,10 @@ def _submit_qwen(tid, payload, engine_id):
             raise RuntimeError("实验引擎不接受结构图/掩膜载荷（%s），请改用稳定模式。" % k)
 
     rel = payload.get("source_img") or ""
+    if meta.get("cmf_scheme") and meta.get("input_kind") == "clay":
+        task_for_guide = task_by_id(tid)
+        rel = make_cmf_guide(task_for_guide["sku"], task_for_guide["view"], meta)
+        meta["cmf_guide"] = rel
     # 输入可以是产品图，也可以是该机位的白模截图（执行方案第 5 节：同机位白模或产品照片）。
     # 路径形态由 qwen_input_ok() 判定（口径与 depth_img 一致，不带 passes/ 前缀），
     # 文件是否存在在这里实校 —— 两层都过才放行。
@@ -1797,6 +1806,9 @@ def _submit_qwen(tid, payload, engine_id):
     if anchor:
         update_task_run_meta(tid, {"appearance_ref_task": anchor["task_id"],
                                    "appearance_ref_output": anchor["output"]})
+    if meta.get("cmf_guide"):
+        update_task_run_meta(tid, {"cmf_guide": meta["cmf_guide"],
+                                   "cmf_scheme_version": meta["cmf_scheme"]["version"]})
     return {
         "ok": True, "id": tid, "prompt_id": pid,
         "engine_id": engine_id, "mode": "qwen21_edit", "host": host,
@@ -1815,6 +1827,7 @@ def comfy_submit(tid):
     design_name, design_err = apply_design(payload)
     if design_err:
         raise RuntimeError(design_err)
+    validate_cmf_task(t, payload)
     # 引擎分流（v3.5）：实验引擎与稳定链路完全分开 —— 不同端口、不同工作流、不同参数。
     _eng = (payload.get("_meta") or {}).get("engine_id") or "sdxl_controlled"
     if _eng != "sdxl_controlled":
@@ -2503,6 +2516,224 @@ def parts_index(sku, view=""):
     return {"sku": sku, "view": use, "count": len(parts),
             "resolution": data.get("resolution"),
             "parts": parts}
+
+
+# 跨机位 CMF：用模型文件内容和 Blender 网格名锚定分配，机位内的 object ID 只用来投影。
+CMF_SCHEME_DIR = os.path.join(DATA, "cmf_schemes")
+CMF_SCHEME_LOCK = threading.Lock()
+_MODEL_HASH_CACHE = {}
+
+
+def _cmf_model(sku):
+    model = next((m for m in scan_models() if m["sku"] == sku), None)
+    if not model:
+        raise ValueError("没有找到该产品的源白模，不能保存跨机位材质方案")
+    path = os.path.abspath(model["path"])
+    if os.path.commonpath((os.path.realpath(MODELS_DIR), os.path.realpath(path))) != os.path.realpath(MODELS_DIR):
+        raise ValueError("模型路径不在白模投放区内")
+    st = os.stat(path)
+    key = (path, st.st_size, st.st_mtime_ns)
+    digest = _MODEL_HASH_CACHE.get(key)
+    if not digest:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(block)
+        digest = h.hexdigest()
+        _MODEL_HASH_CACHE.clear()
+        _MODEL_HASH_CACHE[key] = digest
+    return model, digest
+
+
+def _cmf_scheme_path(sku):
+    if not sku or safe_file(sku) != sku:
+        raise ValueError("产品编号无效")
+    os.makedirs(CMF_SCHEME_DIR, exist_ok=True)
+    return os.path.join(CMF_SCHEME_DIR, sku + ".json")
+
+
+def load_cmf_scheme(sku):
+    path = _cmf_scheme_path(sku)
+    model, fingerprint = _cmf_model(sku)
+    stored = {}
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            stored = json.load(f)
+        if not isinstance(stored, dict):
+            raise ValueError("材质方案文件格式无效")
+        if not isinstance(stored.get("assignments"), dict):
+            raise ValueError("材质方案的部件分配格式无效")
+    return {"sku": sku, "model": model["rel"], "fingerprint": fingerprint,
+            "version": int(stored.get("version") or 0),
+            "assignments": stored.get("assignments") or {},
+            "stale": bool(stored and stored.get("fingerprint") != fingerprint)}
+
+
+def save_cmf_assignment(sku, view, part_id, cmf_id, label, color):
+    if not view or not re.fullmatch(r"\d+", str(part_id or "")):
+        raise ValueError("请先在当前 3D 视角选中一个部件")
+    index = parts_index(sku, view)
+    if index["view"] != view or str(part_id) not in index["parts"]:
+        raise ValueError("当前机位的部件索引不存在，请先补齐该视角结构图")
+    issue = _pass_manifest_issue(os.path.join(PASSES_DIR, sku, view))
+    if issue:
+        raise ValueError("结构图已过期：" + issue)
+    presets = {p["id"]: p for p in load_cmf_presets()["presets"]}
+    if cmf_id not in presets:
+        raise ValueError("材质预设不存在")
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", str(color or "")):
+        raise ValueError("颜色须为 #RRGGBB")
+    label = str(label or "").strip()
+    if not label or len(label) > 40 or any(ord(c) < 32 for c in label):
+        raise ValueError("部位名称须为 1–40 个可见字符")
+    name = index["parts"][str(part_id)]
+    if not name:
+        raise ValueError("部件没有稳定名称，不能跨机位绑定")
+    with CMF_SCHEME_LOCK:
+        scheme = load_cmf_scheme(sku)
+        if scheme["stale"]:
+            raise ValueError("源模型已改变；请先重新核对并建立材质方案")
+        assignments = dict(scheme["assignments"])
+        if len(assignments) >= 5000 and name not in assignments:
+            raise ValueError("部件分配已达上限")
+        assignments[name] = {"label": label, "cmf": cmf_id, "color": color.upper()}
+        result = {"sku": sku, "model": scheme["model"],
+                  "fingerprint": scheme["fingerprint"], "version": scheme["version"] + 1,
+                  "assignments": assignments}
+        path = _cmf_scheme_path(sku)
+        tmp = path + "." + uuid.uuid4().hex + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return {**result, "stale": False}
+
+
+def reset_cmf_scheme(sku):
+    """显式重新建方案；旧版先移入同目录备份，旧任务版本随即失效。"""
+    with CMF_SCHEME_LOCK:
+        scheme = load_cmf_scheme(sku)
+        path = _cmf_scheme_path(sku)
+        if os.path.isfile(path):
+            backup = path + ".backup-" + time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]
+            shutil.copy2(path, backup)
+        result = {"sku": sku, "model": scheme["model"],
+                  "fingerprint": scheme["fingerprint"], "version": scheme["version"] + 1,
+                  "assignments": {}}
+        tmp = path + "." + uuid.uuid4().hex + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return {**result, "stale": False}
+
+
+def remove_cmf_assignment(sku, view, part_id):
+    index = parts_index(sku, view)
+    if index["view"] != view or str(part_id) not in index["parts"]:
+        raise ValueError("当前机位找不到这个部件，请重新选择")
+    name = index["parts"][str(part_id)]
+    with CMF_SCHEME_LOCK:
+        scheme = load_cmf_scheme(sku)
+        if scheme["stale"]:
+            raise ValueError("源模型已改变，请先重新建立材质方案")
+        assignments = dict(scheme["assignments"])
+        if name not in assignments:
+            return scheme
+        del assignments[name]
+        result = {"sku": sku, "model": scheme["model"],
+                  "fingerprint": scheme["fingerprint"], "version": scheme["version"] + 1,
+                  "assignments": assignments}
+        path = _cmf_scheme_path(sku)
+        tmp = path + "." + uuid.uuid4().hex + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+        return {**result, "stale": False}
+
+
+def validate_cmf_task(task, payload):
+    """提交时验证任务快照；不让旧方案或错机位偷偷生效。"""
+    meta = payload.get("_meta") or {}
+    ref = meta.get("cmf_scheme")
+    if not ref:
+        return
+    if not isinstance(ref, dict):
+        raise RuntimeError("材质方案任务标记无效，请重新建立任务")
+    sku, view = str(task.get("sku") or ""), str(task.get("view") or "")
+    scheme = load_cmf_scheme(sku)
+    if (scheme["stale"] or ref.get("version") != scheme["version"]
+            or ref.get("fingerprint") != scheme["fingerprint"]):
+        raise RuntimeError("材质方案或源模型在任务建立后已改变，请重新建立这一批任务")
+    if not scheme["assignments"]:
+        raise RuntimeError("材质方案为空，请重新建立任务")
+    index = parts_index(sku, view)
+    if index["view"] != view:
+        raise RuntimeError("当前机位缺少部件映射，不能保证材质归属")
+    names = set(index["parts"].values())
+    missing = set(scheme["assignments"]) - names
+    if missing:
+        raise RuntimeError("当前机位无法映射 %d 个材质部位，请补齐结构图并重新核对方案" % len(missing))
+    if _pass_manifest_issue(os.path.join(PASSES_DIR, sku, view)):
+        raise RuntimeError("材质方案所用结构图已过期，请重新生成")
+    if not os.path.isfile(os.path.join(PASSES_DIR, sku, view, "objectid.png")):
+        raise RuntimeError("当前机位缺少对象 ID 图，无法准确定位材质部位；请补齐结构图")
+    presets = {p["id"]: p for p in load_cmf_presets()["presets"]}
+    groups = {}
+    for value in scheme["assignments"].values():
+        preset = presets.get(value.get("cmf"))
+        if not preset:
+            raise RuntimeError("材质方案包含已删除的预设，请重新选择")
+        if preset["ai_editable"] is False:
+            raise RuntimeError("部位“%s”的“%s”仅支持真渲染；当前 AI 出图不能保证此材质" %
+                               (value.get("label") or "未命名", preset["name"]))
+        key = (value["label"], preset["id"], value["color"])
+        groups[key] = groups.get(key, 0) + 1
+    if len(groups) > 32:
+        raise RuntimeError("材质方案包含超过 32 个不同部位组合，请合并同类部件后再出图")
+    lines = ["%s: %s, exact color %s, %s (%d mesh%s)" %
+             (label, presets[pid]["prompt"], color, presets[pid]["process"], count,
+              "es" if count != 1 else "")
+             for (label, pid, color), count in sorted(groups.items())]
+    payload["positive"] = (payload.get("positive") or "") + " Same physical product and part assignments across all views. " + "; ".join(lines) + ". Do not swap materials between parts."
+    meta["cmf_scheme_applied"] = {"version": scheme["version"], "parts": len(scheme["assignments"])}
+
+
+def make_cmf_guide(sku, view, meta):
+    """为千问构造同机位的确定性配色参考；原白模与 pass 一律不改。"""
+    scheme = load_cmf_scheme(sku)
+    color = str(meta.get("body_color") or "")
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        raise RuntimeError("主体颜色无效，无法建立多材质配色参考")
+    folder = os.path.join(PASSES_DIR, sku, view)
+    clay, oid, manifest = (os.path.join(folder, name) for name in
+                           ("clay.png", "objectid.png", "pass_manifest.json"))
+    if any(not os.path.isfile(path) for path in (clay, oid, manifest)):
+        raise RuntimeError("当前机位缺少白模/对象 ID/结构清单，无法建立多材质参考")
+    source = [scheme["fingerprint"], str(scheme["version"]), color.upper()]
+    for path in (clay, oid, manifest):
+        st = os.stat(path)
+        source.extend((str(st.st_size), str(st.st_mtime_ns)))
+    digest = hashlib.sha256("|".join(source).encode("utf-8")).hexdigest()[:16]
+    rel = "_部件/%s/%s/guides/%s_cmf_guide.png" % (safe_file(sku), safe_file(view), digest)
+    dest = os.path.join(ASSETS, *rel.split("/"))
+    if os.path.isfile(dest) and os.path.getsize(dest) > 0:
+        return rel
+    tool = os.path.join(ROOT, "scripts", "cmf_guide.py")
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    tmp = dest + "." + uuid.uuid4().hex + ".png"
+    try:
+        proc = subprocess.run([sys.executable, tool, "--clay", clay, "--objectid", oid,
+                               "--manifest", manifest, "--scheme", _cmf_scheme_path(sku),
+                               "--default-color", color, "--out", tmp],
+                              capture_output=True, text=True, errors="replace", timeout=120)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("多材质配色参考生成超时") from exc
+    if proc.returncode or not os.path.isfile(tmp) or not os.path.getsize(tmp):
+        if os.path.isfile(tmp):
+            os.remove(tmp)
+        raise RuntimeError("多材质配色参考生成失败：%s" %
+                           (proc.stderr or proc.stdout or "请检查 numpy/Pillow 与结构图")[-350:])
+    os.replace(tmp, dest)
+    return rel
 
 
 # 局部重绘掩膜的隔离工作区（大纲 P0-3）：只写这里，绝不碰源 CAD/旧 pass/候选图
@@ -3381,6 +3612,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return self.send_json({"sku": sku_, "view": view_,
                                        "items": (table.get(view_) or {}) if view_ else {},
                                        "table": table})
+            if p == "/api/cmf/scheme":
+                try:
+                    return self.send_json(load_cmf_scheme(q.get("sku", [""])[0]))
+                except (ValueError, OSError) as exc:
+                    return self.send_json({"error": str(exc)}, 400)
             if p == "/api/renderers":
                 # 出图引擎注册表（v3.5，只读）：前端下拉、状态文字与禁用规则都读这里。
                 # available/reason 由**服务端**探测得出，不依赖浏览器本地状态。
@@ -3472,6 +3708,33 @@ class Handler(SimpleHTTPRequestHandler):
                 except ValueError as exc:
                     return self.send_json({"error": str(exc)}, 400)
                 return self.send_json({"ok": True, "table": table})
+            if p == "/api/cmf/scheme":
+                try:
+                    b = body or {}
+                    if b.get("action") == "reset":
+                        return self.send_json({"ok": True, **reset_cmf_scheme(b.get("sku"))})
+                    if b.get("action") == "remove":
+                        return self.send_json({"ok": True, **remove_cmf_assignment(
+                            b.get("sku"), b.get("view"), b.get("part"))})
+                    return self.send_json({"ok": True, **save_cmf_assignment(
+                        b.get("sku"), b.get("view"), b.get("part"), b.get("cmf"),
+                        b.get("label"), b.get("color"))})
+                except (ValueError, OSError) as exc:
+                    return self.send_json({"error": str(exc)}, 400)
+            if p == "/api/cmf/scheme/check":
+                try:
+                    b = body or {}
+                    views = b.get("views") or []
+                    if not isinstance(views, list) or not views or len(views) > 10:
+                        raise ValueError("请选择 1–10 个有效机位")
+                    for view in views:
+                        validate_cmf_task({"sku": b.get("sku"), "view": view},
+                                          {"positive": "", "_meta": {"cmf_scheme": {
+                                              "version": b.get("version"),
+                                              "fingerprint": b.get("fingerprint")}}})
+                    return self.send_json({"ok": True, "views": views})
+                except (ValueError, RuntimeError, OSError) as exc:
+                    return self.send_json({"error": str(exc)}, 400)
             if p == "/api/board":
                 save_board(body)
                 return self.send_json({"ok": True})

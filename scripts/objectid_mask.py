@@ -33,7 +33,8 @@ ID_SCALE = 65535.0          # 与 blender_pass.py 的 DIVIDE 常量一致
 
 def read_png_raw(path):
     """自己解 PNG：PIL 对 16 位 RGB(A) 会降位成 8 位，把 ID 信息毁掉。"""
-    d = open(path, "rb").read()
+    with open(path, "rb") as source:
+        d = source.read()
     if d[:8] != b"\x89PNG\r\n\x1a\n":
         raise ValueError("不是 PNG 文件：%s" % path)
     pos, idat = 8, b""

@@ -51,7 +51,7 @@ const STANDARD_VIEWS = ["front","3q4_left","3q4_right","side"];
 const COMMON_VIEWS = [...SIX_VIEWS,"3q4_left","3q4_right"];
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-let state = {assets:{items:[],models:[]},tasks:[],comfy:{online:false},ui:{blender:false},passJob:null,sku:"",sourceType:"model",modelCount:"4",imageCount:"1",qwenCount:"1",stableSize:"auto",qwenSize:"qwen:768",engineLoaded:false,engineManuallySelected:false,lastEngine:"",sourceRelLoaded:"",sourceSize:null,sourceProbe:null,style:"studio",preview:"clay",running:false,runCount:0,selectedTask:null,ref:{rel:"",palette:[],strength:"L2_material"},renderers:[],engineDefault:"sdxl_controlled"};
+let state = {assets:{items:[],models:[]},tasks:[],comfy:{online:false},ui:{blender:false},passJob:null,sku:"",sourceType:"model",cmfScheme:null,modelCount:"4",imageCount:"1",qwenCount:"1",stableSize:"auto",qwenSize:"qwen:768",engineLoaded:false,engineManuallySelected:false,lastEngine:"",sourceRelLoaded:"",sourceSize:null,sourceProbe:null,style:"studio",preview:"clay",running:false,runCount:0,selectedTask:null,ref:{rel:"",palette:[],strength:"L2_material"},renderers:[],engineDefault:"sdxl_controlled"};
 let renderers=[];
 let lastFocus = null;
 
@@ -140,6 +140,7 @@ async function refreshAll(){
     state.assets=assets;state.tasks=tasks.tasks||[];state.comfy=comfy;state.ui=ui;
     if(state.sku&&!assets.items.some(item=>item.sku===state.sku))state.sku="";
     renderAll();
+    if(state.sku&&state.sourceType==="model")loadCmfScheme(state.sku).catch(()=>{});
     loadStateExtras();
     selfCheckProviders();
   }catch(error){
@@ -203,7 +204,7 @@ async function refreshServices(){
 async function refreshAssets(){
   state.assets=await api("/api/assets");renderProductSelect();renderSource();renderPassReadiness();renderHero();renderPreflight();renderAssetMatrix();
 }
-function renderAll(){renderProductSelect();renderSource();renderService();renderPassReadiness();renderPreflight();renderTasks();renderResults();renderHero();renderAssetMatrix();renderServiceBox();renderRefPanel();updateSizeHint();}
+function renderAll(){renderProductSelect();renderSource();renderService();renderPassReadiness();renderPreflight();renderTasks();renderResults();renderHero();renderAssetMatrix();renderServiceBox();renderRefPanel();renderCmfScheme();updateSizeHint();}
 
 function renderProductSelect(){
   const select=$("productSelect");const existing=state.sku;clear(select);
@@ -261,14 +262,20 @@ function stop3D(){if(hero3d.raf){cancelAnimationFrame(hero3d.raf);hero3d.raf=0;}
    ⚠️ 部件名来自源文件：Rhino 的 .3dm 常全是「物体.001」，STEP 往往带编号。
    名字不直观是数据本身的问题，所以界面把「高亮 + 编号 + 面数」一起给出，
    让用户靠高亮认出是哪个部件（后续可给它标别名/指定材质）。 */
+function schemePartName(mesh){
+  const idx=mesh&&hero3d.nameToIndex?hero3d.nameToIndex[normPartName(mesh.name)]:null;
+  return idx==null?mesh?.name:hero3d.indexToName?.[String(idx)]||mesh?.name;
+}
 function partCmfOf(mesh){
+  if(state.cmfScheme&&!state.cmfScheme.stale)
+    return state.cmfScheme.assignments?.[schemePartName(mesh)]||null;
   const idx=mesh&&hero3d.nameToIndex?hero3d.nameToIndex[normPartName(mesh.name)]:null;
   if(idx==null)return null;
   return (partCmfTable[selectedView()]||{})[String(idx)]||null;
 }
 function setPickedPart(mesh){
   if(hero3d.pickedMesh&&hero3d.pickedMesh!==mesh&&hero3d.matBase){
-    hero3d.pickedMesh.material=hero3d.matBase;      // 还原上一个
+    restorePartCmfPreview(hero3d.pickedMesh);
   }
   hero3d.pickedMesh=mesh||null;
   if(mesh){
@@ -278,8 +285,11 @@ function setPickedPart(mesh){
     if(saved&&saved.cmf&&cmfPresets.some(p=>p.id===saved.cmf)){
       const sel=$("partCmfSelect");
       if(sel)sel.value=saved.cmf;
+      $("partColorInput").value=saved.color||cmfPresets.find(p=>p.id===saved.cmf)?.color||"#26292c";
       applyPartCmfPreview();
     }else if(hero3d.matPick){
+      $("partCmfSelect").value=$("materialSelect").value;
+      $("partColorInput").value=cmfPresets.find(p=>p.id===$("partCmfSelect").value)?.color||"#26292c";
       mesh.material=hero3d.matPick;
     }
   }
@@ -291,6 +301,8 @@ function setPickedPart(mesh){
   const idx=hero3d.nameToIndex?hero3d.nameToIndex[normPartName(mesh.name)]:null;
   const saved2=partCmfOf(mesh);
   const cmfName=saved2&&saved2.cmf?(cmfPresets.find(p=>p.id===saved2.cmf)||{}).name:"";
+  $("partLabelInput").value=saved2?.label||mesh.name||"";
+  $("partColorInput").value=saved2?.color||cmfPresets.find(p=>p.id===$("partCmfSelect").value)?.color||"#26292c";
   $("partName").textContent=mesh.name||"(未命名)";
   $("partMeta").textContent=`部件 #${idx==null?"—":idx} · ${tris.toLocaleString()} 个三角面`+
     (hero3d.partsTotal?` · 全模型共 ${hero3d.partsTotal} 个`:"")+
@@ -323,13 +335,18 @@ async function loadPartsIndex(sku, view){
     const q=view?`&view=${encodeURIComponent(view)}`:"";
     const d=await api(`/api/model/parts?sku=${encodeURIComponent(sku)}${q}`);
     const rev={};
-    for(const [idx,name] of Object.entries(d.parts||{}))rev[normPartName(name)]=Number(idx);
+    for(const [idx,name] of Object.entries(d.parts||{})){
+      const key=normPartName(name);
+      rev[key]=key in rev?null:Number(idx);
+    }
     hero3d.nameToIndex=rev;
+    hero3d.indexToName=d.parts||{};
     hero3d.partsTotal=d.count||0;
     hero3d.partsView=d.view||"";
     hero3d.partsNote=d.note||"";
+    applyCmfSchemeToModel();
   }catch(error){
-    hero3d.nameToIndex=null;hero3d.partsTotal=0;hero3d.partsNote="部件索引读取失败";
+    hero3d.nameToIndex=null;hero3d.indexToName=null;hero3d.partsTotal=0;hero3d.partsNote="部件索引读取失败";
   }
 }
 /* ---------------- 大纲 §3 P1：按部件 CMF 持久化 + 三维近似预览 ----------------
@@ -337,6 +354,36 @@ async function loadPartsIndex(sku, view){
    三维预览只改**选中网格**的材质副本 —— GLB 里多个部件常共用同一个 material
    实例，直接改颜色会把整机一起染色，所以必须先 clone。 */
 let partCmfTable={};
+function renderCmfScheme(){
+  const panel=$("cmfSchemePanel"),list=$("cmfSchemeList"),status=$("cmfSchemeStatus");
+  panel.hidden=state.sourceType!=="model"||!state.sku;
+  if(panel.hidden)return;
+  clear(list);
+  const scheme=state.cmfScheme;
+  if(!scheme){list.append(text("span","正在读取部位方案…","cmf-scheme-empty"));status.textContent="";$("cmfResetButton").hidden=true;return;}
+  const entries=Object.entries(scheme.assignments||{});
+  $("cmfResetButton").hidden=!scheme.stale;
+  if(!entries.length)list.append(text("span","尚未指定局部材质。点“到 3D 中选部件”开始。","cmf-scheme-empty"));
+  for(const [name,item] of entries){
+    const row=text("div","","cmf-scheme-row"),swatch=text("i");swatch.style.backgroundColor=item.color;
+    row.append(swatch,text("span",item.label||name),text("small",(cmfPresets.find(p=>p.id===item.cmf)?.name||item.cmf)+` · ${item.color}`));
+    list.append(row);
+  }
+  status.textContent=scheme.stale
+    ?"源模型已改变：旧材质分配不会用于新任务。请先核对并重新建立方案。"
+    :entries.length?`已保存 ${entries.length} 个模型部件 · 方案版本 ${scheme.version}。跨视角按同名网格映射；AI 成图需逐张检查。`:"旧的按机位局部记录不会自动并入整机方案，请逐个部位重新确认。";
+}
+async function loadCmfScheme(sku){
+  if(!sku||state.sourceType!=="model"){state.cmfScheme=null;renderCmfScheme();return null;}
+  try{
+    const scheme=await api(`/api/cmf/scheme?sku=${encodeURIComponent(sku)}`);
+    if(state.sku!==sku)return null;
+    state.cmfScheme=scheme;renderCmfScheme();applyCmfSchemeToModel();return scheme;
+  }catch(error){
+    if(state.sku===sku){state.cmfScheme=null;renderCmfScheme();$("cmfSchemeStatus").textContent="材质方案未读取："+errorMessage(error);}
+    throw error;
+  }
+}
 async function loadPartCmf(sku, view){
   try{
     const d=await api(`/api/partcmf?sku=${encodeURIComponent(sku||"")}&view=${encodeURIComponent(view||"")}`);
@@ -360,16 +407,34 @@ function applyPartCmfPreview(){
   if(!mesh.userData.cmfClone)mesh.userData.cmfClone=mesh.material.clone();
   const m=mesh.userData.cmfClone;
   try{
-    if(m.color)m.color.set(preset.color||"#888888");
+    if(m.color)m.color.set($("partColorInput").value||preset.color||"#888888");
     if("metalness"in m)m.metalness=Number(preset.metalness??0);
     if("roughness"in m)m.roughness=Number(preset.roughness??0.6);
     m.needsUpdate=true;
   }catch(error){/* 近似预览失败不影响出图 */}
   mesh.material=m;
 }
+function applyCmfSchemeToModel(){
+  if(!hero3d.model||!hero3d.matBase||hero3d.sku!==state.sku)return;
+  hero3d.model.traverse(mesh=>{
+    if(!mesh.isMesh)return;
+    const assignment=state.cmfScheme&&!state.cmfScheme.stale?state.cmfScheme.assignments?.[schemePartName(mesh)]:null;
+    const preset=assignment&&cmfPresets.find(p=>p.id===assignment.cmf);
+    if(!preset){mesh.material=hero3d.matBase;return;}
+    if(!mesh.userData.cmfClone)mesh.userData.cmfClone=hero3d.matBase.clone();
+    const m=mesh.userData.cmfClone;
+    if(m.color)m.color.set(assignment.color||preset.color);
+    if("metalness" in m)m.metalness=Number(preset.metalness);
+    if("roughness" in m)m.roughness=Number(preset.roughness);
+    m.needsUpdate=true;mesh.material=m;
+  });
+}
 function restorePartCmfPreview(mesh){
   const target=mesh||hero3d.pickedMesh;
-  if(target&&target.userData&&target.userData.cmfOrig)target.material=target.userData.cmfOrig;
+  if(target){
+    const assigned=state.cmfScheme&&!state.cmfScheme.stale&&state.cmfScheme.assignments?.[schemePartName(target)];
+    target.material=assigned&&target.userData?.cmfClone?target.userData.cmfClone:hero3d.matBase;
+  }
 }
 /* ---------------- 大纲 §2 P1：候选底图版本链 ----------------
    局部编辑优先在「已完成的候选图」上继续做，而不是每次都从白模起；
@@ -652,6 +717,8 @@ async function showModel3D(sku){
     hero3d.scene.add(holder);
     hero3d.model=holder;
     hero3d.sku=sku;
+    hero3d.nameToIndex=null;hero3d.indexToName=null;
+    applyCmfSchemeToModel();
     // 按包围球 + 垂直 FOV 算相机距离，留 15% 余量
     const radius=0.5*Math.hypot(size.x,size.y,size.z)*s;
     const dist=radius/Math.sin(THREE.MathUtils.degToRad(35/2))*1.15;
@@ -1052,6 +1119,8 @@ function buildPayload(sku,view,variant,mode,series=null){
   if(!material)throw new Error("材质库尚未就绪，请刷新页面");
   if(!material.ai_editable)throw new Error(`「${material.name}」仅支持真渲染，当前 AI 出图不可用`);
   const color=$("bodyColor").value;
+  const activeScheme=state.sourceType==="model"&&state.cmfScheme&&!state.cmfScheme.stale&&Object.keys(state.cmfScheme.assignments||{}).length?state.cmfScheme:null;
+  const schemeRef=activeScheme?{version:activeScheme.version,fingerprint:activeScheme.fingerprint}:null;
   const useRef=!!(state.ref.strength&&state.ref.rel&&(state.ref.palette||[]).length);
   const refWord={L1_style:"overall mood and lighting",L2_material:"materials, colour palette and surface finish",L3_full:"materials, colour palette, lighting and composition"}[state.ref.strength]||"materials and colour palette";
   const refLine=useRef?`Borrow ${refWord} from a supplied reference photo. Its dominant colour palette is ${state.ref.palette.slice(0,4).map(p=>p.hex).join(", ")}. ${refToneWords(state.ref.bg,state.ref.lum)}. Keep the input product's silhouette.`:"";
@@ -1071,7 +1140,8 @@ function buildPayload(sku,view,variant,mode,series=null){
     _meta:{sku,view,variant,mode,ui_version:"2.0",engine_id:currentEngine(),style:state.style,description,
       design:($("designSelect")||{}).value||"",
       output:{width:dim.width,height:dim.height,source:dim.source},
-      quality:qualityKey,cmf_preset_id:material.id,cmf_texture:material.texture,
+      quality:qualityKey,cmf_preset_id:material.id,body_color:color,cmf_texture:material.texture,
+      cmf_scheme:schemeRef,
       // ★ 大纲 P0-2：把最终生效的采样参数也写进任务，日志里可复现；
       //   仅结构约束模式覆盖，img2img 用它自己的 img2img 专参
       sampling:mode==="controlled"?{steps:q.steps,cfg:q.cfg}:null,
@@ -1094,8 +1164,8 @@ function buildPayload(sku,view,variant,mode,series=null){
     const qwenPositive=[
       `Professional product photograph of ${sku}, ${VIEW_EN[view]||view}.`,
       linked
-        ?"<image1> is the target camera and geometry: preserve its silhouette, part count, openings, hole positions and visible sides. <image2> is the same product from another angle: transfer ONLY product identity, material placement, exact colours, texture and studio lighting. Do not copy <image2>'s camera angle or geometry over <image1>."
-        :"Use the input clay image as the target camera and geometry. Preserve silhouette, part count, openings, hole positions and visible sides.",
+        ?"<image1> is the target camera and geometry, including any supplied deterministic CMF colour zones: preserve its silhouette, part count, openings, hole positions and visible sides. <image2> is the same product from another angle: transfer ONLY product identity, material placement, exact colours, texture and studio lighting. Do not copy <image2>'s camera angle or geometry over <image1>."
+        :"Use the input image as the target camera and geometry; if it contains deterministic CMF colour zones, preserve their part boundaries. Preserve silhouette, part count, openings, hole positions and visible sides.",
       identity,lighting+".",style.text+".",
       "Photorealistic material response, controlled highlights, clean contact shadow, sharp focus. Do not invent controls, seams, text or logos.",
       description?`User's design requirements (retain exact intent): ${description}`:""
@@ -1108,7 +1178,8 @@ function buildPayload(sku,view,variant,mode,series=null){
       steps:QWEN_STEPS[qualityKey]||25,
       _meta:{sku,view,variant,mode:"image",ui_version:"2.0",engine_id:currentEngine(),
         design:($("designSelect")||{}).value||"",
-        style:state.style,description,quality:qualityKey,cmf_preset_id:material.id,cmf_texture:material.texture,
+        style:state.style,description,quality:qualityKey,cmf_preset_id:material.id,body_color:color,cmf_texture:material.texture,
+        cmf_scheme:schemeRef,
         input_kind:state.sourceType==="image"?"photo":"clay",
         series:series?{id:series.id,anchor_view:series.anchor_view,seed_base:series.seed_base}:null,
         experimental:true,sampling:{steps:QWEN_STEPS[qualityKey]||25,cfg:1.0},reference:null,
@@ -1181,6 +1252,13 @@ async function generate(){
   state.running=true;state.runCount=count;renderPreflight();
   try{
     await ensureRequiredPasses(sku,views,mode,experimental);
+    if(sourceType==="model"){
+      const scheme=await loadCmfScheme(sku);
+      if(scheme?.stale)throw new Error("源模型已改变，旧的部位材质方案不能直接使用；请重新核对部位。");
+      if(scheme&&Object.keys(scheme.assignments||{}).length){
+        await post("/api/cmf/scheme/check",{sku,views,version:scheme.version,fingerprint:scheme.fingerprint});
+      }
+    }
     if(state.sku!==sku||state.sourceType!==sourceType||currentEngine()!==engineId||renderViews().join("|")!==views.join("|")){
       throw new Error("补结构图期间产品、模型或机位选择已变化；结构图已保存，请确认选择后再点生成");
     }
@@ -1298,7 +1376,8 @@ function setSourceType(kind){
   document.querySelector(".row-fields").classList.toggle("is-single",kind==="image");
   const intro=$("refIntro");
   if(intro)intro.textContent=kind==="image"?"可选：再上传一张风格参考图，借鉴配色、材质与灯光。产品原图仍是出图主体。":"借鉴配色、材质与光照；结构约束仍以你的白模为准。未装参考图组件时，仅将提取的色彩与影调写入提示词。";
-  renderSource();renderPassReadiness();renderPreflight();renderResults();renderHero();
+  renderSource();renderPassReadiness();renderPreflight();renderResults();renderHero();renderCmfScheme();
+  if(kind==="model"&&state.sku)loadCmfScheme(state.sku).catch(()=>{});
 }
 function openDrawer(){lastFocus=document.activeElement;$("drawerBackdrop").hidden=false;$("queueDrawer").hidden=false;$("closeQueueButton").focus();refreshPassJob();}
 function closeDrawer(){$("drawerBackdrop").hidden=true;$("queueDrawer").hidden=true;lastFocus?.focus();}
@@ -1325,7 +1404,8 @@ async function uploadModel(file){
     await refreshAssets();
     const imported=state.assets.models.find(m=>m.rel===result.saved);
     state.sku=imported?.sku||result.sku||stem;
-    renderAll();
+    state.cmfScheme=null;
+    renderAll();loadCmfScheme(state.sku).catch(()=>{});
     if(["stp","step"].includes(ext))announce(`${file.name} 已保存。${state.ui.stepper?"Blender 的 STEPper 插件已就绪，可直接生成结构图。":"需要在 Blender 中启用 STEPper 插件（或安装 FreeCAD）才能生成结构图。"}`);
     else if(ext==="3dm")announce(state.ui.import3dm
       ? `${file.name} 已导入。Rhino 读取能力已就绪，请选择视角并生成结构图。`
@@ -1416,7 +1496,7 @@ async function refreshPassJob(){
   }catch(error){$("passJobStatus").textContent="无法读取结构图任务状态："+errorMessage(error);}
 }
 
-$("productSelect").addEventListener("change",event=>{state.sku=event.target.value;state.selectedTask=null;renderSource();renderPassReadiness();renderPreflight();renderResults();renderHero();loadExistingRef();});
+$("productSelect").addEventListener("change",event=>{state.sku=event.target.value;state.cmfScheme=null;state.selectedTask=null;renderSource();renderPassReadiness();renderPreflight();renderResults();renderHero();renderCmfScheme();if(state.sku&&state.sourceType==="model")loadCmfScheme(state.sku).catch(()=>{});loadExistingRef();});
 document.querySelectorAll("[data-source]").forEach(el=>el.addEventListener("click",()=>setSourceType(el.dataset.source)));
 $("imageStrength").addEventListener("input",event=>{$("imageStrengthValue").value=event.target.value+"%";renderPreflight();});
 $("viewSelect").addEventListener("change",()=>{
@@ -1490,25 +1570,41 @@ $("heroCanvas").addEventListener("pointerup",e=>{
   setPickedPart(pickAt(e.clientX,e.clientY));   // 点空白处即取消选择
 });
 $("partClear").addEventListener("click",()=>setPickedPart(null));
+$("cmfPickPart").addEventListener("click",()=>{setPreview("model3d");$("hero").scrollIntoView({behavior:"smooth",block:"center"});announce("在 3D 模型上点击要换材质的部件。");});
+$("cmfResetButton").addEventListener("click",async()=>{
+  if(!state.sku||!confirm("源模型已经变化。将旧部位材质方案备份后重新建立，原有分配不再用于新任务。继续吗？"))return;
+  try{state.cmfScheme=await post("/api/cmf/scheme",{sku:state.sku,action:"reset"});renderCmfScheme();applyCmfSchemeToModel();announce("旧方案已备份。请在 3D 视图重新点选部件并指定材质。");}
+  catch(error){announce("重建方案失败："+errorMessage(error));}
+});
 window.addEventListener("resize",()=>{if(state.preview==="model3d")resize3D();});
 $("designSelect").addEventListener("change",()=>{renderDesignInfo();renderPreflight();});
-$("partCmfSelect").addEventListener("change",async()=>{
-  // 大纲 §3 P1：选材质即保存分配（按 SKU + 机位 + 部件号），并做三维近似预览。
-  // 保存放这里而不是「生成局部候选」时，是为了让分配成为**可复用的方案**，
-  // 而不是绑死在一次任务上。
+$("partCmfSelect").addEventListener("change",()=>{
+  const preset=cmfPresets.find(p=>p.id===$("partCmfSelect").value);
+  if(preset)$("partColorInput").value=preset.color;
+  applyPartCmfPreview();
+});
+$("partColorInput").addEventListener("input",applyPartCmfPreview);
+$("savePartCmfButton").addEventListener("click",async()=>{
   const ps=pickedPartState();
   const preset=cmfPresets.find(p=>p.id===$("partCmfSelect").value);
-  applyPartCmfPreview();
-  if(!ps||ps.partId==null||!preset)return;
-  if(preset.ai_editable===false){
-    announce(`「${preset.name}」按 ADR-002 不允许 AI 生成（透明/镜面件走真渲染），本地分配未保存。`);
-    return;
-  }
-  const ok=await savePartCmf(ps.sku,ps.view,ps.partId,preset.id,preset.color||"");
-  if(ok){
-    announce(`部件「${ps.partName}」的材质已记为「${preset.name}」（按机位保存，参数卡可回读）。`);
-    setPickedPart(hero3d.pickedMesh);   // 刷新面板上的「已存材质」
-  }
+  if(!ps||ps.partId==null||!preset)return announce("请先在 3D 模型上点选一个部件。");
+  const button=$("savePartCmfButton");setBusy(button,true,"正在保存…");
+  try{
+    const scheme=await post("/api/cmf/scheme",{sku:ps.sku,view:ps.view,part:ps.partId,
+      cmf:preset.id,label:$("partLabelInput").value,color:$("partColorInput").value});
+    state.cmfScheme=scheme;renderCmfScheme();applyCmfSchemeToModel();setPickedPart(hero3d.pickedMesh);
+    announce(`已将“${$("partLabelInput").value}”设为${preset.name}，所有机位会沿用此方案。${preset.ai_editable===false?"该材质仅适合真渲染，AI 出图仍需人工核对。":""}`);
+  }catch(error){announce("保存部位材质失败："+errorMessage(error));}
+  finally{setBusy(button,false,"保存到整机方案");}
+});
+$("removePartCmfButton").addEventListener("click",async()=>{
+  const ps=pickedPartState();
+  if(!ps||ps.partId==null)return announce("请先在 3D 模型上点选一个部件。");
+  try{
+    state.cmfScheme=await post("/api/cmf/scheme",{sku:ps.sku,view:ps.view,part:ps.partId,action:"remove"});
+    renderCmfScheme();applyCmfSchemeToModel();setPickedPart(hero3d.pickedMesh);
+    announce("已移除这个部件的单独材质，将沿用主体材质。");
+  }catch(error){announce("恢复主体材质失败："+errorMessage(error));}
 });
 $("materialSelect").addEventListener("change",()=>{
   const preset=selectedCmf();if(!preset)return;

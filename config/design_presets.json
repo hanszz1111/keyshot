@@ -21,6 +21,8 @@
     {
       "id": "precision_instrument",
       "name": "精密仪器",
+      "render_style": "studio",
+      "render_light": "soft",
       "summary": "高控制力布光，强调尺寸精度与加工质感；表面干净、反射克制，适合激光水平仪、测距仪一类量测工具。",
       "lighting": "large softbox key at 45° from upper left, weak fill from the right, tight rim light along both edges",
       "background": "light neutral grey seamless, subtle vertical gradient, no visible horizon",
@@ -44,6 +46,8 @@
     {
       "id": "outdoor_durable",
       "name": "户外耐用",
+      "render_style": "dark",
+      "render_light": "dramatic",
       "summary": "略强方向感的户外光，材质对比更明确，突出抗摔、防水、耐候的气质；不改结构，只改光照与质感表达。",
       "lighting": "single directional key from upper right with clear falloff, cool sky fill, distinct rim on the shadow side",
       "background": "matte dark grey or weathered concrete-like seamless surface, slight texture, blurred",
@@ -67,6 +71,8 @@
     {
       "id": "lab_equipment",
       "name": "实验室设备",
+      "render_style": "white",
+      "render_light": "top",
       "summary": "干净、均匀、无色彩倾向的临床感布光，适合强调读数、面板与洁净材质。",
       "lighting": "even overhead diffusion plus two symmetric side fills, near-shadowless key, no colour cast",
       "background": "pure white or very light cool grey seamless, absolutely even",
@@ -90,6 +96,8 @@
     {
       "id": "restrained_industrial_minimal",
       "name": "克制高端工业极简",
+      "render_style": "studio",
+      "render_light": "soft",
       "summary": "低对比、大留白、只靠材质与边缘高光说话；适合做主图或品牌调性图。",
       "lighting": "one very large bounceless soft source overhead-left, extremely soft gradient falloff, no secondary source",
       "background": "near-flat light grey with generous empty space around the product",
@@ -113,6 +121,8 @@
     {
       "id": "process_detail",
       "name": "局部工艺特写",
+      "render_style": "studio",
+      "render_light": "dramatic",
       "summary": "近距离展示现有加工痕迹（拉丝方向、注塑纹、倒角高光、材质交界），用于详情页工艺说明位。",
       "lighting": "low-angle grazing light to reveal surface micro-structure, one soft fill to keep shadows open",
       "background": "uncluttered neutral, out of focus",

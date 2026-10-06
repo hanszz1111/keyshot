@@ -577,8 +577,12 @@ function selectedDesign(){return designPresets.find(p=>p.id===$("designSelect").
 function renderDesignInfo(){
   const el=$("designDescription");if(!el)return;
   const d=selectedDesign();
+  if(d?.render_style&&STYLE[d.render_style])setStyle(d.render_style);
+  if(d?.render_light&&LIGHT[d.render_light])$("lightSelect").value=d.render_light;
+  for(const button of document.querySelectorAll("[data-style]"))button.disabled=!!d;
+  $("lightSelect").disabled=!!d;
   el.textContent=d
-    ?`${d.summary}（提示词与负面约束由服务端合并；共 ${designPresets.length} 套可选）`
+    ?`${d.summary} 已统一背景与成图灯光；手动灯光暂不参与 AI 出图，参考图只借用配色。保形底图仍用固定检查光。`
     :"只调整布光、背景、反射与阴影的表达方式，不会改变产品结构。";
 }
 function updateBodyCmfInfo(){
@@ -997,8 +1001,9 @@ function renderPreflight(){
   const refOn=!!(state.ref.strength&&state.ref.rel&&(state.ref.palette||[]).length);
   if(!experimental&&refOn){
     const iadapterOn=!!(state.comfy&&state.comfy.ipadapter_ok);
-    messages.push(`参考图已接入（${state.ref.strength}）：配色 ${state.ref.palette.slice(0,3).map(p=>p.hex).join(" ")} 与影调写入提示词`
-      +(iadapterOn?"；IPAdapter 已就绪，图片同时作为条件注入。":"；图像编码器未接入，图片本身不参与条件注入。"));
+    const designOn=!!selectedDesign();
+    messages.push(`参考图已接入（${state.ref.strength}）：配色 ${state.ref.palette.slice(0,3).map(p=>p.hex).join(" ")} ${designOn?"写入提示词":"与影调写入提示词"}`
+      +(designOn?"；已选设计语言，本次只借用配色，不注入参考图的灯光和背景。":iadapterOn?"；IPAdapter 已就绪，图片同时作为条件注入。":"；图像编码器未接入，图片本身不参与条件注入。"));
   }
   else if(!experimental&&state.ref.rel&&!state.ref.strength)messages.push("已上传参考图但强度选了「不使用」，本次不会生效。");
   if(ready&&mode==="controlled"&&!missing.length)messages.unshift("白模结构图和渲染服务已就绪。生成后请核对细节与文字。");
@@ -1284,6 +1289,7 @@ function updateSizeHint(){
 }
 function buildPayload(sku,view,variant,mode,series=null,productBases=null,productSceneId=null){
   const description=$("description").value.trim();const style=STYLE[state.style],material=selectedCmf(),lighting=LIGHT[$("lightSelect").value];
+  const design=selectedDesign();
   if(!material)throw new Error("材质库尚未就绪，请刷新页面");
   if(!material.ai_editable)throw new Error(`「${material.name}」仅支持真渲染，当前 AI 出图不可用`);
   const color=$("bodyColor").value;
@@ -1291,22 +1297,24 @@ function buildPayload(sku,view,variant,mode,series=null,productBases=null,produc
   const schemeRef=activeScheme?{version:activeScheme.version,fingerprint:activeScheme.fingerprint}:null;
   const useRef=!!(state.ref.strength&&state.ref.rel&&(state.ref.palette||[]).length);
   const refWord={L1_style:"overall mood and lighting",L2_material:"materials, colour palette and surface finish",L3_full:"materials, colour palette, lighting and composition"}[state.ref.strength]||"materials and colour palette";
-  const refLine=useRef?`Borrow ${refWord} from a supplied reference photo. Its dominant colour palette is ${state.ref.palette.slice(0,4).map(p=>p.hex).join(", ")}. ${refToneWords(state.ref.bg,state.ref.lum)}. Keep the input product's silhouette.`:"";
-  const positive=[`Professional high-end product photograph of ${sku}, ${VIEW_EN[view]}.`,`Main body: ${material.prompt}, color ${color}; ${material.texture.kind} texture at ${material.texture.scale} scale with ${material.texture.direction} direction; process ${material.process}.`,lighting+".",style.text+".",
-    "Premium commercial product photography, realistic material response, accurate camera perspective, crisp silhouette, fine controlled highlights, clean contact shadow.",
+  const refLine=useRef?design
+    ?`Use the supplied reference palette (${state.ref.palette.slice(0,4).map(p=>p.hex).join(", ")}) only as inspiration for unspecified accents; exact selected CMF colours and part assignments take priority. Follow the selected design preset for lighting, background and composition. Keep the input product's silhouette.`
+    :`Borrow ${refWord} from a supplied reference photo. Its dominant colour palette is ${state.ref.palette.slice(0,4).map(p=>p.hex).join(", ")}. ${refToneWords(state.ref.bg,state.ref.lum)}. Keep the input product's silhouette.`:"";
+  const positive=[`Professional high-end product photograph of ${sku}, ${VIEW_EN[view]}.`,`Main body: ${material.prompt}, color ${color}; ${material.texture.kind} texture at ${material.texture.scale} scale with ${material.texture.direction} direction; process ${material.process}.`,design?"":lighting+".",design?"":style.text+".",
+    design?"Premium commercial product photography, realistic material response, accurate camera perspective and crisp silhouette.":"Premium commercial product photography, realistic material response, accurate camera perspective, crisp silhouette, fine controlled highlights, clean contact shadow.",
     description?`User's design requirements (retain exact intent): ${description}`:"",
     refLine,
     mode==="controlled"?"Follow the supplied depth map for the product silhouette and proportions. Do not invent openings, controls or markings.":mode==="image"?"Use the input product image as the primary composition and identity. Retain its camera angle, proportions, silhouette and component layout as closely as possible. Do not invent controls, openings, logos or text.":"Creative concept exploration; product geometry is not guaranteed."
   ].filter(Boolean).join(" ");
   const iadapterOn=!!(state.comfy&&state.comfy.ipadapter_ok);
-  const refApplied=useRef?(iadapterOn?"ipadapter+prompt":"prompt_palette_only"):null;
+  const refApplied=useRef?(iadapterOn&&!design?"ipadapter+prompt":"prompt_palette_only"):null;
   const dim=resolveOutputSize(view);
   const qualityKey=($("qualitySelect")||{}).value||"standard";
   const q=QUALITY[qualityKey]||QUALITY.standard;
   const payload={positive,negative:NEGATIVE,seed:(Math.floor(Date.now()/1000)+variant)%2147483647,
     width:dim.width,height:dim.height,
     _meta:{sku,view,variant,mode,ui_version:"2.0",engine_id:currentEngine(),style:state.style,description,
-      design:($("designSelect")||{}).value||"",
+      design:design?.id||"",design_signature:design?.signature||"",
       output:{width:dim.width,height:dim.height,source:dim.source},
       quality:qualityKey,cmf_preset_id:material.id,body_color:color,cmf_texture:material.texture,
       cmf_scheme:schemeRef,
@@ -1332,12 +1340,13 @@ function buildPayload(sku,view,variant,mode,series=null,productBases=null,produc
     const qwenPositive=[
       `Professional product photograph of ${sku}, ${VIEW_EN[view]||view}.`,
       linked
-        ?"<image1> is the target camera and geometry, including any supplied deterministic CMF colour zones: preserve its silhouette, part count, openings, hole positions and visible sides. <image2> is the same product from another angle: transfer ONLY product identity, material placement, exact colours, texture and studio lighting. Do not copy <image2>'s camera angle or geometry over <image1>."
+        ?"<image1> is the target camera and geometry, including any supplied deterministic CMF colour zones: preserve its silhouette, part count, openings, hole positions and visible sides. <image2> is the same product from another angle: transfer ONLY product identity, material placement, exact colours, texture and design language. Do not copy <image2>'s camera angle or geometry over <image1>."
         :"Use the input image as the target camera and geometry; if it contains deterministic CMF colour zones, preserve their part boundaries. Preserve silhouette, part count, openings, hole positions and visible sides.",
-      identity,lighting+".",style.text+".",
+      identity,design?"":lighting+".",design?"":style.text+".",
       productBases
-        ?"<image1> is a CAD-geometry render with assigned physical materials. Preserve its product silhouette, holes, actual part boundaries and material placement; only refine plausible surface micro-detail and studio lighting. Never redesign the product or move a material to another part."
-        :"Treat the dark structural lines and colour-zone boundaries in <image1> as fixed product geometry and parting lines. Keep each line in its original location; do not add or remove seams. Photorealistic material response, controlled highlights, clean contact shadow, sharp focus, uniform spotless seamless studio background without stains or texture. Do not invent controls, seams, text or logos.",
+        ?"<image1> is a CAD-geometry render with assigned physical materials. Preserve its product silhouette, holes, actual part boundaries and material placement; only refine plausible surface micro-detail and lighting. Never redesign the product or move a material to another part."
+        :"Treat the dark structural lines and colour-zone boundaries in <image1> as fixed product geometry and parting lines. Keep each line in its original location; do not add or remove seams. Photorealistic material response and sharp focus. Do not invent controls, seams, text or logos.",
+      design&&useRef?refLine:"",
       description?`User's design requirements (retain exact intent): ${description}`:""
     ].filter(Boolean).join(" ");
     return {
@@ -1347,20 +1356,22 @@ function buildPayload(sku,view,variant,mode,series=null,productBases=null,produc
       resolution:Number(($("sizeSelect").value||"qwen:768").split(":")[1]||768),
       steps:QWEN_STEPS[qualityKey]||25,
       _meta:{sku,view,variant,mode:"image",ui_version:"2.0",engine_id:currentEngine(),
-        design:($("designSelect")||{}).value||"",
+        design:design?.id||"",design_signature:design?.signature||"",
         style:state.style,description,quality:qualityKey,cmf_preset_id:material.id,body_color:color,cmf_texture:material.texture,
         cmf_scheme:schemeRef,
         input_kind:state.sourceType==="image"?"photo":productBases?"product_base":"clay",
         product_scene_id:productSceneId,
         series:series?{id:series.id,anchor_view:series.anchor_view,seed_base:series.seed_base}:null,
-        experimental:true,sampling:{steps:QWEN_STEPS[qualityKey]||25,cfg:1.0},reference:null,
+        experimental:true,sampling:{steps:QWEN_STEPS[qualityKey]||25,cfg:1.0},
+        reference:design&&useRef?{image:state.ref.rel,strength:state.ref.strength,
+          palette:state.ref.palette.slice(0,4).map(p=>p.hex),applied:"prompt_palette_only"}:null,
         note:"千问逐机位出图：目标机位白模锁视角，主视图只辅助 CMF/产品身份；无深度 ControlNet，几何精度需人工验收。"}
     };
   }
   // 质量档只作用于「结构约束出图」；图片改图有意保留它自己的 img2img 专参
   // （那套 denoise/steps 是配着 Canny 链路调出来的，不该被这里覆盖）。
   if(mode==="controlled"){payload.steps=q.steps;payload.cfg=q.cfg;}
-  if(useRef&&iadapterOn)payload.ref_img=state.ref.rel;   // 装了 IPAdapter 才把图片真正送进去
+  if(useRef&&iadapterOn&&!design)payload.ref_img=state.ref.rel;   // 设计预设优先时只借配色，避免 IPAdapter 带入冲突灯光
   if(mode==="image"){
     const source=selectedItem()?.source,dimensions=sourceSize();
     if(!source||!dimensions)throw new Error("产品图片尚未就绪");
@@ -2064,6 +2075,7 @@ function buildCard(){
 }
 function applyCard(card){
   if(!card||!card.material)throw new Error("参数卡内容不完整");
+  $("designSelect").value="";renderDesignInfo();
   const b=card.material.body||{};
   if(b.color){$("bodyColor").value=b.color.toLowerCase();$("bodyColorValue").textContent=b.color.toUpperCase();}
   const matched=cmfPresets.find(p=>p.id===b.cmf_preset_id)||

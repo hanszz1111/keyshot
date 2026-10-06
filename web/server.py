@@ -1075,8 +1075,16 @@ def load_design_presets():
     except (OSError, ValueError):
         return {"presets": [], "negative_common": []}
     presets = data.get("presets")
-    return {"presets": presets if isinstance(presets, list) else [],
-            "negative_common": data.get("negative_common") or []}
+    common = data.get("negative_common") or []
+    if not isinstance(presets, list):
+        presets = []
+    presets = [preset for preset in presets if isinstance(preset, dict)]
+    for preset in presets:
+        material = {"preset": {k: v for k, v in preset.items() if k != "signature"},
+                    "negative_common": common}
+        preset["signature"] = hashlib.sha256(json.dumps(
+            material, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return {"presets": presets, "negative_common": common}
 
 
 def apply_design(payload):
@@ -1094,6 +1102,8 @@ def apply_design(payload):
     preset = next((p for p in data["presets"] if p.get("id") == did), None)
     if not preset:
         return None, "未知的设计预设「%s」" % did
+    if meta.get("design_signature") and meta["design_signature"] != preset["signature"]:
+        return None, "设计预设在任务创建后已修改，请刷新页面并重新建立整组任务"
     pos = (payload.get("positive") or "").strip()
     neg = (payload.get("negative") or "").strip()
     extra_pos = (preset.get("prompt") or "").strip()

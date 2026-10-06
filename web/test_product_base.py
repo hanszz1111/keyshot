@@ -144,7 +144,23 @@ class ProductBaseSpecTest(unittest.TestCase):
         self.assertTrue(all(S.product_base_fresh(spec) for spec in specs))
         rel = S._write_product_scene_report(specs)
         self.assertEqual(S.latest_product_scene("Demo")["report"], rel)
+        with open(os.path.join(self.assets, *rel.split("/")), encoding="utf-8") as stream:
+            report = json.load(stream)
+        self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(report["views"]["front"]["sha256"], S.product_base_digest(specs[0]["path"]))
         self.scheme = {**self.scheme, "version": 4}
+        self.assertEqual(S.latest_product_scene("Demo"), {})
+
+    def test_scene_report_rejects_replaced_image_with_same_dimensions(self):
+        specs = self._two_specs()
+        for spec in specs:
+            os.makedirs(os.path.dirname(spec["path"]), exist_ok=True)
+            with open(spec["path"], "wb") as stream:
+                stream.write(b"\x89PNG\r\n\x1a\n" + b"\0\0\0\rIHDR" + struct.pack(">II", 1232, 752) + b"original")
+        S._write_product_scene_report(specs)
+        self.assertEqual(len(S.latest_product_scene("Demo")["outputs"]), 2)
+        with open(specs[1]["path"], "ab") as stream:
+            stream.write(b"replaced-with-same-dimensions")
         self.assertEqual(S.latest_product_scene("Demo"), {})
 
     def test_mixed_scene_is_rejected_before_blender(self):

@@ -1178,31 +1178,49 @@ function showImageViewer(task,rel,isAsset=false){
   $("imageViewerTitle").textContent=`${task.sku} · ${VIEW_ZH[task.view]||task.view} · ${isAsset?"原模型保形底图":`候选 ${task.variant+1}`}`;
   if(!dialog.open)dialog.showModal();
 }
+function formatProgressTime(seconds){
+  const value=Math.max(0,Math.floor(seconds));
+  const hours=Math.floor(value/3600),minutes=Math.floor(value%3600/60),rest=value%60;
+  return hours?`${hours} 小时 ${String(minutes).padStart(2,"0")} 分`:`${minutes} 分 ${String(rest).padStart(2,"0")} 秒`;
+}
+function progressClock(startedAt,done,total,cached=0){
+  const elapsed=Math.max(0,(Date.now()-startedAt)/1000);
+  const measured=Math.max(0,done-cached),remaining=Math.max(0,total-done);
+  if(!remaining)return `已用 ${formatProgressTime(elapsed)} · 正在核验`;
+  if(!measured)return `已用 ${formatProgressTime(elapsed)} · 剩余时间估算中`;
+  const estimate=elapsed/measured*remaining;
+  return `已用 ${formatProgressTime(elapsed)} · 本阶段约剩 ${formatProgressTime(estimate)}`;
+}
 function updateRenderProgress(phase,done,total,startedAt,taskStartedAt,durations){
   const box=$("renderProgress");box.hidden=false;
   $("renderProgressNote").textContent="进度按已完成任务计算；单张图的采样进度暂不可读取。";
   const percent=total?Math.round(done/total*100):0;
   $("renderProgressBar").value=percent;
   $("renderProgressLabel").textContent=`${phase} · ${done}/${total} 张（${percent}%）`;
-  const elapsed=Math.max(0,Math.round((Date.now()-startedAt)/1000));
+  const elapsed=Math.max(0,(Date.now()-startedAt)/1000);
   const avg=durations.length?durations.reduce((a,b)=>a+b,0)/durations.length:0;
-  const remaining=avg?Math.max(0,Math.round(avg*(total-done)-(taskStartedAt?(Date.now()-taskStartedAt)/1000:0))):null;
-  $("renderProgressEta").textContent=remaining==null?`已用 ${elapsed} 秒 · 首张完成后估时`:`已用 ${elapsed} 秒 · 预计还需约 ${Math.ceil(remaining/60)} 分钟`;
+  const remaining=avg?Math.max(0,avg*(total-done)-(taskStartedAt?(Date.now()-taskStartedAt)/1000:0)):null;
+  $("renderProgressEta").textContent=done>=total?`总用时 ${formatProgressTime(elapsed)}`
+    :remaining==null?`已用 ${formatProgressTime(elapsed)} · 首张完成后估时`
+    :`已用 ${formatProgressTime(elapsed)} · 约剩 ${formatProgressTime(remaining)}`;
 }
-function updatePreparationProgress(phase,done,total,startedAt){
+function updatePreparationProgress(phase,done,total,startedAt,cached=0){
   const box=$("renderProgress");box.hidden=false;
   const percent=Math.min(99,Math.round(done/Math.max(total,1)*100));
   $("renderProgressBar").value=percent;
   $("renderProgressLabel").textContent=`${phase} · ${done}/${total} 个机位（${percent}%）`;
-  $("renderProgressEta").textContent=`已用 ${Math.round((Date.now()-startedAt)/1000)} 秒`;
+  $("renderProgressEta").textContent=progressClock(startedAt,done,total,cached);
   $("renderProgressNote").textContent="准备阶段按已完成机位计算；完成核验后进入逐张生图阶段。";
 }
-function updateProductProgress(phase,done,total,startedAt,status="running"){
+function updateProductProgress(phase,done,total,startedAt,status="running",stage=null){
   const box=$("renderProgress"),bar=$("renderProgressBar");box.hidden=false;
   const percent=status==="done"?100:Math.min(99,Math.round(done/Math.max(total,1)*100));
   bar.value=percent;
   $("renderProgressLabel").textContent=`${phase} · ${done}/${total} 个机位（${percent}%）`;
-  $("renderProgressEta").textContent=`已用 ${Math.round((Date.now()-startedAt)/1000)} 秒`;
+  $("renderProgressEta").textContent=status==="done"?`总用时 ${formatProgressTime((Date.now()-startedAt)/1000)}`
+    :status==="failed"?`已用 ${formatProgressTime((Date.now()-startedAt)/1000)}`
+    :stage?progressClock(stage.startedAt,stage.done,stage.total,stage.cached||0)
+    :`已用 ${formatProgressTime((Date.now()-startedAt)/1000)} · 剩余时间估算中`;
   $("renderProgressNote").textContent=status==="failed"
     ?"已完成部分不会被当作完整八面图；请查看上方错误提示。"
     :status==="done"?"已核验整组图片，可在右侧逐张点开查看。"
@@ -1413,7 +1431,7 @@ async function ensureProductBases(sku,views,materialId,color,style,onProgress=nu
     if(job.kind!=="product_base"||job.sku!==sku)throw new Error("真材质底图任务已被其他 Blender 作业替换，请检查后重试");
     if(job.status==="running"){
       const batch=job.batch||{};
-      if(onProgress)onProgress(Math.min(views.length,batch.index||0));
+      if(onProgress)onProgress(Math.min(views.length,batch.index||0),Math.min(views.length,batch.cached||0));
       const progress=`正在生成保形图：${Math.min(batch.index||0,batch.total||views.length)}/${batch.total||views.length} 个机位完成`;
       $("passJobStatus").textContent=progress;announce(progress);
       continue;
@@ -1422,7 +1440,7 @@ async function ensureProductBases(sku,views,materialId,color,style,onProgress=nu
     if(job.status!=="done")throw new Error(job.message||"真材质底图生成失败");
     const outputs=job.outputs||{};
     if(views.some(view=>!outputs[view]))throw new Error("真材质底图缺少所选机位，请重新生成");
-    if(onProgress)onProgress(views.length);
+    if(onProgress)onProgress(views.length,Math.min(views.length,job.batch?.cached||0));
     return {outputs,sceneId:job.scene_id,report:job.report};
   }
 }
@@ -1434,14 +1452,17 @@ async function generateProductScene(){
   const missing=missingRequiredPassViews(selectedItem(),views,"controlled",false);
   const total=missing.length+views.length,startedAt=Date.now();
   let completed=0,phase="正在准备结构图";
-  const show=()=>updateProductProgress(phase,completed,total,startedAt);
+  const stage={startedAt,done:0,total:missing.length||views.length,cached:0};
+  const show=()=>updateProductProgress(phase,completed,total,startedAt,"running",stage);
   show();const ticker=setInterval(show,1000);
   try{
-    await ensureRequiredPasses(sku,views,"controlled",false,done=>{completed=done;show();});
+    await ensureRequiredPasses(sku,views,"controlled",false,done=>{completed=done;stage.done=done;show();});
     const scheme=await loadCmfScheme(sku);
     if(scheme?.stale)throw new Error("模型已改变，请先重新核对部件材质。");
-    phase="正在生成保形图";show();
-    const result=await ensureProductBases(sku,views,material.id,$("bodyColor").value,state.style,done=>{completed=missing.length+done;show();});
+    phase="正在生成保形图";stage.startedAt=Date.now();stage.done=0;stage.total=views.length;stage.cached=0;show();
+    const result=await ensureProductBases(sku,views,material.id,$("bodyColor").value,state.style,(done,cached=0)=>{
+      completed=missing.length+done;stage.done=done;stage.cached=cached;show();
+    });
     if(state.sku!==sku)throw new Error("生成期间切换了产品；底图已保存，请重新选择原产品查看。");
     state.productScene={scene_id:result.sceneId,outputs:result.outputs,report:result.report};
     renderProductScene();
@@ -1459,11 +1480,17 @@ async function generate(){
   const selectedMaterial=selectedCmf()?.id,selectedColor=$("bodyColor").value,selectedStyle=state.style;
   state.running=true;state.runCount=count;renderPreflight();
   const batchStarted=Date.now(),durations=[];
+  let preparationTicker=null;
   updateRenderProgress("准备结构图/底图",0,count,batchStarted,0,durations);
   try{
     const missing=sourceType==="model"?missingRequiredPassViews(selectedItem(),views,mode,experimental):[];
-    if(missing.length)await ensureRequiredPasses(sku,views,mode,experimental,
-      done=>updatePreparationProgress("正在补结构图",done,missing.length,batchStarted));
+    if(missing.length){
+      let prepared=0;const phaseStarted=Date.now();
+      const show=()=>updatePreparationProgress("正在补结构图",prepared,missing.length,phaseStarted);
+      show();preparationTicker=setInterval(show,1000);
+      await ensureRequiredPasses(sku,views,mode,experimental,done=>{prepared=done;show();});
+      clearInterval(preparationTicker);preparationTicker=null;
+    }
     if(sourceType==="model"){
       const scheme=await loadCmfScheme(sku);
       if(scheme?.stale)throw new Error("源模型已改变，旧的部位材质方案不能直接使用；请重新核对部位。");
@@ -1478,8 +1505,12 @@ async function generate(){
     if(useProductBase){
       if(selectedCmf()?.id!==selectedMaterial||$("bodyColor").value!==selectedColor||state.style!==selectedStyle||$("qwenBaseSelect").value!=="product")
         throw new Error("准备期间材质、颜色或底图模式已改变，请确认后重新开始");
+      let prepared=0,cached=0;const phaseStarted=Date.now();
+      const show=()=>updatePreparationProgress("正在准备保形底图",prepared,views.length,phaseStarted,cached);
+      show();preparationTicker=setInterval(show,1000);
       const productBatch=await ensureProductBases(sku,views,selectedMaterial,selectedColor,selectedStyle,
-        done=>updatePreparationProgress("正在准备保形底图",done,views.length,batchStarted));
+        (done,reused=0)=>{prepared=done;cached=reused;show();});
+      clearInterval(preparationTicker);preparationTicker=null;
       productBases=productBatch.outputs;productSceneId=productBatch.sceneId;
       if(state.sku!==sku||currentEngine()!==engineId||selectedCmf()?.id!==selectedMaterial||$("bodyColor").value!==selectedColor||state.style!==selectedStyle)
         throw new Error("底图生成期间产品或材质设置已改变，请确认后重新开始");
@@ -1527,7 +1558,7 @@ async function generate(){
     announce(`${count} 张任务处理结束，请查看候选结果。`);
     updateRenderProgress("任务已处理完毕",count,count,batchStarted,0,durations);
   }catch(error){$("renderProgressLabel").textContent="生成中断，请查看错误提示";announce("生成中断："+errorMessage(error));}
-  finally{state.running=false;state.runCount=0;renderPreflight();await refreshTasks();}
+  finally{if(preparationTicker)clearInterval(preparationTicker);state.running=false;state.runCount=0;renderPreflight();await refreshTasks();}
 }
 async function executeTask(task){
   const payload=typeof task.payload==="string"?JSON.parse(task.payload):(task.payload||{});

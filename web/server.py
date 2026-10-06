@@ -3067,18 +3067,20 @@ def start_product_base_batch(sku, views, body_cmf, body_color, style):
         _pass_state = {"status": "running", "kind": "product_base", "sku": sku,
                        "view": ",".join(views), "scene_id": specs[0]["scene_id"],
                        "message": "正在同一产品场景中生成真材质底图…",
-                       "batch": {"total": len(specs), "index": 0, "done": [], "failed": []},
+                       "batch": {"total": len(specs), "index": 0, "cached": 0, "done": [], "failed": []},
                        "outputs": {}, "started_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
     def worker():
         global _pass_state
         outputs, errors = {}, []
+        cached = 0
         report_rel = ""
         try:
             if len(specs) > 1:
                 cached = sum(product_base_fresh(spec) for spec in specs)
                 with _pass_lock:
                     _pass_state["batch"]["index"] = cached
+                    _pass_state["batch"]["cached"] = cached
                     _pass_state["message"] = "已复用 %d/%d 个机位，正在生成其余保形图" % (cached, len(specs))
                 def on_progress(completed):
                     with _pass_lock:
@@ -3086,8 +3088,10 @@ def start_product_base_batch(sku, views, body_cmf, body_color, style):
                         _pass_state["message"] = "同一场景已渲染 %d/%d 个机位" % (min(len(specs), cached + completed), len(specs))
                 _run_product_base_scene(specs, src, exe, on_progress)
             elif product_base_fresh(specs[0]):
+                cached = 1
                 with _pass_lock:
                     _pass_state["batch"]["index"] = 1
+                    _pass_state["batch"]["cached"] = 1
                     _pass_state["message"] = "已复用保形图，正在核验场景报告"
             else:
                 _run_product_base_once(specs[0], src, exe)
@@ -3105,7 +3109,8 @@ def start_product_base_batch(sku, views, body_cmf, body_color, style):
                            "sku": sku, "view": ",".join(views), "scene_id": specs[0]["scene_id"],
                            "report": report_rel, "outputs": outputs if not errors else {},
                            "message": "；".join("%s：%s" % (e["view"], e["reason"]) for e in errors) if errors else "真材质底图已就绪",
-                           "batch": {"total": len(specs), "index": len(specs), "done": list(outputs), "failed": errors},
+                           "batch": {"total": len(specs), "index": len(specs), "cached": cached,
+                                     "done": list(outputs), "failed": errors},
                            "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
     threading.Thread(target=worker, daemon=True).start()

@@ -29,6 +29,7 @@ AI 白模渲染器 · OPT-01  Blender 确定性基线 pass 渲染器
           .ksp/.c4d/.max/.rhi 仍需手动导出（KeyShot 导 GLB，C4D/Max 导 GLB/OBJ）。
 """
 import argparse
+import copy
 import json
 import math
 import os
@@ -129,6 +130,8 @@ def parse_args():
                          "网页只读这个已验证的 GLB，不直接读原始 STEP/3DM。")
     ap.add_argument("--product-render", metavar="PATH",
                     help="按 CMF 方案真渲染一张独立产品底图；不修改已有结构 pass")
+    ap.add_argument("--product-batch", metavar="JSON",
+                    help="按同一导入模型、CMF 与灯光批量渲染多个机位；JSON 含 views 列表")
     ap.add_argument("--cmf-scheme", help="跨机位 CMF 方案 JSON，网格名必须与导入模型一致")
     ap.add_argument("--cmf-presets", help="项目统一 CMF 预设 JSON")
     ap.add_argument("--body-cmf", help="未单独指定部件时使用的预设 ID")
@@ -365,7 +368,16 @@ def setup_camera(args, center, size):
         cam_data.sensor_fit = "AUTO"
         fov_h = 2.0 * math.atan((cam_data.sensor_width / 2.0) / cam_data.lens)
         fov_v = 2.0 * math.atan((cam_data.sensor_width / (2.0 * aspect)) / cam_data.lens)
-        dist = max(hw / math.tan(fov_h / 2.0), hu / math.tan(fov_v / 2.0)) * args.fit
+        # 透视取景必须逐个包围盒角点计入「靠近镜头」的深度；只按中心平面
+        # 的投影宽高求距离，会让长机身/3/4 机位的前端越过画框。
+        dist = 0.0
+        for sx in (-1.0, 1.0):
+            for sy in (-1.0, 1.0):
+                for sz in (-1.0, 1.0):
+                    v = mathutils.Vector((sx * half.x, sy * half.y, sz * half.z))
+                    needed = max(abs(v.dot(xc)) / math.tan(fov_h / 2.0),
+                                 abs(v.dot(yc)) / math.tan(fov_v / 2.0))
+                    dist = max(dist, v.dot(direction) + needed * args.fit)
         dist = max(dist, size.length * 0.5)
 
     cam.location = center + direction * dist
@@ -480,11 +492,14 @@ def apply_product_cmf(args):
         (len(meshes), len(material_cache), len(assignments)))
 
 
-def render_product_base(args, center, size):
+def render_product_base(args, center, size, prepared=False):
     """与结构图共用模型、机位、取景；透明渲染后合成统一背景。"""
-    apply_product_cmf(args)
-    setup_world()
-    setup_lights(center, max(size.length / 2.0, 1e-3))
+    if not prepared:
+        apply_product_cmf(args)
+        setup_world()
+        setup_lights(center, max(size.length / 2.0, 1e-3))
+    if bpy.context.scene.camera:
+        bpy.data.objects.remove(bpy.context.scene.camera, do_unlink=True)
     setup_camera(args, center, size)
     setup_render(args)
     scene = bpy.context.scene
@@ -507,6 +522,44 @@ def render_product_base(args, center, size):
     if not os.path.isfile(dest) or os.path.getsize(dest) == 0:
         raise RuntimeError("产品底图未产出")
     log("产品底图：%s（%d B）" % (dest, os.path.getsize(dest)))
+
+
+def render_product_batch(args, center, size):
+    with open(args.product_batch, "r", encoding="utf-8") as stream:
+        batch = json.load(stream)
+    views = batch.get("views")
+    if not isinstance(views, list) or not 1 <= len(views) <= 10:
+        raise ValueError("产品底图批次必须包含 1–10 个机位")
+    seen = set()
+    for item in views:
+        view = item.get("view") if isinstance(item, dict) else None
+        if view not in VIEW_ANGLES or view in seen:
+            raise ValueError("产品底图批次含无效或重复机位")
+        seen.add(view)
+        resolution = item.get("resolution")
+        camera = item.get("camera")
+        if (not isinstance(resolution, list) or len(resolution) != 2 or
+                any(not isinstance(v, int) or not 256 <= v <= 4096 for v in resolution) or
+                not isinstance(camera, dict) or
+                any(not isinstance(camera.get(k), (int, float)) for k in ("azimuth", "elevation")) or
+                not isinstance(item.get("output"), str) or not item["output"].endswith(".png")):
+            raise ValueError("产品底图批次相机、尺寸或输出路径无效")
+    for index, item in enumerate(views):
+        shot = copy.copy(args)
+        shot.view = item["view"]
+        shot.azimuth = float(item["camera"]["azimuth"])
+        shot.elevation = float(item["camera"]["elevation"])
+        shot.fit = float(item["camera"].get("fit", args.fit))
+        shot.ortho = bool(item["camera"].get("ortho"))
+        shot.width, shot.height = item["resolution"]
+        shot.product_render = item["output"]
+        log("产品底图批次 %d/%d：%s" % (index + 1, len(views), shot.view))
+        render_product_base(shot, center, size, prepared=index > 0)
+        if isinstance(batch.get("progress"), str):
+            progress = batch["progress"]
+            with open(progress + ".tmp", "w", encoding="utf-8") as stream:
+                json.dump({"completed": index + 1, "view": shot.view}, stream)
+            os.replace(progress + ".tmp", progress)
 
 
 def setup_render(args):
@@ -733,6 +786,10 @@ def main():
         log(f"最大边长 {m:.2f} → {unit}")
         log(f"轴向估计：X={size.x:.2f} Y={size.y:.2f} Z={size.z:.2f}（长边通常为枪身/光轴方向）")
         log("=" * 60)
+        return 0
+
+    if args.product_batch:
+        render_product_batch(args, center, size)
         return 0
 
     if args.product_render:

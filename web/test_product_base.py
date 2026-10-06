@@ -106,6 +106,78 @@ class ProductBaseSpecTest(unittest.TestCase):
                 S._run_product_base_once(spec, os.path.join(self.tmp.name, "Demo.glb"), "blender.exe")
         self.assertFalse(os.path.isfile(spec["path"]))
 
+    def _two_specs(self):
+        folder = os.path.join(self.passes, "Demo", "back")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "pass_manifest.json"), "w", encoding="utf-8") as stream:
+            json.dump({"objectid_map": {"1": "shell", "2": "grip"},
+                       "resolution": [1232, 752],
+                       "camera": {"azimuth": 180, "elevation": 8, "fit": 1.18, "ortho": False}}, stream)
+        return [S.product_base_spec("Demo", view, "plastic_fine_matte", "#AABBCC", "studio")
+                for view in ("front", "back")]
+
+    def test_two_views_share_scene_and_one_blender_process(self):
+        specs = self._two_specs()
+        self.assertEqual(specs[0]["scene_id"], specs[1]["scene_id"])
+        calls = []
+
+        class FakeProcess:
+            def wait(self, timeout=None):
+                return 0
+            def poll(self):
+                return 0
+
+        def fake_popen(args, **_kwargs):
+            calls.append(args)
+            with open(args[args.index("--product-batch") + 1], encoding="utf-8") as stream:
+                batch = json.load(stream)
+            self.assertEqual([item["view"] for item in batch["views"]], ["front", "back"])
+            for item in batch["views"]:
+                with open(item["output"], "wb") as stream:
+                    stream.write(b"\x89PNG\r\n\x1a\n" + b"\0\0\0\rIHDR" + struct.pack(">II", 1232, 752))
+            return FakeProcess()
+
+        with patch.object(S.subprocess, "Popen", side_effect=fake_popen):
+            S._run_product_base_scene(specs, os.path.join(self.tmp.name, "Demo.glb"), "blender.exe")
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--no-gpu", calls[0])
+        self.assertTrue(all(S.product_base_fresh(spec) for spec in specs))
+        rel = S._write_product_scene_report(specs)
+        self.assertEqual(S.latest_product_scene("Demo")["report"], rel)
+        self.scheme = {**self.scheme, "version": 4}
+        self.assertEqual(S.latest_product_scene("Demo"), {})
+
+    def test_mixed_scene_is_rejected_before_blender(self):
+        specs = self._two_specs()
+        bad = {**specs[1], "scene_id": "deadbeefdeadbeef"}
+        with patch.object(S.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(ValueError, "共享同一模型"):
+                S._run_product_base_scene([specs[0], bad], "Demo.glb", "blender.exe")
+            popen.assert_not_called()
+
+    def test_batch_rejects_changed_cmf_without_publishing(self):
+        specs = self._two_specs()
+
+        class FakeProcess:
+            def wait(self, timeout=None):
+                return 0
+            def poll(self):
+                return 0
+
+        def fake_popen(args, **_kwargs):
+            with open(args[args.index("--product-batch") + 1], encoding="utf-8") as stream:
+                batch = json.load(stream)
+            for item in batch["views"]:
+                with open(item["output"], "wb") as stream:
+                    stream.write(b"\x89PNG\r\n\x1a\n" + b"\0\0\0\rIHDR" + struct.pack(">II", 1232, 752))
+            self.scheme = {**self.scheme, "version": 4}
+            return FakeProcess()
+
+        with patch.object(S.subprocess, "Popen", side_effect=fake_popen):
+            with self.assertRaisesRegex(RuntimeError, "已丢弃"):
+                S._run_product_base_scene(specs, os.path.join(self.tmp.name, "Demo.glb"), "blender.exe")
+        self.assertFalse(any(os.path.isfile(spec["path"]) for spec in specs))
+
 
 if __name__ == "__main__":
     unittest.main()

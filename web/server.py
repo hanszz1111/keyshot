@@ -3077,12 +3077,19 @@ def start_product_base_batch(sku, views, body_cmf, body_color, style):
         try:
             if len(specs) > 1:
                 cached = sum(product_base_fresh(spec) for spec in specs)
+                with _pass_lock:
+                    _pass_state["batch"]["index"] = cached
+                    _pass_state["message"] = "已复用 %d/%d 个机位，正在生成其余保形图" % (cached, len(specs))
                 def on_progress(completed):
                     with _pass_lock:
                         _pass_state["batch"]["index"] = min(len(specs), cached + completed)
                         _pass_state["message"] = "同一场景已渲染 %d/%d 个机位" % (min(len(specs), cached + completed), len(specs))
                 _run_product_base_scene(specs, src, exe, on_progress)
-            elif not product_base_fresh(specs[0]):
+            elif product_base_fresh(specs[0]):
+                with _pass_lock:
+                    _pass_state["batch"]["index"] = 1
+                    _pass_state["message"] = "已复用保形图，正在核验场景报告"
+            else:
                 _run_product_base_once(specs[0], src, exe)
             for spec in specs:
                 view = spec["rel"].split("/")[2]

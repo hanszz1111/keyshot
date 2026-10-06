@@ -137,9 +137,11 @@ class ProductBaseSpecTest(unittest.TestCase):
                     stream.write(b"\x89PNG\r\n\x1a\n" + b"\0\0\0\rIHDR" + struct.pack(">II", 1232, 752))
             return FakeProcess()
 
+        progress = []
         with patch.object(S.subprocess, "Popen", side_effect=fake_popen):
-            S._run_product_base_scene(specs, os.path.join(self.tmp.name, "Demo.glb"), "blender.exe")
+            S._run_product_base_scene(specs, os.path.join(self.tmp.name, "Demo.glb"), "blender.exe", progress.append)
         self.assertEqual(len(calls), 1)
+        self.assertEqual(progress, [2])
         self.assertIn("--no-gpu", calls[0])
         self.assertTrue(all(S.product_base_fresh(spec) for spec in specs))
         rel = S._write_product_scene_report(specs)

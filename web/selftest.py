@@ -421,7 +421,7 @@ def main():
     check("真材质底图批处理入口拒绝空机位", st == 400 and "机位" in json.loads(body).get("error", ""))
     check("千问真材质底图为可选项且逐机位引用",
           'id="qwenBaseSelect"' in app_html and
-          'await ensureProductBases(sku,views,selectedMaterial,selectedColor,selectedStyle)' in app_js and
+          'await ensureProductBases(sku,views,selectedMaterial,selectedColor,selectedStyle,' in app_js and
           'input_kind:state.sourceType==="image"?"photo":productBases?"product_base":"clay"' in app_js)
     check("千问固定种子可用于同条件步数对照且非法值被阻断",
           'id="qwenSeed"' in app_html and
@@ -449,7 +449,7 @@ def main():
           'const COMMON_VIEWS = [...SIX_VIEWS,"3q4_left","3q4_right"]' in app_js and
           "async function ensureRequiredPasses(" in app_js and
           'await post("/api/ui/pass/batch"' in app_js and
-          'await ensureRequiredPasses(sku,views,mode,experimental)' in app_js and
+          'await ensureRequiredPasses(sku,views,mode,experimental,' in app_js and
           '$("viewPickCommon").addEventListener' in app_js)
     check("千问预检不受稳定引擎离线误阻断",
           'if(!experimental&&!state.comfy.online)' in app_js)

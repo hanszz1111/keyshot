@@ -1336,16 +1336,16 @@ function buildPayload(sku,view,variant,mode,series=null,productBases=null,produc
       ?"实验引擎需要一张产品图片作为输入，请先上传产品图片。"
       :`实验引擎需要「${VIEW_ZH[view]||view}」的白模截图（clay.png），该机位还没有，请先生成它的结构图。`);
     const linked=!!series&&view!==series.anchor_view;
-    const identity=`One physical industrial product. Main body ${material.prompt}, exact colour ${color}, ${material.texture.kind} texture at ${material.texture.scale} scale in ${material.texture.direction} direction, process ${material.process}. Keep this CMF assignment on the same physical surfaces across all camera views; never swap materials or colours between parts.`;
+    const identity=`One physical industrial product. Main body: ${material.prompt}, colour ${color}, ${material.texture.kind} texture at ${material.texture.scale} scale in ${material.texture.direction} direction, process ${material.process}. Apply this CMF to the same physical surfaces in every view.`;
     const qwenPositive=[
-      `Professional product photograph of ${sku}, ${VIEW_EN[view]||view}.`,
+      `Edit <image1> into a high-quality product photograph of ${sku}, ${VIEW_EN[view]||view}.`,
       linked
-        ?"<image1> is the target camera and geometry, including any supplied deterministic CMF colour zones: preserve its silhouette, part count, openings, hole positions and visible sides. <image2> is the same product from another angle: transfer ONLY product identity, material placement, exact colours, texture and design language. Do not copy <image2>'s camera angle or geometry over <image1>."
-        :"Use the input image as the target camera and geometry; if it contains deterministic CMF colour zones, preserve their part boundaries. Preserve silhouette, part count, openings, hole positions and visible sides.",
+        ?"<image1> fixes the target camera and geometry. <image2> shows the same product from another angle and is only a reference for product identity and CMF; keep <image1>'s view."
+        :"<image1> fixes the target camera, geometry and visible part boundaries.",
       identity,design?"":lighting+".",design?"":style.text+".",
       productBases
-        ?"<image1> is a CAD-geometry render with assigned physical materials. Preserve its product silhouette, holes, actual part boundaries and material placement; only refine plausible surface micro-detail and lighting. Never redesign the product or move a material to another part."
-        :"Treat the dark structural lines and colour-zone boundaries in <image1> as fixed product geometry and parting lines. Keep each line in its original location; do not add or remove seams. Photorealistic material response and sharp focus. Do not invent controls, seams, text or logos.",
+        ?"<image1> already shows assigned physical materials; refine only plausible surface micro-detail and lighting."
+        :"Treat the structural lines and colour-zone boundaries in <image1> as existing parting lines. Render realistic material response and sharp focus.",
       design&&useRef?refLine:"",
       description?`User's design requirements (retain exact intent): ${description}`:""
     ].filter(Boolean).join(" ");

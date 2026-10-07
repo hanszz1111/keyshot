@@ -37,6 +37,23 @@ def align_up(v, m):
     return -(-int(v) // m) * m
 
 
+def mask_foreground(mask_img):
+    """从掩膜图取二值前景。
+
+    ★ 2026-10-07 修：不能用 `convert("L")`。
+      amask.png 的前景是**有色灰度值**（实测 RGB≈[206,20,20]），而底色是**近黑色**。
+      `convert("L")` 走 ITU-R 601 亮度权重 `0.299R+0.587G+0.114B`，把这个红前景
+      压成 206*0.299+20*0.587+20*0.114 ≈ **75.6** —— 低于 127 阈值，直接判成背景。
+      结果 `--auto-bbox` 找不到前景 → 报「掩膜内没有前景像素」（至少不会静默错）；
+      但如果用户手工给了 bbox，掩膜本身仍会被 NEAREST 缩放，缩放后 L 通道同样被压低，
+      拖累后续合成判定。
+      amask 的语义是「白/亮=物体」，工程上的口径是「各通道取最大值」而不是亮度加权
+      （与项目记忆里「mask 在 RGB 通道、不能用 alpha」同一类坑）。
+    """
+    arr = np.asarray(mask_img.convert("RGB"))
+    return arr.max(axis=2)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="roi_crop.py", description="ROI 局部重绘准备")
     ap.add_argument("--bbox", nargs=4, type=int, metavar=("X0", "X1", "Y0", "Y1"),
@@ -82,7 +99,7 @@ def main(argv=None):
     if args.bbox:
         x0, x1, y0, y1 = args.bbox
     elif args.auto_bbox:
-        m = np.asarray(src["mask"].convert("L"))
+        m = mask_foreground(src["mask"])
         ys, xs = np.nonzero(m > 127)
         if not xs.size:
             raise SystemExit("掩膜里没有前景像素，无法自动取外接框")

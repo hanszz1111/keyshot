@@ -1087,6 +1087,57 @@ def load_design_presets():
     return {"presets": presets, "negative_common": common}
 
 
+NEGATIVE_COMMON_MARK = "invented ventilation holes"
+
+
+def payload_negative_common(payload):
+    """载荷里是否已经带过共用负面词。"""
+    return NEGATIVE_COMMON_MARK in str(payload.get("negative") or "")
+
+
+def apply_negative_common(payload, canary=True):
+    """共用负面约束只加一次。
+
+    ★ 为什么需要这个函数（2026-10-07 实测）：
+      「设计预设」的负面词由 apply_design() 拼接；但**没选设计预设**时，
+      前端 buildPayload() 只用 app.js 的 NEGATIVE 常量 —— design_presets.json 里
+      那 10 条工业品专用的负面约束（臆造通风孔/螺钉/分模线/标签、玩具塑料感…）
+      **完全不会生效**。而这几条恰好对着当前最痛的「AI 臆造 CAD 中不存在的结构」。
+
+    canary=False 用于 apply_design() 内部调用：那时载荷里只有设计预设自己的
+    negative（不含 negative_common），条件判断会误判，所以由调用方直接把结果写回。
+
+    ★ 语义护栏：negative 出现在**载荷里**却为空，说明调用方漏了这一步 ——
+      宁可显式报错，也不要静默出图（SDXL/CN/inpaint 三个工作流把 negative 引到
+      真实的负面提示词节点，空串 = 完全没有负面约束）。
+    """
+    if "negative" in payload and not str(payload.get("negative") or "").strip():
+        if canary:
+            return False
+        raise RuntimeError("载荷缺少负面提示词，已停止提交以免产出无约束图片")
+    if canary and payload_negative_common(payload):
+        return False
+    negative = str(payload.get("negative") or "").strip()
+    body = _payload_negative_parts(payload)
+    if not body:
+        return False
+    merged = (negative + (", " if negative else "") + ", ".join(body)).strip()
+    if merged == negative:
+        return False
+    payload["negative"] = merged
+    return True
+
+
+def _payload_negative_parts(payload):
+    """除共用负面词外，本轮还想补进负面提示词的工业品约束。"""
+    parts = []
+    for value in (load_design_presets().get("negative_common") or []):
+        value = str(value).strip()
+        if value and value not in parts:
+            parts.append(value)
+    return parts
+
+
 def apply_design(payload):
     """把设计预设的提示词片段并入载荷。返回 (预设名, 错误)。
 
@@ -1108,11 +1159,14 @@ def apply_design(payload):
     neg = (payload.get("negative") or "").strip()
     extra_pos = (preset.get("prompt") or "").strip()
     extra_neg = [str(v) for v in (preset.get("negative") or [])]
-    extra_neg += [str(v) for v in (data.get("negative_common") or [])]
+    # ★ 2026-10-07 修：这里**只**拼设计预设自己的负面词。
+    #   共用负面约束（negative_common）自本次起由 apply_negative_common() 统一负责
+    #   （幂等，且不选预设时也生效）。此前两处都拼 → 共用词重复出现 2 次。
     if extra_pos:
         payload["positive"] = (pos + " " + extra_pos).strip()
     if extra_neg:
         payload["negative"] = (neg + (", " if neg else "") + ", ".join(extra_neg)).strip()
+    apply_negative_common(payload, canary=False)
     meta["design"] = did
     meta["design_name"] = preset.get("name") or did
     payload["_meta"] = meta
@@ -1872,6 +1926,21 @@ def comfy_submit(tid):
     if design_err:
         raise RuntimeError(design_err)
     validate_cmf_task(t, payload)
+    # ★ 2026-10-07：提交前核对提示词两路都在，缺一路就显式报错。
+    #   三个 SDXL 工作流把 positive/negative 分别引到真实的
+    #   CONDITIONING 节点；空字符串不会报错，只会静默出一张**没有负面约束**
+    #   （或没有正向描述）的图 —— 比报错难查得多。
+    _missing = [key for key in ("positive", "negative")
+                if not str(payload.get(key) or "").strip()]
+    if _missing:
+        raise RuntimeError("任务缺少 %s 提示词，已停止提交以免产出无约束图片（请重新发起）"
+                           % "、".join(_missing))
+    # ★ 2026-10-07：共用负面约束（工业品臆造件）对**所有**出图生效，不再只在选了
+    #   设计预设时才有。放在这里是因为要排在两条来源之后：
+    #   ① apply_design() 已把设计预设自己的 negative 拼进去（并顺手补过一次共用词）；
+    #   ② validate_cmf_task() 已把 CMF 部位清单拼进 positive。
+    #   幂等：已带过就不重复追加。
+    apply_negative_common(payload)
     # 引擎分流（v3.5）：实验引擎与稳定链路完全分开 —— 不同端口、不同工作流、不同参数。
     _eng = (payload.get("_meta") or {}).get("engine_id") or "sdxl_controlled"
     if _eng != "sdxl_controlled":

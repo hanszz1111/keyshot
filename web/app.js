@@ -45,6 +45,12 @@ const NEGATIVE = "blurry, low quality, warped geometry, extra parts, distorted p
 // 白模/灰模截图专用负面词：抑制「保持灰色未上材质」这一最常见失败模式（2026-09-27 新增）
 const NEGATIVE_CLAY = ", white unpainted plastic, bare grey model, clay render, untextured surface, flat unlit shading, raw 3D viewport screenshot, no material";
 
+// ★ 图片改图（mode="image"）的收尾句。抽成常量是因为下面的白模分支要用 replace() 改写它 ——
+//   写死的字符串一旦与这里不同步，replace 会静默不生效（2026-10-07 之前就是这样：
+//   数组里只有一句、没有 "Retain its camera angle" 那半句，导致「白模→成品」的改写和
+//   NEGATIVE_CLAY 一起被静默跳过，白模截图会带着「保持灰色」的负面约束去出图）。
+const IMAGE_MODE_LINE = "Use the input product image as the primary composition and identity. Retain its camera angle, proportions, silhouette and component layout as closely as possible. Do not invent controls, openings, logos or text.";
+
 const ACCEPT_PASS = new Set(["png","jpg","jpeg","webp","bmp"]);
 const ACCEPT_MODEL = new Set(["blend","glb","gltf","obj","stl","fbx","stp","step","3dm"]);
 const STANDARD_VIEWS = ["front","3q4_left","3q4_right","side"];
@@ -582,8 +588,8 @@ function renderDesignInfo(){
   for(const button of document.querySelectorAll("[data-style]"))button.disabled=!!d;
   $("lightSelect").disabled=!!d;
   el.textContent=d
-    ?`${d.summary} 已统一背景与成图灯光；手动灯光暂不参与 AI 出图，参考图只借用配色。保形底图仍用固定检查光。`
-    :"只调整布光、背景、反射与阴影的表达方式，不会改变产品结构。";
+    ?`${d.summary} 已统一背景与成图灯光；手动灯光暂不参与 AI 出图，参考图只借用配色。保形底图仍用固定检查光。选不选都会压制臆造孔位/螺钉/分模线/标签。`
+    :"只调整布光、背景、反射与阴影的表达方式，不会改变产品结构。无论是否选择，都会统一压制 AI 臆造孔位、螺钉、分模线与文字标识。";
 }
 function updateBodyCmfInfo(){
   const preset=selectedCmf();if(!preset)return;
@@ -1304,14 +1310,18 @@ function buildPayload(sku,view,variant,mode,series=null,productBases=null,produc
     design?"Premium commercial product photography, realistic material response, accurate camera perspective and crisp silhouette.":"Premium commercial product photography, realistic material response, accurate camera perspective, crisp silhouette, fine controlled highlights, clean contact shadow.",
     description?`User's design requirements (retain exact intent): ${description}`:"",
     refLine,
-    mode==="controlled"?"Follow the supplied depth map for the product silhouette and proportions. Do not invent openings, controls or markings.":mode==="image"?"Use the input product image as the primary composition and identity. Retain its camera angle, proportions, silhouette and component layout as closely as possible. Do not invent controls, openings, logos or text.":"Creative concept exploration; product geometry is not guaranteed."
-  ].filter(Boolean).join(" ");
+    mode==="controlled"?"Follow the supplied depth map for the product silhouette and proportions. Do not invent openings, controls or markings.":mode==="image"?IMAGE_MODE_LINE:"Creative concept exploration; product geometry is not guaranteed."
+  ].filter(Boolean);
+  // ★ 图片改图的收尾句是**最后一个非空片段**（.filter(Boolean) 已丢掉空项）。
+  //   下面「白模→成品」的改写按这个下标定位，因此必须先记住它，再拼成字符串。
+  const closingAt=positive.length-1;
+  const positiveText=positive.join(" ");
   const iadapterOn=!!(state.comfy&&state.comfy.ipadapter_ok);
   const refApplied=useRef?(iadapterOn&&!design?"ipadapter+prompt":"prompt_palette_only"):null;
   const dim=resolveOutputSize(view);
   const qualityKey=($("qualitySelect")||{}).value||"standard";
   const q=QUALITY[qualityKey]||QUALITY.standard;
-  const payload={positive,negative:NEGATIVE,seed:(Math.floor(Date.now()/1000)+variant)%2147483647,
+  const payload={positive:positiveText,negative:NEGATIVE,seed:(Math.floor(Date.now()/1000)+variant)%2147483647,
     width:dim.width,height:dim.height,
     _meta:{sku,view,variant,mode,ui_version:"2.0",engine_id:currentEngine(),style:state.style,description,
       design:design?.id||"",design_signature:design?.signature||"",
@@ -1380,9 +1390,15 @@ function buildPayload(sku,view,variant,mode,series=null,productBases=null,produc
     // 白模/灰模截图：提示词要明确「把它变成有材质的成品」，负面词压住「保持灰色」
     const an=analysisOfSource();
     if(an&&an.isClay){
-      payload.positive=payload.positive.replace(
-        "Use the input product image as the primary composition and identity.",
-        "The input is an unpainted clay/grey 3D model screenshot on a dark background. Convert it into a finished, fully materialised product: apply real surface materials, colour and finish to every surface. Use its silhouette and component layout as the primary composition and identity.");
+      // ★ 2026-10-07 修：旧写法对整串做 replace，而数组里那句与待替换文案不一致
+      //   → 改写和 NEGATIVE_CLAY **双双静默失效**（白模截图带着「保持灰色」的
+      //   负面约束去出图）。现在按**最后一个片段**（图片改图的收尾句）做结构化替换，
+      //   并做**必达校验**：万一将来文案再变，显式报错而不是悄悄退化成旧行为。
+      const parts=positive.slice();
+      if(mode!=="image"||parts[closingAt]!==IMAGE_MODE_LINE)
+        throw new Error("内部错误：图片改图收尾句位置已变更，白模转换改写失效，请更新 app.js");
+      parts[closingAt]="The input is an unpainted clay/grey 3D model screenshot on a dark background. Convert it into a finished, fully materialised product: apply real surface materials, colour and finish to every surface. Use its silhouette and component layout as the primary composition and identity.";
+      payload.positive=parts.join(" ");
       payload.negative=NEGATIVE+NEGATIVE_CLAY;
       payload._meta.input_kind="clay";
     }else{

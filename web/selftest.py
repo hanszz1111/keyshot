@@ -289,6 +289,40 @@ def main():
     check("八面任务不混用修改前后的设计语言",
           "已修改" in (S.apply_design(_pd4)[1] or "") and _pd4["positive"] == "X")
 
+    # ★ v3.23：共用负面约束对**所有**出图生效（不再只在选了设计预设时）
+    _nc = dd.get("negative_common") or []
+    _pn = {"positive": "X", "negative": "blurry, low quality"}
+    _added = S.apply_negative_common(_pn)
+    check("未选设计预设时也补上工业品共用负面约束（压制臆造孔位/螺钉/分模线）",
+          _added is True and all(word in _pn["negative"] for word in _nc)
+          and _pn["negative"].startswith("blurry, low quality"))
+    check("共用负面约束幂等（重复提交不叠加）",
+          S.apply_negative_common(_pn) is False and _pn["negative"].count(_nc[0]) == 1)
+    _pn2 = {"positive": "X", "negative": "blurry", "_meta": {}}
+    S.apply_design(_pn2)          # 未选预设：原样
+    S.apply_negative_common(_pn2)  # 提交路径补共用词
+    check("未选预设 + 提交路径：负面词恰好补一次",
+          _pn2["negative"].count(_nc[0]) == 1 and all(w in _pn2["negative"] for w in _nc))
+    # ★ 必须挑一个 negative 里**不含** negative_common 的预设，判据才有意义
+    #   （精密仪器等的 negative 自带 invented ventilation holes，会与共用词撞车）
+    _pd_clean = next((p for p in dp if not any(w in (p.get("negative") or []) for w in _nc)), None)
+    _pn3 = {"positive": "X", "negative": "blurry",
+            "_meta": {"design": (_pd_clean or dp[0])["id"]}}
+    S.apply_design(_pn3)
+    check("选了设计预设：共用负面约束不重复拼接",
+          S.apply_negative_common(_pn3) is False and _pn3["negative"].count(_nc[0]) == 1,
+          "用预设 %s" % (_pd_clean or dp[0])["name"])
+    try:
+        S.apply_negative_common({"positive": "X", "negative": ""}, canary=False)
+        _empty_guarded = False
+    except RuntimeError as exc:
+        _empty_guarded = "负面提示词" in str(exc)
+    check("空负面提示词显式报错（不静默产出无约束图片）", _empty_guarded)
+    _pn4 = {"positive": "X"}
+    S.apply_negative_common(_pn4)
+    check("载荷无 negative 键时不报错（可用于只带正向的调用方）",
+          "negative" in _pn4 and all(w in _pn4["negative"] for w in _nc))
+
     # ---- v3.5：出图引擎注册表 + engine_id 兼容性契约（不需要 GPU / 实验实例）----
     st, body = req("GET", "/api/renderers")
     rd = json.loads(body)

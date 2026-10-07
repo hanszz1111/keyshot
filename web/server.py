@@ -1075,8 +1075,16 @@ def load_design_presets():
     except (OSError, ValueError):
         return {"presets": [], "negative_common": []}
     presets = data.get("presets")
-    return {"presets": presets if isinstance(presets, list) else [],
-            "negative_common": data.get("negative_common") or []}
+    common = data.get("negative_common") or []
+    if not isinstance(presets, list):
+        presets = []
+    presets = [preset for preset in presets if isinstance(preset, dict)]
+    for preset in presets:
+        material = {"preset": {k: v for k, v in preset.items() if k != "signature"},
+                    "negative_common": common}
+        preset["signature"] = hashlib.sha256(json.dumps(
+            material, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    return {"presets": presets, "negative_common": common}
 
 
 def apply_design(payload):
@@ -1094,6 +1102,8 @@ def apply_design(payload):
     preset = next((p for p in data["presets"] if p.get("id") == did), None)
     if not preset:
         return None, "未知的设计预设「%s」" % did
+    if meta.get("design_signature") and meta["design_signature"] != preset["signature"]:
+        return None, "设计预设在任务创建后已修改，请刷新页面并重新建立整组任务"
     pos = (payload.get("positive") or "").strip()
     neg = (payload.get("negative") or "").strip()
     extra_pos = (preset.get("prompt") or "").strip()
@@ -2860,6 +2870,15 @@ def product_base_fresh(spec):
     return os.path.isfile(path) and os.path.getsize(path) > 0 and _png_size(path) == tuple(spec["resolution"])
 
 
+def product_base_digest(path):
+    """Bind a scene report to the actual image bytes, not just its dimensions."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _run_product_base_once(spec, src, exe):
     render_src = src
     if os.path.splitext(src)[1].lower() in (".stp", ".step") and not blender_has_stepper():
@@ -2975,14 +2994,17 @@ def _write_product_scene_report(specs):
     sku = specs[0]["scheme"]["sku"]
     rel = "_成品底图/%s/%s_场景报告.json" % (sku, scene_id)
     path = os.path.join(PRODUCT_BASE_DIR, sku, scene_id + "_场景报告.json")
-    report = {"scene_id": scene_id, "sku": sku, "model_sha256": specs[0]["scheme"]["fingerprint"],
+    report = {"schema_version": 2, "scene_id": scene_id, "sku": sku,
+              "model_sha256": specs[0]["scheme"]["fingerprint"],
               "cmf_version": specs[0]["scheme"]["version"], "lighting": "blender-pass-studio-v1",
               "body_cmf": specs[0]["body_cmf"], "body_color": specs[0]["body_color"],
               "style": specs[0]["style"],
               "checks": {"same_scene": len({s["scene_id"] for s in specs}) == 1,
                          "all_png_dimensions": all(product_base_fresh(s) for s in specs)},
               "views": {s["rel"].split("/")[2]: {"image": s["rel"], "camera": s["camera"],
-                                                "resolution": s["resolution"]} for s in specs}}
+                                                "resolution": s["resolution"],
+                                                "sha256": product_base_digest(s["path"]) if product_base_fresh(s) else ""}
+                        for s in specs}}
     if not all(report["checks"].values()):
         raise RuntimeError("八面场景检查未通过，缺少机位或底图尺寸不匹配")
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -3008,7 +3030,8 @@ def latest_product_scene(sku):
         try:
             with open(path, "r", encoding="utf-8") as stream:
                 report = json.load(stream)
-            if report.get("sku") != sku or not re.fullmatch(r"[0-9a-f]{16}", report.get("scene_id", "")):
+            if (report.get("schema_version") != 2 or report.get("sku") != sku
+                    or not re.fullmatch(r"[0-9a-f]{16}", report.get("scene_id", ""))):
                 continue
             outputs = {}
             for view, item in (report.get("views") or {}).items():
@@ -3018,6 +3041,9 @@ def latest_product_scene(sku):
                     break
                 png = os.path.join(ASSETS, rel.replace("/", os.sep))
                 if _png_size(png) != tuple(item.get("resolution") or []):
+                    break
+                if (not re.fullmatch(r"[0-9a-f]{64}", str(item.get("sha256") or ""))
+                        or product_base_digest(png) != item["sha256"]):
                     break
                 current = product_base_spec(sku, view, report.get("body_cmf"),
                                             report.get("body_color"), report.get("style"))
@@ -3051,22 +3077,33 @@ def start_product_base_batch(sku, views, body_cmf, body_color, style):
         _pass_state = {"status": "running", "kind": "product_base", "sku": sku,
                        "view": ",".join(views), "scene_id": specs[0]["scene_id"],
                        "message": "正在同一产品场景中生成真材质底图…",
-                       "batch": {"total": len(specs), "index": 0, "done": [], "failed": []},
+                       "batch": {"total": len(specs), "index": 0, "cached": 0, "done": [], "failed": []},
                        "outputs": {}, "started_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
     def worker():
         global _pass_state
         outputs, errors = {}, []
+        cached = 0
         report_rel = ""
         try:
             if len(specs) > 1:
                 cached = sum(product_base_fresh(spec) for spec in specs)
+                with _pass_lock:
+                    _pass_state["batch"]["index"] = cached
+                    _pass_state["batch"]["cached"] = cached
+                    _pass_state["message"] = "已复用 %d/%d 个机位，正在生成其余保形图" % (cached, len(specs))
                 def on_progress(completed):
                     with _pass_lock:
                         _pass_state["batch"]["index"] = min(len(specs), cached + completed)
                         _pass_state["message"] = "同一场景已渲染 %d/%d 个机位" % (min(len(specs), cached + completed), len(specs))
                 _run_product_base_scene(specs, src, exe, on_progress)
-            elif not product_base_fresh(specs[0]):
+            elif product_base_fresh(specs[0]):
+                cached = 1
+                with _pass_lock:
+                    _pass_state["batch"]["index"] = 1
+                    _pass_state["batch"]["cached"] = 1
+                    _pass_state["message"] = "已复用保形图，正在核验场景报告"
+            else:
                 _run_product_base_once(specs[0], src, exe)
             for spec in specs:
                 view = spec["rel"].split("/")[2]
@@ -3082,7 +3119,8 @@ def start_product_base_batch(sku, views, body_cmf, body_color, style):
                            "sku": sku, "view": ",".join(views), "scene_id": specs[0]["scene_id"],
                            "report": report_rel, "outputs": outputs if not errors else {},
                            "message": "；".join("%s：%s" % (e["view"], e["reason"]) for e in errors) if errors else "真材质底图已就绪",
-                           "batch": {"total": len(specs), "index": len(specs), "done": list(outputs), "failed": errors},
+                           "batch": {"total": len(specs), "index": len(specs), "cached": cached,
+                                     "done": list(outputs), "failed": errors},
                            "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")}
 
     threading.Thread(target=worker, daemon=True).start()

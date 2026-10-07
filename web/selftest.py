@@ -269,6 +269,10 @@ def main():
     _ids = [p["id"] for p in dp]
     check("设计预设 ID 唯一且都带背景与阴影定义",
           len(_ids) == len(set(_ids)) and all(p.get("background") and p.get("shadow") for p in dp))
+    check("设计预设有稳定签名和对应保形背景",
+          all(len(p.get("signature", "")) == 16 and
+              p.get("render_style") in ("studio", "white", "dark") and
+              p.get("render_light") in ("soft", "top", "dramatic", "natural") for p in dp))
     _pd = {"positive": "BASE", "negative": "blurry", "_meta": {"design": _ids[0]}}
     _dn, _de = S.apply_design(_pd)
     check("apply_design 把预设提示词并进正/负面（后端合并，前端只传 id）",
@@ -280,6 +284,10 @@ def main():
     _pd3 = {"positive": "X", "negative": "Y", "_meta": {"design": "no_such_id"}}
     check("未知设计预设报中文错误而不是静默忽略",
           "未知" in (S.apply_design(_pd3)[1] or ""))
+    _pd4 = {"positive": "X", "negative": "Y",
+            "_meta": {"design": _ids[0], "design_signature": "outdated"}}
+    check("八面任务不混用修改前后的设计语言",
+          "已修改" in (S.apply_design(_pd4)[1] or "") and _pd4["positive"] == "X")
 
     # ---- v3.5：出图引擎注册表 + engine_id 兼容性契约（不需要 GPU / 实验实例）----
     st, body = req("GET", "/api/renderers")
@@ -421,7 +429,7 @@ def main():
     check("真材质底图批处理入口拒绝空机位", st == 400 and "机位" in json.loads(body).get("error", ""))
     check("千问真材质底图为可选项且逐机位引用",
           'id="qwenBaseSelect"' in app_html and
-          'await ensureProductBases(sku,views,selectedMaterial,selectedColor,selectedStyle)' in app_js and
+          'await ensureProductBases(sku,views,selectedMaterial,selectedColor,selectedStyle,' in app_js and
           'input_kind:state.sourceType==="image"?"photo":productBases?"product_base":"clay"' in app_js)
     check("千问固定种子可用于同条件步数对照且非法值被阻断",
           'id="qwenSeed"' in app_html and
@@ -449,7 +457,7 @@ def main():
           'const COMMON_VIEWS = [...SIX_VIEWS,"3q4_left","3q4_right"]' in app_js and
           "async function ensureRequiredPasses(" in app_js and
           'await post("/api/ui/pass/batch"' in app_js and
-          'await ensureRequiredPasses(sku,views,mode,experimental)' in app_js and
+          'await ensureRequiredPasses(sku,views,mode,experimental,' in app_js and
           '$("viewPickCommon").addEventListener' in app_js)
     check("千问预检不受稳定引擎离线误阻断",
           'if(!experimental&&!state.comfy.online)' in app_js)

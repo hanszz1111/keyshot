@@ -11,9 +11,12 @@ const start = source.indexOf("function formatProgressTime(");
 const end = source.indexOf("function updateRenderProgress(", start);
 assert.ok(start >= 0 && end > start, "progress time helpers must remain testable");
 const now = 100_000;
+const classes = new Set();
+const box = { hidden: true, classList: { add: name => classes.add(name), remove: name => classes.delete(name) } };
+let timerCallback = null;
 const helpers = vm.runInNewContext(
-  `${source.slice(start, end)}; ({ formatProgressTime, progressClock })`,
-  { Date: { now: () => now } }
+  `${source.slice(start, end)}; ({ formatProgressTime, progressClock, showProgressBox, settleProgressBox })`,
+  { Date: { now: () => now }, $: () => box, setTimeout: callback => { timerCallback = callback; return 1; }, clearTimeout: () => {} }
 );
 
 assert.equal(helpers.formatProgressTime(0), "0 分 00 秒");
@@ -23,4 +26,11 @@ assert.match(helpers.progressClock(40_000, 0, 8), /剩余时间估算中/);
 assert.match(helpers.progressClock(40_000, 4, 8, 4), /剩余时间估算中/);
 assert.match(helpers.progressClock(40_000, 2, 8), /本阶段约剩 3 分 00 秒/);
 assert.match(helpers.progressClock(40_000, 8, 8), /正在核验/);
-console.log("进度时间估算：7/7 通过");
+helpers.showProgressBox();
+assert.equal(box.hidden, false);
+assert.equal(classes.has("is-active"), true);
+helpers.settleProgressBox();
+assert.equal(classes.has("is-active"), true, "finished progress remains visible briefly");
+timerCallback();
+assert.equal(classes.has("is-active"), false);
+console.log("进度时间与可见性：11/11 通过");

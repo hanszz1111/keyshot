@@ -20,8 +20,15 @@
   | `node web/test_progress_time.cjs` | 进度与剩余时间估算 | Node |
   | `python web/test_product_base.py` | 保形底图场景契约 | 任意 Python（仅标准库） |
   | `python web/test_design_consistency.py` | 设计预设签名与冲突防护 | 任意 Python（仅标准库） |
+  | `python web/test_qwen_prompt.py` | 千问 CFG=1 正向保形护栏 | 任意 Python（仅标准库） |
+  | `python web/test_controlled_pass_view.py` | 结构图机位/尺寸/画幅绑定校验 | 任意 Python（仅标准库） |
+  | `python web/test_ab_experiment.py` | A/B 实验脚本的「单变量」方法学契约 | 任意 Python（仅标准库） |
   | `python web/test_cmf_guide.py` | CMF 配色引导图 | **需带 numpy**（ComfyUI 的 `python_embeded` 可用） |
   | `python scripts/roi_crop.py --help` | ROI 裁切依赖自检 | **需带 numpy/Pillow** |
+
+- 画质对照实验：`python scripts/qwen_ab_experiment.py --plan` 先看计划，再用 `--preset prompt|cfg` 实跑。
+  ★ 必须用 **ComfyUI 的 `python_embeded`**（要走 CMF 引导图，需 numpy）。脚本不写任务库、
+  产物落 `outputs/_AB实验/<预设>/`；幂等，中断可直接重跑续做。详见该文件头部的说明。
 - 启停脚本改动：在 Windows 测试启动、停止、重复启动和端口被占用的情况；注意 `.bat/.ps1` 的编码、BOM 和 CRLF 约束，详见 [GITHUB.md](GITHUB.md)。
 - 模型、机位或成图质量改动：至少保存“输入模型 → 机位白模/深度/法线 → 最终成图”的同机位对照，不只报告任务成功率。
 - 公开提交前检查差异，确保不含 `assets/`、`outputs/`、`.env`、任务数据库、客户图、密钥或本机私有路径。

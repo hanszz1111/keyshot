@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""A/B 实验脚本的方法学契约（2026-10-08）
+
+为什么值得单测：`scripts/qwen_ab_experiment.py` 的全部价值在于**一次只变一个变量**。
+arm 之间多出一个变量的差异肉眼看不出来，但会让整轮实验的结论不可归因 ——
+这正是本项目反复踩到的那一类缺陷（「写了但没生效」「改了但分不清是哪一处」）。
+所以把「相邻臂只差一个字段」钉成断言。
+
+只依赖标准库：脚本本身与 server.py 顶层都只用标准库（PIL 在函数内延迟导入），
+因此托管 Python 即可运行，不需要 numpy。
+"""
+import os
+import sys
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+sys.path.insert(0, os.path.join(ROOT, "scripts"))
+sys.path.insert(0, HERE)
+import qwen_ab_experiment as A  # noqa: E402
+
+
+def diff_fields(x, y):
+    """返回两个 arm 之间**不同**的字段名集合。"""
+    return {k for k in ("variant", "cfg", "guard", "negative")
+            if getattr(x, k) != getattr(y, k)}
+
+
+class ArmComparabilityTest(unittest.TestCase):
+    def test_prompt_preset_decomposes_into_two_single_variable_steps(self):
+        """A→B0 只动文案；B0→B 只动护栏。
+
+        v3.29 一次改了两件事（文案变短 + 新增正向护栏）。只比 A/B 的话，
+        「无差异」无法区分是哪一件在起作用，所以必须能把两步拆开。
+        """
+        arms = {a.key: a for a in A.preset_arms("prompt")}
+        self.assertEqual(set(arms), {"A", "B0", "B"})
+        self.assertEqual(diff_fields(arms["A"], arms["B0"]), {"variant"})
+        self.assertEqual(diff_fields(arms["B0"], arms["B"]), {"guard"})
+
+    def test_prompt2_matches_the_written_plan(self):
+        """prompt2 是方案原文的两臂版（旧 vs 新），保留以便只跑 8 张。"""
+        arms = {a.key: a for a in A.preset_arms("prompt2")}
+        self.assertEqual(set(arms), {"A", "B"})
+        self.assertEqual(arms["A"].variant, "legacy")
+        self.assertFalse(arms["A"].guard)
+        self.assertEqual(arms["B"].variant, "new")
+        self.assertTrue(arms["B"].guard)
+
+    def test_cfg_preset_isolates_cfg_and_negative(self):
+        """四条臂，相邻两条只差一个变量。
+
+        C0→C1 只动负面词（CFG=1.0）—— 这是**决定性对照**：若官方「CFG=1 时负面
+        分支不参与生成」成立，两张图应当几乎完全一致。
+        C1→C2 只动 CFG。
+        C2→C3 只动负面词（CFG=1.5）—— 若负面词在 CFG>1 生效，这里应非零。
+        提示词必须全程一致（都用 new 基础版、都不加护栏），否则 CFG 不是唯一变量。
+        """
+        arms = {a.key: a for a in A.preset_arms("cfg")}
+        self.assertEqual(set(arms), {"C0", "C1", "C2", "C3"})
+        self.assertEqual(diff_fields(arms["C0"], arms["C1"]), {"negative"},
+                         "C0→C1 必须只差负面词，才能证明 CFG=1 下它是否生效")
+        self.assertEqual(diff_fields(arms["C1"], arms["C2"]), {"cfg"})
+        self.assertEqual(diff_fields(arms["C2"], arms["C3"]), {"negative"})
+        self.assertEqual(arms["C1"].cfg, arms["C0"].cfg,
+                         "C0/C1 必须在同一 CFG 下比较")
+        self.assertEqual(arms["C2"].cfg, arms["C3"].cfg,
+                         "C2/C3 必须在同一 CFG 下比较")
+        for a in arms.values():
+            self.assertEqual(a.variant, "new")
+            self.assertFalse(a.guard, "CFG 实验里不允许带护栏，否则与 CFG 混淆")
+
+    def test_all_presets_have_unique_keys(self):
+        for name in ("prompt", "prompt2", "cfg"):
+            keys = [a.key for a in A.preset_arms(name)]
+            self.assertEqual(len(keys), len(set(keys)), "预设 %s 的臂代号必须唯一" % name)
+
+    def test_unknown_preset_fails_loudly(self):
+        with self.assertRaises(ValueError):
+            A.preset_arms("no_such_preset")
+
+
+class PromptTextTest(unittest.TestCase):
+    def ctx(self):
+        return {
+            "sku": "样例", "color": "#3a4148", "input_kind": "cmf_guide",
+            "material": {"id": "plastic_fine_matte", "prompt": "fine-grain matte ABS plastic",
+                         "process": "注塑模具细砂纹",
+                         "texture": {"kind": "fine_grain", "scale": "fine",
+                                     "direction": "isotropic"}},
+        }
+
+    def build(self, variant, linked, guard_arm=False, input_kind="cmf_guide"):
+        arm = A.Arm("T", "测试", variant, 1.0, guard=guard_arm, negative=True)
+        ctx = self.ctx()
+        ctx["input_kind"] = input_kind
+        return A.build_positive(arm, ctx, "3q4_left" if linked else "front", linked)
+
+    def test_new_variant_uses_edit_instruction(self):
+        text = self.build("new", linked=False)
+        self.assertIn("Edit <image1> into a high-quality product photograph", text)
+        self.assertNotIn("Professional product photograph of", text)
+
+    def test_legacy_variant_uses_photograph_instruction(self):
+        text = self.build("legacy", linked=False)
+        self.assertIn("Professional product photograph of", text)
+
+    def test_linked_view_mentions_second_reference_in_both_variants(self):
+        for variant in ("legacy", "new"):
+            text = self.build(variant, linked=True)
+            self.assertIn("<image2>", text, "关联机位必须说明第二参考的作用（%s）" % variant)
+            self.assertIn("<image1>", text)
+
+    def test_new_linked_clause_forbids_copying_the_anchor_camera(self):
+        """v3.29 的重点之一：第二参考只给身份/CMF，不许把主视图相机带过来。"""
+        text = self.build("new", linked=True)
+        self.assertIn("keep <image1>'s view", text)
+
+    def test_anchor_view_never_mentions_second_reference(self):
+        for variant in ("legacy", "new"):
+            self.assertNotIn("<image2>", self.build(variant, linked=False))
+
+    def test_frozen_light_and_style_are_shared_by_both_variants(self):
+        """灯光与背景文字是**冻结项**，两版必须逐字相同，否则 A/B 混入第三个变量。"""
+        for variant in ("legacy", "new"):
+            text = self.build(variant, linked=False)
+            self.assertIn(A.LIGHT_TEXT, text)
+            self.assertIn(A.STYLE_TEXT, text)
+
+    def test_product_base_tail_replaces_clay_tail(self):
+        pb = self.build("new", linked=False, input_kind="product_base")
+        self.assertIn("already shows assigned physical materials", pb)
+        clay = self.build("new", linked=False, input_kind="cmf_guide")
+        self.assertIn("existing parting lines", clay)
+
+
+class NegativeSourceTest(unittest.TestCase):
+    def test_negative_text_comes_from_production_sources(self):
+        """负面词必须从 app.js 的 NEGATIVE 与设计库的 negative_common 取，
+        不能抄一份写死 —— 否则生产改了词，实验结论会指向一个不存在的提示词。"""
+        text = A.production_negative_text()
+        self.assertIn("blurry, low quality", text)
+        import server as S
+        for item in S.load_design_presets().get("negative_common") or []:
+            self.assertIn(item, text, "负面词缺少共用约束：%s" % item)
+
+    def test_negative_has_no_duplicates(self):
+        text = A.production_negative_text()
+        items = [x.strip() for x in text.split(",") if x.strip()]
+        self.assertEqual(len(items), len(set(items)), "负面词不应重复出现")
+
+
+if __name__ == "__main__":
+    unittest.main()

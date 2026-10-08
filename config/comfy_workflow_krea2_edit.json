@@ -1,0 +1,95 @@
+{
+  "_comment": "Krea-2 Turbo 参考图编辑（实验性 · 尚未接入引擎列表）",
+  "_why": "Krea-2 官方只发 t2i 与 style-reference 两个模板，但 style-reference 实际走的是 ref_latents 通路（TextEncodeQwenImageEditPlus + index_timestep_zero），与 Qwen-Image-Edit 同源。本工作流据此把 Krea-2 接成「按参考图编辑」，用于评估它能否替代/补充现有 Qwen 2.1 编辑链路。",
+  "_status": "未接入。config/render_defaults.json 的 render_engines 里没有对应条目，网页与 A/B 脚本都不会用到它。权重需自行下载（见 docs/千问工作流升级机会评估-20261008.md 第八节）。",
+  "_sampling": "取自官方 image_krea2_turbo_t2i_int8 模板：8 步 / CFG 1 / euler / simple / denoise 1。Krea-2 的内置 sampling shift=1.15、multiplier=1.0、latent_format=Wan21。",
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "krea2_turbo_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+      "type": "krea2",
+      "device": "default"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    }
+  },
+  "4": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "placeholder_ref.png"
+    }
+  },
+  "5": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "_comment": "把参考图编码成 ref_latents；它同时用 Qwen3-VL 描述图像并把指令拼进去 —— 这正是 Krea-2 官方 style-reference 模板用的节点。image2 留空，需要关联机位时再接。",
+    "inputs": {
+      "clip": ["2", 0],
+      "prompt": "Edit <image1> into a high-quality product photograph. <image1> fixes the target camera, geometry, part count and visible part boundaries. Preserve silhouette, openings, hole positions and the dark structural lines as the existing parting lines. One physical industrial product. Main body: fine-grain matte injection-molded ABS plastic, colour #3a4148. large softbox studio lighting, soft contact shadows. clean light-gray gradient studio background. Do not invent controls, seams, text or logos.",
+      "vae": ["3", 0],
+      "image1": ["4", 0]
+    }
+  },
+  "6": {
+    "class_type": "FluxKontextMultiReferenceLatentMethod",
+    "_comment": "官方 style-reference 模板取的就是 index_timestep_zero；Krea-2 的 model.py:327 专门处理这个分支。",
+    "inputs": {
+      "conditioning": ["5", 0],
+      "reference_latents_method": "index_timestep_zero"
+    }
+  },
+  "7": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": ["6", 0]
+    }
+  },
+  "8": {
+    "class_type": "EmptyLatentImage",
+    "_comment": "目标画布。Krea-2 模板用 1024×1024；本项目的图是 1232×752，接入前需要定画幅策略。",
+    "inputs": {
+      "width": 1024,
+      "height": 1024,
+      "batch_size": 1
+    }
+  },
+  "9": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": ["1", 0],
+      "positive": ["6", 0],
+      "negative": ["7", 0],
+      "latent_image": ["8", 0],
+      "seed": 43,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1.0
+    }
+  },
+  "10": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": ["9", 0],
+      "vae": ["3", 0]
+    }
+  },
+  "11": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": ["10", 0],
+      "filename_prefix": "krea2_edit"
+    }
+  }
+}

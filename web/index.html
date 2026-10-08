@@ -150,6 +150,19 @@
             <input id="qwenSeed" name="qwenSeed" type="number" min="1" max="2147483500" step="1" inputmode="numeric" placeholder="留空则每次自动生成">
             <p class="field-help">比较 35 / 50 步时填同一个数字；多视角会使用同一候选系列的种子，方便核对同一产品。</p>
           </div>
+          <details id="qwenAdvancedField" class="details qwen-advanced" hidden>
+            <summary>千问高级参数（对照实验）</summary>
+            <div class="details-body">
+              <label for="qwenSteps" class="field-label">采样步数（可选）</label>
+              <input id="qwenSteps" type="number" min="8" max="50" step="1" inputmode="numeric" placeholder="留空则跟随渲染质量档">
+              <p class="field-help">8–50 步。Windows 实测 35→50 步明显变慢，尚无画质提升证据。</p>
+              <label for="qwenCfg" class="field-label">提示词引导强度</label>
+              <select id="qwenCfg"><option value="1" selected>1.0 · 默认，负面词不参与</option><option value="1.5">1.5 · 实验，负面词参与、约更慢</option></select>
+              <label for="qwenAnchor" class="field-label">多视角主视图参考</label>
+              <select id="qwenAnchor"><option value="on" selected>开启 · 同组外观关联</option><option value="off">关闭 · 仅用各机位输入图作对照</option></select>
+              <p class="field-help">关闭后各机位独立出图，适合诊断主视图是否带偏侧面；不保证八面材质一致。采样器、调度器与降噪保持官方模板基线。</p>
+            </div>
+          </details>
           <div class="batch-field" id="batchField">
             <div class="batch-head"><span class="field-label">出图视角（可多选）</span><span class="batch-actions"><button type="button" class="mini-button" id="viewPickPreview">仅预览视角</button><button type="button" class="mini-button" id="viewPickStandard">4 标准</button><button type="button" class="mini-button" id="viewPickCommon">8 常用（含 3/4）</button><button type="button" class="mini-button" id="viewPickAll">全选</button><button type="button" class="mini-button" id="viewPickNone">清空</button><button type="button" class="mini-button" id="passSelectedButton">补齐所选视角结构图</button><button type="button" class="mini-button" id="passSixButton">出六视图结构图</button></span></div>
             <div class="view-checks" id="viewChecks"></div>

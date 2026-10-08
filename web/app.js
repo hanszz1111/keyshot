@@ -918,6 +918,7 @@ function applyEngineConstraints(){
   const sizeCustom=$("sizeCustom");if(sizeCustom)sizeCustom.disabled=experimental;
   $("qwenSeedField").hidden=!experimental;
   $("qwenSeed").disabled=!experimental;
+  $("qwenAdvancedField").hidden=!experimental;
   $("qwenBaseField").hidden=!experimental||state.sourceType!=="model";
   $("qwenBaseSelect").disabled=!experimental||state.sourceType!=="model";
   updateSizeHint();
@@ -928,6 +929,14 @@ function fixedQwenSeed(){
   const value=Number(raw);
   if(!Number.isInteger(value)||value<1||value>2147483500)throw new Error("固定种子须为 1–2147483500 的整数，或留空自动生成");
   return value;
+}
+function qwenAdvancedParams(){
+  const raw=$("qwenSteps").value.trim();
+  const steps=raw?Number(raw):null;
+  if(raw&&(!Number.isInteger(steps)||steps<8||steps>50))throw new Error("千问自定义步数须为 8–50 的整数，或留空跟随质量档");
+  const cfg=Number($("qwenCfg").value);
+  if(![1,1.5].includes(cfg))throw new Error("千问引导强度仅开放 1.0 与 1.5 两档");
+  return {steps,cfg,anchor:$("qwenAnchor").value==="on"};
 }
 function onEngineChange(){
   state.engineManuallySelected=true;
@@ -964,6 +973,9 @@ function renderPreflight(){
     if(!engine||!engine.available){messages.push("实验引擎当前不可用："+((engine&&engine.reason)||"未知原因"));ready=false;}
     if(engine&&engine.disabled_reason)messages.push("能力范围："+engine.disabled_reason);
     try{const seed=fixedQwenSeed();if(seed!==null)messages.push(`本次固定种子 ${seed}；可用相同种子对比质量档。`);}
+    catch(error){messages.push(error.message);ready=false;}
+    try{const advanced=qwenAdvancedParams();if(advanced.steps||advanced.cfg>1||!advanced.anchor)
+      messages.push(`实验参数：${advanced.steps||"质量档步数"} 步 / CFG ${advanced.cfg.toFixed(1)} / 主视图参考${advanced.anchor?"开启":"关闭"}。${advanced.cfg>1?"CFG 1.5 实测更慢，但画质收益未证实。":""}`);}
     catch(error){messages.push(error.message);ready=false;}
   }
   if(!item){messages.push(mode==="image"?(state.sourceType==="image"?"先上传产品图片。":"先选择产品或导入白模。"):"先选择产品或导入白模。 ");ready=false;}
@@ -1347,6 +1359,7 @@ function buildPayload(sku,view,variant,mode,series=null,productBases=null,produc
   //   不带 depth/normal/denoise/width/height —— 服务端按 render_defaults.qwen21_edit 填基线，
   //   这里只传提示词、输入图、种子与分辨率预算。
   if(isExperimentalEngine()){
+    const advanced=qwenAdvancedParams();
     // ★ 按**本次要出的机位**取输入图，不能用当前预览机位 —— 否则会出现
     //   「拿 side_left 的图去出 3q4_left 的任务」这种张冠李戴（2026-09-29 实测踩到）。
     const inputRel=productBases?.[view]||(state.sourceType==="image"
@@ -1374,7 +1387,7 @@ function buildPayload(sku,view,variant,mode,series=null,productBases=null,produc
       seed:series?(series.seed_base+variant)%2147483647:((fixedQwenSeed()??Math.floor(Date.now()/1000))+variant)%2147483647,
       source_img:inputRel,
       resolution:Number(($("sizeSelect").value||"qwen:768").split(":")[1]||768),
-      steps:QWEN_STEPS[qualityKey]||25,
+      steps:advanced.steps||QWEN_STEPS[qualityKey]||25,cfg:advanced.cfg,
       _meta:{sku,view,variant,mode:"image",ui_version:"2.0",engine_id:currentEngine(),
         design:design?.id||"",design_signature:design?.signature||"",
         style:state.style,description,quality:qualityKey,cmf_preset_id:material.id,body_color:color,cmf_texture:material.texture,
@@ -1382,7 +1395,8 @@ function buildPayload(sku,view,variant,mode,series=null,productBases=null,produc
         input_kind:state.sourceType==="image"?"photo":productBases?"product_base":"clay",
         product_scene_id:productSceneId,
         series:series?{id:series.id,anchor_view:series.anchor_view,seed_base:series.seed_base}:null,
-        experimental:true,sampling:{steps:QWEN_STEPS[qualityKey]||25,cfg:1.0},
+        experimental:true,sampling:{steps:advanced.steps||QWEN_STEPS[qualityKey]||25,cfg:advanced.cfg},
+        anchor_reference:advanced.anchor,
         reference:design&&useRef?{image:state.ref.rel,strength:state.ref.strength,
           palette:state.ref.palette.slice(0,4).map(p=>p.hex),applied:"prompt_palette_only"}:null,
         note:"千问逐机位出图：目标机位白模锁视角，主视图只辅助 CMF/产品身份；无深度 ControlNet，几何精度需人工验收。"}
@@ -1552,7 +1566,7 @@ async function generate(){
       if(state.sku!==sku||currentEngine()!==engineId||selectedCmf()?.id!==selectedMaterial||$("bodyColor").value!==selectedColor||state.style!==selectedStyle)
         throw new Error("底图生成期间产品或材质设置已改变，请确认后重新开始");
     }
-    const series=experimental&&sourceType==="model"&&views.length>1
+    const series=experimental&&sourceType==="model"&&views.length>1&&qwenAdvancedParams().anchor
       ?{id:`series-${Date.now()}-${Math.random().toString(16).slice(2,10)}`,anchor_view:views.includes("front")?"front":views[0],seed_base:fixedQwenSeed()??Math.floor(Date.now()/1000)}
       :null;
     const ordered=series?[series.anchor_view,...views.filter(v=>v!==series.anchor_view)]:views;
@@ -1809,6 +1823,9 @@ $("countSelect").addEventListener("change",()=>{
   renderPreflight();
 });
 $("engineSelect").addEventListener("change",onEngineChange);
+for(const id of ["qwenSteps","qwenCfg","qwenAnchor"]){
+  $(id).addEventListener(id==="qwenSteps"?"input":"change",renderPreflight);
+}
 $("sizeSelect").addEventListener("change",()=>{
   const isCustom=!isExperimentalEngine()&&$("sizeSelect").value==="custom";
   $("sizeCustomField").hidden=!isCustom;

@@ -159,7 +159,7 @@
           <button type="button" class="primary-button" id="generateButton" disabled>开始生成 4 张</button>
           <button type="button" class="line-button shape-batch-button" id="productSceneButton">生成所选视角的保形图</button>
           <p class="field-help">保形图由同一原模型、同一套材质和灯光生成；不调用千问，适合先检查八面的外形与配色。</p>
-          <div class="render-progress" id="renderProgress" hidden role="status" aria-live="polite"><div class="render-progress-head"><strong id="renderProgressLabel">正在准备</strong><span id="renderProgressEta">预计时间计算中</span></div><progress id="renderProgressBar" max="100" value="0"></progress><small id="renderProgressNote">进度按已完成任务计算；单张图的采样进度暂不可读取。</small></div>
+          <div class="render-progress" id="renderProgress" hidden role="region" aria-label="生成进度"><div class="render-progress-head"><strong id="renderProgressLabel">正在准备</strong><span id="renderProgressEta">预计时间计算中</span></div><progress id="renderProgressBar" max="100" value="0" aria-label="已完成进度"></progress><small id="renderProgressNote">进度按已完成任务计算；单张图的采样进度暂不可读取。</small></div>
           <p class="field-help centered">生成结果会保存到现有项目的 outputs 文件夹。</p>
         </div>
       </section>

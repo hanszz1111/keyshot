@@ -1202,8 +1202,17 @@ function progressClock(startedAt,done,total,cached=0){
   const estimate=elapsed/measured*remaining;
   return `已用 ${formatProgressTime(elapsed)} · 本阶段约剩 ${formatProgressTime(estimate)}`;
 }
+let progressDockTimer=null;
+function showProgressBox(){
+  if(progressDockTimer){clearTimeout(progressDockTimer);progressDockTimer=null;}
+  const box=$("renderProgress");box.hidden=false;box.classList.add("is-active");
+}
+function settleProgressBox(){
+  if(progressDockTimer)clearTimeout(progressDockTimer);
+  progressDockTimer=setTimeout(()=>{$("renderProgress").classList.remove("is-active");progressDockTimer=null;},12000);
+}
 function updateRenderProgress(phase,done,total,startedAt,taskStartedAt,durations){
-  const box=$("renderProgress");box.hidden=false;
+  showProgressBox();
   $("renderProgressNote").textContent="进度按已完成任务计算；单张图的采样进度暂不可读取。";
   const percent=total?Math.round(done/total*100):0;
   $("renderProgressBar").value=percent;
@@ -1216,7 +1225,7 @@ function updateRenderProgress(phase,done,total,startedAt,taskStartedAt,durations
     :`已用 ${formatProgressTime(elapsed)} · 约剩 ${formatProgressTime(remaining)}`;
 }
 function updatePreparationProgress(phase,done,total,startedAt,cached=0){
-  const box=$("renderProgress");box.hidden=false;
+  showProgressBox();
   const percent=Math.min(99,Math.round(done/Math.max(total,1)*100));
   $("renderProgressBar").value=percent;
   $("renderProgressLabel").textContent=`${phase} · ${done}/${total} 个机位（${percent}%）`;
@@ -1224,7 +1233,7 @@ function updatePreparationProgress(phase,done,total,startedAt,cached=0){
   $("renderProgressNote").textContent="准备阶段按已完成机位计算；完成核验后进入逐张生图阶段。";
 }
 function updateProductProgress(phase,done,total,startedAt,status="running",stage=null){
-  const box=$("renderProgress"),bar=$("renderProgressBar");box.hidden=false;
+  showProgressBox();const bar=$("renderProgressBar");
   const percent=status==="done"?100:Math.min(99,Math.round(done/Math.max(total,1)*100));
   bar.value=percent;
   $("renderProgressLabel").textContent=`${phase} · ${done}/${total} 个机位（${percent}%）`;
@@ -1236,6 +1245,7 @@ function updateProductProgress(phase,done,total,startedAt,status="running",stage
     ?"已完成部分不会被当作完整八面图；请查看上方错误提示。"
     :status==="done"?"已核验整组图片，可在右侧逐张点开查看。"
     :"百分比按结构图和保形图已完成的机位计算；当前单张渲染内部进度暂不可读取。";
+  if(status!=="running")settleProgressBox();
 }
 function renderTasks(){
   $("queueCount").textContent=String(state.tasks.filter(t=>t.status==="pending"||t.status==="running").length);
@@ -1583,8 +1593,8 @@ async function generate(){
       finally{clearInterval(ticker);durations.push((Date.now()-taskStarted)/1000);updateRenderProgress("正在生成",i+1,count,batchStarted,0,durations);}
     }
     announce(`${count} 张任务处理结束，请查看候选结果。`);
-    updateRenderProgress("任务已处理完毕",count,count,batchStarted,0,durations);
-  }catch(error){$("renderProgressLabel").textContent="生成中断，请查看错误提示";announce("生成中断："+errorMessage(error));}
+    updateRenderProgress("任务已处理完毕",count,count,batchStarted,0,durations);settleProgressBox();
+  }catch(error){$("renderProgressLabel").textContent="生成中断，请查看错误提示";settleProgressBox();announce("生成中断："+errorMessage(error));}
   finally{if(preparationTicker)clearInterval(preparationTicker);state.running=false;state.runCount=0;renderPreflight();await refreshTasks();}
 }
 async function executeTask(task){

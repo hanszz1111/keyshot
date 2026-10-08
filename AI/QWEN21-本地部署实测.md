@@ -319,3 +319,67 @@ qwen21_00118_.png   3q4_right   qwen21_00126_.png   3q4_right
 
 > 留痕：Windows 侧 2026-09-30 补第 9 节（用户实际使用中的三组八面候选系列实测数据）。
 > 数据来源：`config/tasks.db` 任务 #758–#775 的 `_meta.run`。按协作协议，**Windows 端签收 GPU 数据**。
+
+---
+
+## 10. 权重到底是哪种量化（2026-10-08 直接读文件头核实）
+
+§2 只记了「与官方 sha256 相同」，但没有记录**量化格式本身**。
+本节直接从 safetensors 头部与 ComfyUI 的 `comfy_quant` 元数据块读取，
+不靠文件名推断。
+
+### 10.1 权威判据：`comfy_quant` 元数据块
+
+ComfyUI 的量化检查点在每个被量化的层旁附一个名为 `*.comfy_quant` 的 U8 张量，
+内容是 **UTF-8 的 JSON**（实测 72 或 89 字节），声明该层的量化算法：
+
+| 文件 | `comfy_quant` 内容 |
+|---|---|
+| `qwen_image_2.1_int8_convrot` | `{"format": "int8_tensorwise", "convrot": true, "convrot_groupsize": 256}` |
+| `qwen3vl_8b_w4a8`（绝大多数层） | `{"format": "asym_w4a8_int8", "group_size": 16, "convrot": true, "convrot_groupsize": 256}` |
+| `qwen3vl_8b_w4a8`（`lm_head` / `embed_tokens`） | `{"format": "int8_tensorwise", "convrot": true, "convrot_groupsize": 256}` |
+
+> `convrot` = 量化前对权重做分组旋转（group size 256）以降低激活离群值对 INT8 的影响，
+> 与 `comfy-kitchen` 里的 `quantize_int8_convrot_weight` / `dequantize_int8_convrot_weight` 对应
+> （见 §0 的算子清单）。
+
+### 10.2 张量级证据
+
+| 文件 | 张量数 | 量化权重 | 伴随张量 | 未量化部分 |
+|---|---|---|---|---|
+| `qwen_image_2.1_int8_convrot` | 649 | 192 个 **I8**（满尺寸，如 `[4096,4096]`） | 192 个 F32 `weight_scale`（`[out,1]`，**逐输出通道**） | 73 个 BF16（`img_in`/`modulation`/`norm_out`/`proj_out`/时间嵌入） |
+| `qwen3vl_8b_w4a8` | 1762 | 254 个 **I8**，但形状是原维度**的一半**（如 `gate_proj [12288,2048]` ≈ 原 `[12288,4096]`）→ **两位一个字节，即 4 bit** | 252 组 `weight_codebook` F32`[16]`（**16 项码本 = 4 bit**）+ `weight_s_channel` F32`[out]`（逐通道）+ `weight_s_rel` F8_E4M3`[out,256]`（分块相对 scale） | 496 个 BF16（LayerNorm / bias 等），另有 `lm_head`/`embed_tokens` 是 INT8（`weight_scale` F32`[151936,1]`） |
+| `qwen_image_2.1_vae_bf16` | 238 | **0** | — | 全部 238 个 BF16 |
+
+### 10.3 结论
+
+**「是不是 INT8」要分开回答，三者并不一样：**
+
+- **扩散主体（UNet）：是 INT8** —— `int8_tensorwise` + 逐输出通道 scale + convrot 旋转。
+  这与文件名一致。
+- **文本编码器：不是 INT8，比 INT8 更低** —— 是 **4 bit 非对称权重（asym_w4a8，group 16，
+  码本方式）**，只有 `lm_head`/`embed_tokens` 保持 INT8。**这是本项目主动选择**：
+  §3.1 记录官方模板默认 CLIP 是 `qwen3vl_8b_int8_convrot`，本次为省显存换成了更激进的 w4a8。
+- **VAE：BF16，完全没量化**（0.63 GiB，量化收益也小）。
+
+### 10.4 完整性复核（2026-10-08 重算）
+
+| 文件 | 本机 sha256 | 官方 LFS oid | 一致 |
+|---|---|---|---|
+| `qwen_image_2.1_int8_convrot.safetensors` | `cb74113cb03faecd79611b01fd7fd642f0aa60d6f0b95086abee214d75eaa57d` | 同 | ✅ |
+| `qwen3vl_8b_w4a8.safetensors` | `7754425e55e7bea2bfde4dde59a4cc236cb44e5ee9c215ea66ef8d47012824eb` | 同 | ✅ |
+| `qwen_image_2.1_vae_bf16.safetensors` | `bb21f7473051e1ac368515dd3f2e15cd44d7a11748ee8823e1ddca3e4876b7c9` | 同 | ✅ |
+
+### 10.5 同仓库里还有这些**未下载**的官方替代件（核实于 2026-10-08）
+
+| 路径 | 说明 |
+|---|---|
+| `diffusion_models/qwen_image_2.1_bf16.safetensors` | UNet 全精度版（`89f4158d…`） |
+| `text_encoders/qwen3vl_8b_int8_convrot.safetensors` | **官方模板默认的 INT8 文本编码器**（`8bfd0f6e…`）。想回到「纯 INT8 组合」就换它 |
+| `text_encoders/qwen3vl_8b_bf16.safetensors` | 文本编码器全精度版（`68bdc82b…`） |
+| `text_encoders/qwen3.5_9b_qwen_image_2.1_pe_i2i.int8_convrot.safetensors` | **官方提示词增强器 PE-I2I**（`32707d01…`），对应方案 P2 那条 |
+| `text_encoders/qwen3.5_9b_qwen_image_2.1_pe_t2i.int8_convrot.safetensors` | 官方提示词增强器 PE-T2I（`9182abae…`） |
+| `model_patches/qwen_image_2.1_fun_controlnet_union_int8_convrot.safetensors` | **Qwen-Image-2.1 的 Union ControlNet**。本项目当前「形状只能靠 SDXL ControlNet」的结论**可能需要复核** —— 但该件属 `qwen_image_2.1_fun` 系列，**能否直接配 `qwen_image_2.1` 主模型未经验证**，不能据此宣称千问已支持深度锁形 |
+
+> 本节只记录**读到的文件事实**与**官方仓库的存在清单**；
+> 除 §10.4 的 sha256 外，其余均未做功能验证。

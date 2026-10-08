@@ -1709,6 +1709,26 @@ def fill_qwen_workflow(wf, payload, qcfg, cfg):
     return applied, skipped
 
 
+def prepare_qwen_prompt(payload, qcfg):
+    """CFG=1 时负面条件不起作用；给千问一个简短、可追溯的正向保形约束。"""
+    cfg = float(payload.get("cfg", qcfg.get("cfg", 1.0)))
+    if cfg > 1.0:
+        return
+    guard = (
+        "Edit the supplied product image, not its design: keep the target view, "
+        "silhouette, proportions, visible part count, holes, controls, seams and "
+        "material boundaries in their original positions. Keep each assigned "
+        "material and colour on the same physical part. Change only the requested "
+        "surface finish and lighting. Use the specified background without stray "
+        "objects; keep existing markings unchanged and add no new markings."
+    )
+    payload["positive"] = ((payload.get("positive") or "").strip() + " " + guard).strip()
+    # 保留原 negative 供审计及将来 CFG 对照实验，但不能声称它在 CFG=1 时生效。
+    meta = payload.setdefault("_meta", {})
+    meta["qwen_negative_active"] = False
+    meta["qwen_prompt_guard"] = "geometry_cmf_v1"
+
+
 def qwen_input_ok(rel):
     """实验引擎的输入图路径是否合规。
 
@@ -1870,6 +1890,8 @@ def _submit_qwen(tid, payload, engine_id):
     if not payload.get("seed"):
         payload["seed"] = int(qcfg.get("seed_default", 43))
 
+    prepare_qwen_prompt(payload, qcfg)
+
     # 参考图接线：LoadImage(4) → TextEncodeQwenImage21(5) 的 Autogrow 输入。
     # 键名必须是**扁平点号键** images.image_1；写成嵌套 dict 不报错但会被静默忽略。
     wf["4"]["inputs"]["image"] = payload["source_img"]
@@ -1894,6 +1916,12 @@ def _submit_qwen(tid, payload, engine_id):
         raise RuntimeError("实验引擎节点校验失败：%s"
                            % json.dumps(resp["node_errors"], ensure_ascii=False)[:600])
     pid = resp.get("prompt_id")
+    update_task_run_meta(tid, {
+        "effective_positive": wf["5"]["inputs"]["prompt"],
+        "effective_negative": wf["5"]["inputs"].get("negative_prompt", ""),
+        "negative_active": float(wf["6"]["inputs"]["cfg"]) > 1.0,
+        "prompt_guard": (payload.get("_meta") or {}).get("qwen_prompt_guard", ""),
+    })
     with DB_LOCK, db() as con:
         con.execute("UPDATE tasks SET status='running', prompt_id=?, err=NULL, "
                     "updated_at=CURRENT_TIMESTAMP WHERE id=?", (pid, tid))

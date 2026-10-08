@@ -485,8 +485,8 @@ def main():
           "按 view 取图 / 候选数可选 / 每组主视图先行")
     check("千问多机位使用目标白模与主视图双参考",
           '"images.image_2"] = ["9", 0]' in open(S.__file__, encoding="utf-8").read() and
-          "<image1> is the target camera and geometry" in app_js and
-          "<image2> is the same product" in app_js)
+          "<image1> fixes the target camera and geometry" in app_js and
+          "<image2> shows the same product" in app_js)
     check("两套引擎共用缺图补齐与八常用视角",
           'const COMMON_VIEWS = [...SIX_VIEWS,"3q4_left","3q4_right"]' in app_js and
           "async function ensureRequiredPasses(" in app_js and

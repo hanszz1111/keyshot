@@ -23,7 +23,7 @@ import qwen_ab_experiment as A  # noqa: E402
 
 def diff_fields(x, y):
     """返回两个 arm 之间**不同**的字段名集合。"""
-    return {k for k in ("variant", "cfg", "guard", "negative", "clip")
+    return {k for k in ("variant", "cfg", "guard", "negative", "clip", "shift", "cache")
             if getattr(x, k) != getattr(y, k)}
 
 
@@ -100,8 +100,45 @@ class ArmComparabilityTest(unittest.TestCase):
             self.assertTrue(a.clip and a.clip.endswith(".safetensors"),
                             "每条臂都必须指定 .safetensors 文件名：%s" % a.key)
 
+    def test_shift_preset_changes_only_shift(self):
+        """P2：只比内置 shift 与显式 3.1，不得同时动别的东西（方案明确要求）。"""
+        arms = {a.key: a for a in A.preset_arms("shift")}
+        self.assertEqual(set(arms), {"S-builtin", "S-3.1"})
+        self.assertIsNone(arms["S-builtin"].shift, "基线臂不应插 ModelSamplingAuraFlow")
+        self.assertEqual(arms["S-3.1"].shift, 3.1)
+        self.assertEqual(diff_fields(arms["S-builtin"], arms["S-3.1"]), {"shift"})
+        for a in arms.values():
+            self.assertEqual(a.variant, "new")
+            self.assertEqual(a.cfg, 1.0)
+            self.assertFalse(a.guard)
+            self.assertIsNone(a.clip, "P2 不允许同时换文本编码器")
+            self.assertIsNone(a.cache)
+
+    def test_cache_preset_changes_only_cache(self):
+        """P3：只比 QwenImage21Cache 关闭 / CPU / CPU+INT8。"""
+        arms = {a.key: a for a in A.preset_arms("cache")}
+        self.assertEqual(set(arms), {"K-off", "K-cpu", "K-cpu8"})
+        self.assertIsNone(arms["K-off"].cache)
+        self.assertEqual(arms["K-cpu"].cache, ("cpu", "default"))
+        self.assertEqual(arms["K-cpu8"].cache, ("cpu", "int8"))
+        self.assertEqual(diff_fields(arms["K-off"], arms["K-cpu"]), {"cache"})
+        self.assertEqual(diff_fields(arms["K-cpu"], arms["K-cpu8"]), {"cache"})
+        for a in arms.values():
+            self.assertEqual(a.cfg, 1.0)
+            self.assertIsNone(a.shift, "P3 不允许同时改 shift")
+            self.assertIsNone(a.clip)
+
+    def test_patch_classes_reports_what_will_be_inserted(self):
+        """前置校验靠这个函数决定要查哪些节点，漏了就会跑到一半才失败。"""
+        self.assertEqual(A._patch_classes(A.Arm("x", "x", "new", 1.0, False, True)), [])
+        self.assertEqual(A._patch_classes(A.Arm("x", "x", "new", 1.0, False, True, shift=3.1)),
+                         ["ModelSamplingAuraFlow"])
+        self.assertEqual(A._patch_classes(A.Arm("x", "x", "new", 1.0, False, True,
+                                                cache=("cpu", "int8"))),
+                         ["QwenImage21Cache"])
+
     def test_all_presets_have_unique_keys(self):
-        for name in ("prompt", "prompt2", "cfg"):
+        for name in ("prompt", "prompt2", "cfg", "clip", "shift", "cache"):
             keys = [a.key for a in A.preset_arms(name)]
             self.assertEqual(len(keys), len(set(keys)), "预设 %s 的臂代号必须唯一" % name)
 

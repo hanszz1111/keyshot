@@ -128,7 +128,8 @@ PROMPT_VARIANTS = {
 class Arm(object):
     """一条实验臂 = 一组完全确定的参数。"""
 
-    def __init__(self, key, label, variant, cfg, guard, negative, clip=None):
+    def __init__(self, key, label, variant, cfg, guard, negative, clip=None,
+                 shift=None, cache=None, input_kind=None):
         self.key = key
         self.label = label
         self.variant = variant      # "legacy" | "new"
@@ -136,11 +137,27 @@ class Arm(object):
         self.guard = guard          # 是否调用 prepare_qwen_prompt（CFG=1 的正向护栏）
         self.negative = negative    # 是否保留负面提示词
         self.clip = clip            # 文本编码器文件名；None = 用生产默认
+        self.shift = shift          # None = 不插 ModelSamplingAuraFlow（用模型内置 0.69）
+        self.cache = cache          # None = 不插 QwenImage21Cache；(device, dtype) 则插
+        self.input_kind = input_kind  # P1 用：None = 跟随命令行；否则该臂单独指定
 
     def to_dict(self):
         return {"key": self.key, "label": self.label, "variant": self.variant,
                 "cfg": self.cfg, "guard": self.guard, "negative": self.negative,
-                "clip": self.clip or "（生产默认）"}
+                "clip": self.clip or "（生产默认）",
+                "shift": self.shift if self.shift is not None else "（模型内置 0.69）",
+                "cache": list(self.cache) if self.cache else "（不插节点）",
+                "input_kind": self.input_kind or "（跟随命令行）"}
+
+
+def _patch_classes(arm):
+    """该臂会插入哪些 class_type 的模型补丁（供前置校验用）。"""
+    out = []
+    if getattr(arm, "shift", None) is not None:
+        out.append("ModelSamplingAuraFlow")
+    if getattr(arm, "cache", None):
+        out.append("QwenImage21Cache")
+    return out
 
 
 def preset_arms(name):
@@ -160,6 +177,38 @@ def preset_arms(name):
         return [
             Arm("A", "A · 旧提示词（长，v3.29 前）", "legacy", 1.0, guard=False, negative=True),
             Arm("B", "B · 新提示词（短指令 + CFG=1 护栏）", "new", 1.0, guard=True, negative=True),
+        ]
+    if name == "input":
+        # P1（方案 §四 P1）：输入图决定上限。
+        #   A = 该机位 CMF 配色引导图（更接近生产在 input_kind=clay 时送的图）
+        #   B = 按 CMF 方案渲染的 PBR 保形底图（CAD 几何 + 真实材质）
+        # 只换输入图，提示词/CFG/种子/步数全部相同；第二参考四臂共用同一锚点文件。
+        return [
+            Arm("IN-guide", "输入 = CMF 配色引导图（项目现状）", "new", 1.0, guard=False, negative=True, input_kind="cmf_guide"),
+            Arm("IN-pbr", "输入 = PBR 保形底图（CAD 几何 + 真实材质）", "new", 1.0, guard=False, negative=True, input_kind="product_base"),
+        ]
+    if name == "shiftx":
+        # 诊断用：加一条**极端** shift 臂。正常 shift 改变 σ 不到 0.35，
+        # 若极端值也不改变输出，说明补丁没真正进入采样，而不是「shift 是弱杠杆」。
+        return [
+            Arm("S-builtin", "内置 0.69", "new", 1.0, guard=False, negative=True),
+            Arm("S-3.1", "shift=3.1", "new", 1.0, guard=False, negative=True, shift=3.1),
+            Arm("S-10", "shift=10（极端，诊断用）", "new", 1.0, guard=False, negative=True, shift=10.0),
+        ]
+    if name == "shift":
+        # P2（方案 §四 P2）：只比内置 shift 与显式 3.1，**不得同时改步数/CFG/编码器**。
+        # 全部臂同提示词（new 基础版）、同 CFG=1、不加护栏、同 CLIP。
+        return [
+            Arm("S-builtin", "内置 shift 0.69（项目现状，不插节点）", "new", 1.0, guard=False, negative=True),
+            Arm("S-3.1", "显式 ModelSamplingAuraFlow shift=3.1（官方模板值）", "new", 1.0, guard=False, negative=True, shift=3.1),
+        ]
+    if name == "cache":
+        # P3（方案 §四 P3）：先固定 768，比较 QwenImage21Cache 关闭 / CPU / CPU+INT8。
+        # 输出变化、峰值显存、耗时三者一起看；只有无 OOM、结构不降才谈开放更高预算。
+        return [
+            Arm("K-off", "不插 QwenImage21Cache（项目现状）", "new", 1.0, guard=False, negative=True),
+            Arm("K-cpu", "cache → CPU（腾显存，几乎不掉速）", "new", 1.0, guard=False, negative=True, cache=("cpu", "default")),
+            Arm("K-cpu8", "cache → CPU + INT8（cache 再减半）", "new", 1.0, guard=False, negative=True, cache=("cpu", "int8")),
         ]
     if name == "clip":
         # ★ 2×2 交互设计：文本编码器 × 提示词。
@@ -293,6 +342,57 @@ def path_of_rel(rel):
 
 # ── 单格运行 ────────────────────────────────────────────────────────────────
 
+def insert_model_patches(wf, arm):
+    """在 UNETLoader 与 KSampler 之间插入 MODEL 补丁节点。
+
+    目前支持两种（顺序：先 shift 再 cache，链式串起来）：
+      - `ModelSamplingAuraFlow`：覆盖模型内置的采样 shift
+        （Qwen-Image-2.1 内置 0.69；官方所有 Qwen 模板都插此节点改成 3.1）
+      - `QwenImage21Cache`：控制 Qwen 编辑链路的 KV cache 设备与精度
+
+    ★ 为什么在脚本里做而不是改 `config/`：方案要求「只比较」，不应改动生产工作流。
+      这样每次实验的工作流都在事实卡里留了插入记录，生产链路一行没动。
+    """
+    patches = []
+    if getattr(arm, "shift", None) is not None:
+        patches.append(("ModelSamplingAuraFlow",
+                        {"shift": float(arm.shift), "sampling": "flow"}))
+    if getattr(arm, "cache", None):
+        patches.append(("QwenImage21Cache",
+                        {"device": arm.cache[0], "dtype": arm.cache[1]}))
+    if not patches:
+        return []
+
+    # 动态找 KSampler，别写死节点号（工作流将来可能重排）
+    ks = [k for k, v in wf.items()
+          if isinstance(v, dict) and v.get("class_type") == "KSampler"]
+    if len(ks) != 1:
+        raise RuntimeError("工作流里有 %d 个 KSampler，无法确定要改哪个" % len(ks))
+    ks_id = ks[0]
+    source = wf[ks_id]["inputs"]["model"]
+    if not (isinstance(source, list) and len(source) == 2):
+        raise RuntimeError("KSampler 的 model 输入不是 [节点, 输出] 形式，无法插入补丁")
+
+    # ★ id 必须避开工作流自己的编号（1–9）以及运行时新增的 LoadImage(9)。
+    #   踩过的坑：早先取 max+1 = 9，结果关联机位稍后也用 "9" 放第二参考图，
+    #   直接把补丁节点覆盖掉，KSampler 的 model 接到了 IMAGE → HTTP 400，
+    #   表现为「front 成功、3q4_left 全失败」。
+    nxt = 900
+    while str(nxt) in wf:
+        nxt += 1
+    made = []
+    prev = source
+    for cls, ins in patches:
+        while str(nxt) in wf:
+            nxt += 1
+        nid = str(nxt); nxt += 1
+        wf[nid] = {"class_type": cls, "inputs": dict(ins, model=prev)}
+        prev = [nid, 0]
+        made.append({"node": nid, "class_type": cls, "inputs": ins})
+    wf[ks_id]["inputs"]["model"] = prev
+    return made
+
+
 def run_cell(arm, view, seed, ctx, outdir, force=False):
     cell_dir = os.path.join(outdir, arm.key)
     os.makedirs(cell_dir, exist_ok=True)
@@ -302,6 +402,8 @@ def run_cell(arm, view, seed, ctx, outdir, force=False):
     #   否则重跑时「缓存命中」的格子会丢掉 prompt/cfg/negative 记录，
     #   导致最新的事实卡反而比首跑更不完整（实测踩到）。
     linked = view in ctx["linked_views"]
+    # P1：按臂取输入图（不同臂可用不同 input_kind）
+    input_rel = ctx["input_by_kind"][arm.input_kind or ctx["input_kind"]][view]
     positive = build_positive(arm, ctx, view, linked)
     payload = {
         "positive": positive,
@@ -325,15 +427,18 @@ def run_cell(arm, view, seed, ctx, outdir, force=False):
         payload["clip_name"] = arm.clip
     applied, skipped = S.fill_qwen_workflow(
         wf, payload, S.qwen_edit_cfg(), S.engine_cfg(ENGINE_ID)[1])
+    # P2/P3：模型补丁（shift 覆盖 / KV cache）在填充之后插入，并把插入结果记进事实卡
+    model_patches = insert_model_patches(wf, arm)
 
     record = {
         "arm": arm.key, "view": view, "seed": seed,
         "linked": linked,
         "second_ref": ({"rel": ctx["second_ref"], "sha256": ctx["second_ref_sha256"]}
                        if linked else {}),
-        "input_rel": ctx["input_rel"][view],
+        "input_rel": input_rel,
         "clip_name": wf["2"]["inputs"]["clip_name"] if "2" in wf else "",
         "unet_name": wf["1"]["inputs"]["unet_name"] if "1" in wf else "",
+        "model_patches": model_patches,
         "prompt": wf["5"]["inputs"]["prompt"],
         "negative": wf["5"]["inputs"].get("negative_prompt", ""),
         "cfg": wf["6"]["inputs"]["cfg"], "steps": wf["6"]["inputs"]["steps"],
@@ -351,7 +456,7 @@ def run_cell(arm, view, seed, ctx, outdir, force=False):
         return record
 
     host = ctx["host"]
-    wf["4"]["inputs"]["image"] = S.comfy_upload(ctx["input_rel"][view], host)
+    wf["4"]["inputs"]["image"] = S.comfy_upload(input_rel, host)
     if linked:
         ref_abs = os.path.join(ROOT, ctx["second_ref"].replace("/", os.sep))
         wf["9"] = {"class_type": "LoadImage", "inputs": {"image": upload_file(ref_abs, host)}}
@@ -565,7 +670,10 @@ def analyze_differences(arms, cells, outdir):
     pairwise = []
     for view, seed in keys:
         for x, y in itertools.combinations([a.key for a in arms], 2):
-            r = pair(ok[(view, seed, x)], ok[(view, seed, y)])
+            cx, cy = ok.get((view, seed, x)), ok.get((view, seed, y))
+            if cx is None or cy is None:
+                continue        # 有格子失败时不能硬索引，否则整段分析直接崩
+            r = pair(cx, cy)
             if r:
                 pairwise.append(dict(r, view=view, seed=seed, a=x, b=y, kind="臂间"))
 
@@ -575,8 +683,9 @@ def analyze_differences(arms, cells, outdir):
         if len(seeds) < 2:
             break
         for arm in [a.key for a in arms]:
-            if (view, seeds[0], arm) in ok and (view, seeds[1], arm) in ok:
-                r = pair(ok[(view, seeds[0], arm)], ok[(view, seeds[1], arm)])
+            c0, c1 = ok.get((view, seeds[0], arm)), ok.get((view, seeds[1], arm))
+            if c0 is not None and c1 is not None:
+                r = pair(c0, c1)
                 if r:
                     noise.append(dict(r, view=view, seed="%s→%s" % (seeds[0], seeds[1]),
                                       a=arm, b=arm, kind="种子噪声"))
@@ -604,7 +713,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="qwen_ab_experiment.py",
                                  description="千问 A/B 受控实验批处理（不写生产任务库）")
     ap.add_argument("--preset", default="prompt",
-                    choices=["prompt", "prompt2", "cfg", "clip", "smoke"])
+                    choices=["prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "input", "smoke"])
     ap.add_argument("--sku", default="AI渲染1")
     ap.add_argument("--views", default="", help="逗号分隔；默认按预设（prompt*/cfg=front,3q4_left；smoke=front）")
     ap.add_argument("--seeds", default="", help="逗号分隔；smoke 默认 43")
@@ -666,6 +775,13 @@ def main(argv=None):
         if arm.clip not in found:
             raise SystemExit("配置引用的文本编码器不存在：%s\n  可用：%s"
                              % (arm.clip, [x for x in found if "qwen" in x.lower()] or found))
+    # ★ 前置校验：模型补丁节点必须是实例里真实存在的 class_type。
+    #   ComfyUI 会校验所有节点，缺一个整个 prompt 直接失败。
+    host = S.engine_host(ENGINE_ID)
+    for cls in sorted({n for arm in arms for n in _patch_classes(arm)}):
+        info = S.http_json("%s/object_info/%s" % (host, cls), timeout=10)
+        if not info or cls not in info:
+            raise SystemExit("实例里没有这个节点：%s（该臂会整体失败）" % cls)
 
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     # ★ 默认目录**按预设稳定**（不带时间戳）：脚本幂等，重复运行只补缺的格子 ——
@@ -688,8 +804,26 @@ def main(argv=None):
         "second_ref_mode": args.second_ref, "second_ref": "", "second_ref_sha256": "",
         "input_rel": {},
     }
-    for v in views:
-        ctx["input_rel"][v] = resolve_input(ctx, v)
+    # P1：按臂解析输入图（不同臂可以用不同 input_kind），并统一放在这里
+    ctx["input_by_kind"] = {}
+    for kind in sorted({a.input_kind or ctx["input_kind"] for a in arms}):
+        sub = dict(ctx); sub["input_kind"] = kind
+        ctx["input_by_kind"][kind] = {v: resolve_input(sub, v) for v in views}
+    ctx["input_rel"] = ctx["input_by_kind"][ctx["input_kind"]]
+
+    # ★ 输入图必须已存在：PBR 保形底图要先跑 Blender 批处理，否则会在算哈希时崩。
+    #   这里提前给出可执行的提示，而不是让它跑到一半报 FileNotFoundError。
+    for kind, per_view in ctx["input_by_kind"].items():
+        for v, rel in per_view.items():
+            try:
+                path_of_rel(rel)
+            except RuntimeError:
+                if kind == "product_base":
+                    raise SystemExit(
+                        "缺少 PBR 保形底图：%s\n"
+                        "  请先在网页点「生成所选视角的保形图」，或调用：\n"
+                        "  POST /api/ui/product/batch  {sku, views, body_cmf, body_color, style}" % rel)
+                raise SystemExit("缺少输入图：%s（kind=%s）" % (rel, kind))
 
     # 事实卡：先把冻结项写下来，即使中途失败也有据可查
     facts = {
@@ -715,11 +849,12 @@ def main(argv=None):
         },
         "input_images": {},
     }
-    for v in views:
-        p = path_of_rel(ctx["input_rel"][v])
-        facts["input_images"][v] = {"rel": ctx["input_rel"][v],
-                                    "sha256": sha256_file(p),
-                                    "width_height": list(S._png_size(p) or [])}
+    for kind, per_view in ctx["input_by_kind"].items():
+        for v, rel in per_view.items():
+            p = path_of_rel(rel)
+            facts["input_images"]["%s:%s" % (kind, v)] = {
+                "rel": rel, "sha256": sha256_file(p),
+                "width_height": list(S._png_size(p) or [])}
     facts["prompt_variants"] = {k: PROMPT_VARIANTS[k] for k in {a.variant for a in arms}}
     facts["arms"] = [a.to_dict() for a in arms]
 
@@ -733,8 +868,8 @@ def main(argv=None):
     print("冻结参数 : %d 像素预算 / %d 步 / CFG 由各臂指定 / 输入=%s"
           % (args.resolution, args.steps, args.input_kind))
     print("主体材质 : %s %s" % (material["name"], color))
-    for v in views:
-        print("输入图   : %s → %s" % (v, facts["input_images"][v]["rel"]))
+    for key in sorted(facts["input_images"]):
+        print("输入图   : %-22s → %s" % (key, facts["input_images"][key]["rel"]))
     print("臂       :")
     for a in arms:
         print("   %-3s CFG=%-4s 护栏=%-5s 负面词=%-5s 变体=%s"
@@ -823,11 +958,15 @@ def main(argv=None):
           % (facts["summary"]["ok"], facts["summary"]["cached"],
              facts["summary"]["failed"], facts["summary"]["total_seconds"]))
     da = facts["difference_analysis"]
-    if da.get("avg_arm_effect") is not None:
+    if da.get("avg_arm_effect") is not None and da.get("avg_seed_noise") is not None:
         print("差异量化：臂间 MAE 均值 %.2f ｜ 种子噪声 MAE 均值 %.2f ｜ 臂间/噪声 = %s"
               % (da["avg_arm_effect"], da["avg_seed_noise"], da.get("arm_over_noise")))
         print("          （比值明显小于 1 = 该变量的画面作用小于随机采样；")
         print("            这不判断好坏，方向请按打分表人工评 0–2 分）")
+    elif da.get("avg_arm_effect") is not None:
+        # 只跑单种子时没有噪声基线，这是正常情形（诊断用），不该崩
+        print("差异量化：臂间 MAE 均值 %.2f ｜ 本次只有 1 个种子，无噪声基线可比"
+              % da["avg_arm_effect"])
     elif da.get("skipped"):
         print("差异量化：%s" % da["skipped"])
     print("事实卡 : %s" % rel_of(os.path.join(outdir, "事实卡.json")))

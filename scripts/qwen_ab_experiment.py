@@ -128,17 +128,19 @@ PROMPT_VARIANTS = {
 class Arm(object):
     """一条实验臂 = 一组完全确定的参数。"""
 
-    def __init__(self, key, label, variant, cfg, guard, negative):
+    def __init__(self, key, label, variant, cfg, guard, negative, clip=None):
         self.key = key
         self.label = label
         self.variant = variant      # "legacy" | "new"
         self.cfg = cfg
         self.guard = guard          # 是否调用 prepare_qwen_prompt（CFG=1 的正向护栏）
         self.negative = negative    # 是否保留负面提示词
+        self.clip = clip            # 文本编码器文件名；None = 用生产默认
 
     def to_dict(self):
         return {"key": self.key, "label": self.label, "variant": self.variant,
-                "cfg": self.cfg, "guard": self.guard, "negative": self.negative}
+                "cfg": self.cfg, "guard": self.guard, "negative": self.negative,
+                "clip": self.clip or "（生产默认）"}
 
 
 def preset_arms(name):
@@ -159,6 +161,20 @@ def preset_arms(name):
             Arm("A", "A · 旧提示词（长，v3.29 前）", "legacy", 1.0, guard=False, negative=True),
             Arm("B", "B · 新提示词（短指令 + CFG=1 护栏）", "new", 1.0, guard=True, negative=True),
         ]
+    if name == "clip":
+        # ★ 2×2 交互设计：文本编码器 × 提示词。
+        #   假设：项目用的是 4bit 文本编码器（w4a8），而社区工作流与官方模板都用 INT8。
+        #   如果 4bit 削弱了指令跟随，那么「换提示词」在 INT8 下应当比在 w4a8 下**更能撬动画面**。
+        #   四条臂一律 CFG=1、不加护栏、负面词全开 —— 使「提示词」这一维只剩文案差异。
+        arms = []
+        for key, clip_file, clip_label in (
+                ("W4A8", "qwen3vl_8b_w4a8.safetensors", "W4A8·4bit（项目现状）"),
+                ("INT8", "qwen3vl_8b_int8_convrot.safetensors", "INT8·官方模板默认")):
+            arms.append(Arm(key + "-A", clip_label + " + 旧长提示",
+                            "legacy", 1.0, guard=False, negative=True, clip=clip_file))
+            arms.append(Arm(key + "-B0", clip_label + " + 新短提示",
+                            "new", 1.0, guard=False, negative=True, clip=clip_file))
+        return arms
     if name == "cfg":
         # 四条臂，相邻两条只差一个变量。提示词一律用 new 的**基础版**（不加护栏），
         # 否则护栏会与 CFG 混淆。
@@ -303,6 +319,10 @@ def run_cell(arm, view, seed, ctx, outdir, force=False):
 
     wf = S.load_qwen_workflow()
     wf["5"]["inputs"]["images.image_1"] = ["4", 0]
+    # ★ 文本编码器覆盖（QWEN_SLOTS 里有 "clip_name" → 节点 2，且在 weight_files 之后应用，
+    #   所以在这里塞进 payload 可以覆盖 render_defaults 里的默认权重）
+    if arm.clip:
+        payload["clip_name"] = arm.clip
     applied, skipped = S.fill_qwen_workflow(
         wf, payload, S.qwen_edit_cfg(), S.engine_cfg(ENGINE_ID)[1])
 
@@ -312,6 +332,8 @@ def run_cell(arm, view, seed, ctx, outdir, force=False):
         "second_ref": ({"rel": ctx["second_ref"], "sha256": ctx["second_ref_sha256"]}
                        if linked else {}),
         "input_rel": ctx["input_rel"][view],
+        "clip_name": wf["2"]["inputs"]["clip_name"] if "2" in wf else "",
+        "unet_name": wf["1"]["inputs"]["unet_name"] if "1" in wf else "",
         "prompt": wf["5"]["inputs"]["prompt"],
         "negative": wf["5"]["inputs"].get("negative_prompt", ""),
         "cfg": wf["6"]["inputs"]["cfg"], "steps": wf["6"]["inputs"]["steps"],
@@ -582,7 +604,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="qwen_ab_experiment.py",
                                  description="千问 A/B 受控实验批处理（不写生产任务库）")
     ap.add_argument("--preset", default="prompt",
-                    choices=["prompt", "prompt2", "cfg", "smoke"])
+                    choices=["prompt", "prompt2", "cfg", "clip", "smoke"])
     ap.add_argument("--sku", default="AI渲染1")
     ap.add_argument("--views", default="", help="逗号分隔；默认按预设（prompt*/cfg=front,3q4_left；smoke=front）")
     ap.add_argument("--seeds", default="", help="逗号分隔；smoke 默认 43")
@@ -635,6 +657,16 @@ def main(argv=None):
         raise SystemExit("SKU %s 的 CMF 方案已过期，请先在网页重新核对部位" % args.sku)
 
     arms = preset_arms(args.preset)
+    # ★ 前置校验：引用的文本编码器必须真实存在。
+    #   否则会跑到第 N 格才由 ComfyUI 报 node_errors，白等一轮。
+    for arm in arms:
+        if not arm.clip:
+            continue
+        found = S.comfy_models("CLIPLoader", "clip_name", S.engine_host(ENGINE_ID)) or []
+        if arm.clip not in found:
+            raise SystemExit("配置引用的文本编码器不存在：%s\n  可用：%s"
+                             % (arm.clip, [x for x in found if "qwen" in x.lower()] or found))
+
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     # ★ 默认目录**按预设稳定**（不带时间戳）：脚本幂等，重复运行只补缺的格子 ——
     #   这样中断可续跑，「跑完 2 臂后想再加一条臂」也不必重算已有结果。

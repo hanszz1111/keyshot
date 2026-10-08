@@ -23,7 +23,7 @@ import qwen_ab_experiment as A  # noqa: E402
 
 def diff_fields(x, y):
     """返回两个 arm 之间**不同**的字段名集合。"""
-    return {k for k in ("variant", "cfg", "guard", "negative")
+    return {k for k in ("variant", "cfg", "guard", "negative", "clip")
             if getattr(x, k) != getattr(y, k)}
 
 
@@ -70,6 +70,35 @@ class ArmComparabilityTest(unittest.TestCase):
         for a in arms.values():
             self.assertEqual(a.variant, "new")
             self.assertFalse(a.guard, "CFG 实验里不允许带护栏，否则与 CFG 混淆")
+
+    def test_clip_preset_is_a_clean_2x2(self):
+        """文本编码器 × 提示词 的 2×2。
+
+        要能同时回答两个问题：
+          - 只换 CLIP（同提示词）会怎样        → 看 clip 维度
+          - 同一 CLIP 下换提示词影响多大      → 看 variant 维度
+        并且四条臂必须同 CFG、同护栏设置，否则交互项会被污染。
+        """
+        arms = {a.key: a for a in A.preset_arms("clip")}
+        self.assertEqual(set(arms), {"W4A8-A", "W4A8-B0", "INT8-A", "INT8-B0"})
+        # 只换 CLIP：同提示词、其余全同
+        self.assertEqual(diff_fields(arms["W4A8-A"], arms["INT8-A"]), {"clip"})
+        self.assertEqual(diff_fields(arms["W4A8-B0"], arms["INT8-B0"]), {"clip"})
+        # 只换提示词：同 CLIP、其余全同
+        self.assertEqual(diff_fields(arms["W4A8-A"], arms["W4A8-B0"]), {"variant"})
+        self.assertEqual(diff_fields(arms["INT8-A"], arms["INT8-B0"]), {"variant"})
+        # 交互项要干净：CFG 与护栏必须四条一致
+        for a in arms.values():
+            self.assertEqual(a.cfg, 1.0)
+            self.assertFalse(a.guard, "加了护栏就没法把差异归因到文案本身")
+            self.assertTrue(a.negative)
+        self.assertEqual({a.variant for a in arms.values()}, {"legacy", "new"})
+
+    def test_clip_preset_names_real_files(self):
+        """臂里写的必须是真实的权重文件名，不能是占位串。"""
+        for a in A.preset_arms("clip"):
+            self.assertTrue(a.clip and a.clip.endswith(".safetensors"),
+                            "每条臂都必须指定 .safetensors 文件名：%s" % a.key)
 
     def test_all_presets_have_unique_keys(self):
         for name in ("prompt", "prompt2", "cfg"):

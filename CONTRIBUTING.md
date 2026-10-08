@@ -22,7 +22,7 @@
   | `python web/test_design_consistency.py` | 设计预设签名与冲突防护 | 任意 Python（仅标准库） |
   | `python web/test_qwen_prompt.py` | 千问 CFG=1 正向保形护栏 | 任意 Python（仅标准库） |
   | `python web/test_controlled_pass_view.py` | 结构图机位/尺寸/画幅绑定校验 | 任意 Python（仅标准库） |
-  | `python web/test_ab_experiment.py` | A/B 实验脚本的「单变量」方法学契约 | 任意 Python（仅标准库） |
+  | `python web/test_ab_experiment.py` | A/B 实验脚本的「单变量」方法学契约（16 项） | 任意 Python（仅标准库） |
   | `python web/test_cmf_guide.py` | CMF 配色引导图 | **需带 numpy**（ComfyUI 的 `python_embeded` 可用） |
   | `python scripts/roi_crop.py --help` | ROI 裁切依赖自检 | **需带 numpy/Pillow** |
 

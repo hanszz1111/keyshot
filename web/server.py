@@ -3692,6 +3692,37 @@ def start_pass_batch(sku, model_rel="", views=None):
     threading.Thread(target=worker, daemon=True).start()
 
 
+def validate_controlled_pass_bundle(task, payload):
+    """禁止把别的机位结构图、错尺寸法线或变形画幅送入 ControlNet。"""
+    sku, view = task.get("sku") or "", task.get("view") or ""
+    expected = os.path.abspath(os.path.join(PASSES_DIR, sku, view))
+    root = os.path.abspath(PASSES_DIR)
+    if os.path.commonpath((root, expected)) != root:
+        raise RuntimeError("产品名或机位非法，不能定位对应的结构图")
+    paths = {}
+    for role in ("depth", "normal"):
+        rel = payload.get(role + "_img") or ""
+        if not rel:
+            if role == "depth":
+                raise RuntimeError("缺少当前机位的深度图")
+            continue
+        path = _asset_path(rel)
+        if not path or os.path.dirname(os.path.abspath(path)) != expected or not os.path.basename(path).startswith(role + "."):
+            raise RuntimeError("%s结构图不属于当前产品的%s机位，请重新生成该机位结构图" % (role, view))
+        paths[role] = path
+    issue = _pass_manifest_issue(expected)
+    if issue:
+        raise RuntimeError(issue)
+    depth_size = _png_size(paths["depth"])
+    if not depth_size:
+        raise RuntimeError("当前机位深度图不是有效 PNG，请重新生成")
+    if "normal" in paths and _png_size(paths["normal"]) != depth_size:
+        raise RuntimeError("当前机位深度图与法线图尺寸不一致，请重新生成")
+    width, height = int(payload.get("width") or 0), int(payload.get("height") or 0)
+    if width and height and abs(width / height - depth_size[0] / depth_size[1]) > 0.02:
+        raise RuntimeError("出图画幅与当前机位深度图比例不一致，会拉歪产品；请选跟随结构图")
+
+
 def guarded_submit(tid):
     """受控提交：结构约束模式缺深度图时**拒绝自动降级**为纯文生图（避免"以为锁了形其实没锁"）。"""
     t = task_by_id(tid)
@@ -3707,11 +3738,7 @@ def guarded_submit(tid):
     if mode == "controlled" and not _pass_exists(payload.get("depth_img")):
         raise RuntimeError("缺少当前机位的深度图，已阻止自动降级为纯文生图。请先生成/上传结构图。")
     if mode == "controlled":
-        depth_path = _asset_path(payload.get("depth_img"))
-        if depth_path and os.path.commonpath((os.path.abspath(PASSES_DIR), os.path.abspath(depth_path))) == os.path.abspath(PASSES_DIR):
-            issue = _pass_manifest_issue(os.path.dirname(depth_path))
-            if issue:
-                raise RuntimeError(issue)
+        validate_controlled_pass_bundle(t, payload)
     if mode == "explore" and payload.get("depth_img") and _pass_exists(payload.get("depth_img")):
         raise RuntimeError("外观探索模式的任务意外带了深度图，已停止（避免混淆两种模式）")
     if mode == "image":

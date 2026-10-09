@@ -23,7 +23,7 @@ import qwen_ab_experiment as A  # noqa: E402
 
 def diff_fields(x, y):
     """返回两个 arm 之间**不同**的字段名集合。"""
-    return {k for k in ("variant", "cfg", "guard", "negative", "clip", "shift", "cache")
+    return {k for k in ("variant", "cfg", "guard", "negative", "clip", "shift", "cache", "unet", "steps")
             if getattr(x, k) != getattr(y, k)}
 
 
@@ -137,8 +137,33 @@ class ArmComparabilityTest(unittest.TestCase):
                                                 cache=("cpu", "int8"))),
                          ["QwenImage21Cache"])
 
+    def test_viggle_preset_pairs_model_with_its_step_count(self):
+        """P5：Viggle 6 步模型与步数是**配套**的。
+
+        该模型是为 6 步蒸馏的，拿它跑 25 步没有意义；因此
+        「基线 25 步 vs viggle 6 步」虽然是两处改动，但它们是同一件事。
+        另加一条「viggle 模型跑 25 步」用于把「换模型」与「减步数」分开诊断。
+        """
+        arms = {a.key: a for a in A.preset_arms("viggle")}
+        self.assertEqual(set(arms), {"V-base25", "V-viggle6", "V-viggle25"})
+        b, v6, v25 = arms["V-base25"], arms["V-viggle6"], arms["V-viggle25"]
+        self.assertIsNone(b.unet, "基线臂不该换主模型")
+        self.assertIsNone(b.steps, "基线臂步数应跟随命令行（25）")
+        self.assertEqual(v6.unet, "Qwen-Image-2.1-viggle-turbo-v0.3-6step-int8_convrot.safetensors")
+        self.assertEqual(v6.steps, 6)
+        self.assertEqual(v25.unet, v6.unet, "诊断臂必须用同一个模型，只差步数")
+        self.assertEqual(v25.steps, 25)
+        # 「换模型」单独看：v6 与 v25 只差 steps
+        self.assertEqual(diff_fields(v6, v25), {"steps"})
+        # 其余维度必须一致，否则归因不干净
+        for a in arms.values():
+            self.assertEqual((a.variant, a.cfg, a.guard, a.negative), ("new", 1.0, False, True))
+            self.assertIsNone(a.clip)
+            self.assertIsNone(a.shift)
+            self.assertIsNone(a.cache)
+
     def test_all_presets_have_unique_keys(self):
-        for name in ("prompt", "prompt2", "cfg", "clip", "shift", "cache"):
+        for name in ("prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "viggle"):
             keys = [a.key for a in A.preset_arms(name)]
             self.assertEqual(len(keys), len(set(keys)), "预设 %s 的臂代号必须唯一" % name)
 

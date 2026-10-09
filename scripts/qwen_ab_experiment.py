@@ -129,7 +129,7 @@ class Arm(object):
     """一条实验臂 = 一组完全确定的参数。"""
 
     def __init__(self, key, label, variant, cfg, guard, negative, clip=None,
-                 shift=None, cache=None, input_kind=None):
+                 shift=None, cache=None, input_kind=None, unet=None, steps=None):
         self.key = key
         self.label = label
         self.variant = variant      # "legacy" | "new"
@@ -140,6 +140,8 @@ class Arm(object):
         self.shift = shift          # None = 不插 ModelSamplingAuraFlow（用模型内置 0.69）
         self.cache = cache          # None = 不插 QwenImage21Cache；(device, dtype) 则插
         self.input_kind = input_kind  # P1 用：None = 跟随命令行；否则该臂单独指定
+        self.unet = unet            # None = 用生产默认主模型；否则换主模型
+        self.steps = steps          # None = 跟随命令行；否则该臂单独指定步数
 
     def to_dict(self):
         return {"key": self.key, "label": self.label, "variant": self.variant,
@@ -147,7 +149,9 @@ class Arm(object):
                 "clip": self.clip or "（生产默认）",
                 "shift": self.shift if self.shift is not None else "（模型内置 0.69）",
                 "cache": list(self.cache) if self.cache else "（不插节点）",
-                "input_kind": self.input_kind or "（跟随命令行）"}
+                "input_kind": self.input_kind or "（跟随命令行）",
+                "unet": self.unet or "（生产默认）",
+                "steps": self.steps if self.steps is not None else "（跟随命令行）"}
 
 
 def _patch_classes(arm):
@@ -177,6 +181,18 @@ def preset_arms(name):
         return [
             Arm("A", "A · 旧提示词（长，v3.29 前）", "legacy", 1.0, guard=False, negative=True),
             Arm("B", "B · 新提示词（短指令 + CFG=1 护栏）", "new", 1.0, guard=True, negative=True),
+        ]
+    if name == "viggle":
+        # P5（方案 §四 P5）：Viggle Turbo 6 步只作速度档。
+        # ★ 步数与模型是**配套**的：该模型是为 6 步蒸馏的，拿它跑 25 步没有意义。
+        #   所以「基线 25 步 vs viggle 6 步」这一对虽然是两处改动，但它们是同一件事；
+        #   另加一条「viggle 模型跑 25 步」作为诊断，用来把「换模型」与「减步数」的影响分开看。
+        return [
+            Arm("V-base25", "官方 int8 主模型 · 25 步（生产基线）", "new", 1.0, guard=False, negative=True),
+            Arm("V-viggle6", "Viggle 6 步 int8 合并模型 · 6 步（目标配置）", "new", 1.0, guard=False, negative=True,
+                unet="Qwen-Image-2.1-viggle-turbo-v0.3-6step-int8_convrot.safetensors", steps=6),
+            Arm("V-viggle25", "Viggle 模型 · 25 步（诊断：分离「换模型」与「减步数」）", "new", 1.0, guard=False, negative=True,
+                unet="Qwen-Image-2.1-viggle-turbo-v0.3-6step-int8_convrot.safetensors", steps=25),
         ]
     if name == "input":
         # P1（方案 §四 P1）：输入图决定上限。
@@ -425,6 +441,11 @@ def run_cell(arm, view, seed, ctx, outdir, force=False):
     #   所以在这里塞进 payload 可以覆盖 render_defaults 里的默认权重）
     if arm.clip:
         payload["clip_name"] = arm.clip
+    # P5：主模型与步数覆盖（QWEN_SLOTS 里已有 unet_name → 节点1、steps → 节点6）
+    if arm.unet:
+        payload["unet_name"] = arm.unet
+    if arm.steps is not None:
+        payload["steps"] = int(arm.steps)
     applied, skipped = S.fill_qwen_workflow(
         wf, payload, S.qwen_edit_cfg(), S.engine_cfg(ENGINE_ID)[1])
     # P2/P3：模型补丁（shift 覆盖 / KV cache）在填充之后插入，并把插入结果记进事实卡
@@ -713,7 +734,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="qwen_ab_experiment.py",
                                  description="千问 A/B 受控实验批处理（不写生产任务库）")
     ap.add_argument("--preset", default="prompt",
-                    choices=["prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "input", "smoke"])
+                    choices=["prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "input", "viggle", "smoke"])
     ap.add_argument("--sku", default="AI渲染1")
     ap.add_argument("--views", default="", help="逗号分隔；默认按预设（prompt*/cfg=front,3q4_left；smoke=front）")
     ap.add_argument("--seeds", default="", help="逗号分隔；smoke 默认 43")
@@ -775,6 +796,14 @@ def main(argv=None):
         if arm.clip not in found:
             raise SystemExit("配置引用的文本编码器不存在：%s\n  可用：%s"
                              % (arm.clip, [x for x in found if "qwen" in x.lower()] or found))
+    # ★ 主模型同理（P5 的 Viggle 合并模型）
+    for arm in arms:
+        if not arm.unet:
+            continue
+        found = S.comfy_models("UNETLoader", "unet_name", S.engine_host(ENGINE_ID)) or []
+        if arm.unet not in found:
+            raise SystemExit("配置引用的主模型不存在：%s\n  可用：%s"
+                             % (arm.unet, [x for x in found if "qwen" in x.lower()] or found))
     # ★ 前置校验：模型补丁节点必须是实例里真实存在的 class_type。
     #   ComfyUI 会校验所有节点，缺一个整个 prompt 直接失败。
     host = S.engine_host(ENGINE_ID)

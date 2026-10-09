@@ -2654,9 +2654,13 @@ def parts_index(sku, view=""):
         return {"sku": sku, "view": use, "count": 0, "parts": {},
                 "note": "读取失败：%s" % exc}
     parts = data.get("objectid_map") or {}
+    # ★ 可见集合：Blender 出 pass 时从 objectid.png 反解出的「本机位真的出现的部件号」。
+    #   旧清单没有这个字段 → 返回 None，调用方据此"不判死、只提示"。
+    _raw_vis = data.get("visible_object_ids")
+    _visible = set(int(x) for x in _raw_vis) if isinstance(_raw_vis, list) else None
     return {"sku": sku, "view": use, "count": len(parts),
             "resolution": data.get("resolution"),
-            "parts": parts}
+            "parts": parts, "visible": _visible}
 
 
 # 跨机位 CMF：用模型文件内容和 Blender 网格名锚定分配，机位内的 object ID 只用来投影。
@@ -2828,6 +2832,25 @@ def validate_cmf_task(task, payload):
         raise RuntimeError("材质方案所用结构图已过期，请重新生成")
     if not os.path.isfile(os.path.join(PASSES_DIR, sku, view, "objectid.png")):
         raise RuntimeError("当前机位缺少对象 ID 图，无法准确定位材质部位；请补齐结构图")
+
+    # ★ 可见性校验：**名字在映射表里 ≠ 该部位在本机位真的出现**。
+    #   `objectid_map` 覆盖整个网格列表（本机最多 4699 项），而一个机位只渲染得到其中少数几个
+    #   （实测 渲染3/back 只有 26 个）。若方案分配的部件一个都没出现，出图时分区会**静默失效**
+    #   —— 实测 AI渲染1 的 4 个分配部件在 10 个机位里全部不可见，而校验一路放行。
+    #   规则（《材质真实感提升》P0）：至少要有一个分配部件在本机位可见；
+    #   全部不可见 → 报错；部分不可见 → 不判死，但写进元数据供审计。
+    _visible = index.get("visible")
+    if _visible is not None:
+        _assigned_ids = {int(k) for k, name in index["parts"].items()
+                         if name in set(scheme["assignments"])}
+        if _assigned_ids and not (_assigned_ids & _visible):
+            raise RuntimeError(
+                "当前机位“%s”看不到材质方案里的任何一个部位（方案 %d 个部件，本机位可见 %d 个），"
+                "分区会静默失效。请先核对方案与结构图是否来自同一个模型版本。"
+                % (view, len(_assigned_ids), len(_visible)))
+        if _assigned_ids - _visible:
+            meta["cmf_parts_not_visible"] = sorted(
+                index["parts"][str(i)] for i in (_assigned_ids - _visible))
     presets = {p["id"]: p for p in load_cmf_presets()["presets"]}
     groups = {}
     for value in scheme["assignments"].values():

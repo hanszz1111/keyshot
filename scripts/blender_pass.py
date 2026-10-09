@@ -441,6 +441,93 @@ def _linear_rgb(value):
                  for c in channels)
 
 
+# ── 材质表面纹理（P1）───────────────────────────────────────────────────────
+# 背景：`config/cmf_presets.json` 早就写了 texture.kind / scale / direction 与工艺说明，
+# 但 `apply_product_cmf()` 只把颜色、金属度、粗糙度（透明件另加透射）接到 Principled BSDF
+# —— 也就是说**细砂纹、颗粒橡胶、定向拉丝这些元数据从来没有变成可见的表面纹理**。
+# 结果：不同工艺只靠粗糙度区分，塑料和橡胶可能共享同一高光，金属也不会出现方向性反光。
+#
+# 设计要点：
+#  ★ **纹理坐标必须用 Object（或 UV），不能用 Generated/Window** ——
+#    后者会随相机与取景变化，导致同一部件在不同机位纹理尺度/方向不一致（"纹理游走"）。
+#  ★ 幅度刻意做小：微纹理是"让高光产生变化"，不是"画图案"。
+#    过强会在倒角/分模线上生成原模型不存在的视觉线条。
+#  ★ 只改材质节点，**不新增几何**。
+_TEX_SCALE = {"fine": 240.0, "medium": 90.0}   # 物体空间的基础频率
+_TEX_BUMP = {"fine_grain": 0.05, "sandblast": 0.09, "satin": 0.03,
+             "brushed": 0.10, "pebbled": 0.22, "leather_grain": 0.26,
+             "wood_grain": 0.14, "woven": 0.16}
+_TEX_ANISO = {"brushed": 0.85, "satin": 0.35}
+
+
+def _apply_surface_texture(mat, bsdf, preset):
+    """把 texture.kind/scale/direction 落成程序纹理 → Bump（+ 金属各向异性）。
+
+    返回一段可写进日志与事实卡的描述；`smooth`/`none` 返回 None（不建任何节点）。
+    """
+    tex = preset.get("texture") or {}
+    kind = str(tex.get("kind") or "smooth")
+    scale = str(tex.get("scale") or "none")
+    direction = str(tex.get("direction") or "isotropic")
+    if kind == "smooth" or scale == "none" or kind not in _TEX_BUMP:
+        return None
+
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    base = _TEX_SCALE.get(scale, 160.0)
+
+    coord = nodes.new("ShaderNodeTexCoord")
+    coord.location = (-1100, 0)
+    source = coord.outputs["Object"]          # ★ 固定在模型上，不随相机移动
+
+    if kind == "brushed":
+        node = nodes.new("ShaderNodeTexWave")
+        node.wave_type = "BANDS"
+        # 纵向拉丝：把条纹沿物体 X 轴排布，体现方向性
+        node.bands_direction = {"longitudinal": "X", "woven": "Y"}.get(direction, "Z")
+        node.inputs["Scale"].default_value = base * 0.06
+        node.inputs["Distortion"].default_value = 0.0
+        node.inputs["Detail"].default_value = 2.0
+    elif kind in ("pebbled", "leather_grain"):
+        node = nodes.new("ShaderNodeTexVoronoi")
+        node.feature = "F1"
+        node.distance = "EUCLIDEAN"
+        node.inputs["Scale"].default_value = base * (0.7 if kind == "leather_grain" else 0.5)
+        node.inputs["Randomness"].default_value = 0.9
+    elif kind == "woven":
+        node = nodes.new("ShaderNodeTexWave")
+        node.wave_type = "BANDS"
+        node.bands_direction = "X"
+        node.inputs["Scale"].default_value = base * 0.25
+        node.inputs["Distortion"].default_value = 1.5
+    elif kind == "wood_grain":
+        node = nodes.new("ShaderNodeTexWave")
+        node.wave_type = "RINGS"
+        node.inputs["Scale"].default_value = base * 0.15
+        node.inputs["Distortion"].default_value = 6.0
+        node.inputs["Detail"].default_value = 3.0
+    else:                                     # fine_grain / sandblast / satin
+        node = nodes.new("ShaderNodeTexNoise")
+        node.inputs["Scale"].default_value = base * (1.8 if kind == "sandblast" else 1.0)
+        node.inputs["Detail"].default_value = 10.0 if kind == "sandblast" else 8.0
+        node.inputs["Roughness"].default_value = 0.5
+    node.location = (-850, 0)
+    links.new(source, node.inputs["Vector"])
+
+    bump = nodes.new("ShaderNodeBump")
+    bump.location = (-450, -200)
+    bump.inputs["Strength"].default_value = _TEX_BUMP[kind]
+    bump.inputs["Distance"].default_value = 0.004 if scale == "fine" else 0.012
+    links.new(node.outputs["Fac"] if "Fac" in node.outputs else node.outputs["Color"],
+              bump.inputs["Height"])
+    links.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+
+    aniso = _TEX_ANISO.get(kind)
+    if aniso is not None and "Anisotropic" in bsdf.inputs:
+        bsdf.inputs["Anisotropic"].default_value = aniso
+    return "%s/%s/%s bump=%.2f%s" % (kind, scale, direction, _TEX_BUMP[kind],
+                                     (" 各向异性=%.2f" % aniso) if aniso else "")
+
+
 def apply_product_cmf(args):
     """按稳定网格名赋 Principled BSDF；不猜缺失部件，也不改变源文件。"""
     if not all((args.cmf_scheme, args.cmf_presets, args.body_cmf, args.body_color)):
@@ -458,6 +545,7 @@ def apply_product_cmf(args):
     if missing:
         raise ValueError("CMF 方案里有 %d 个网格在本次导入中不存在" % len(missing))
     material_cache = {}
+    textured = {}          # key=(预设,颜色) -> 表面纹理描述，写进日志便于审计
     for name, obj in meshes.items():
         assigned = assignments.get(name) or {}
         preset_id = assigned.get("cmf") or args.body_cmf
@@ -480,6 +568,10 @@ def apply_product_cmf(args):
                 transmission = bsdf.inputs.get("Transmission Weight") or bsdf.inputs.get("Transmission")
                 if transmission:
                     transmission.default_value = 1.0
+            # P1：把 texture.kind/scale/direction 落成可见的表面纹理
+            surface_desc = _apply_surface_texture(mat, bsdf, preset)
+            if surface_desc:
+                textured[key] = surface_desc
             output = nodes.new("ShaderNodeOutputMaterial")
             mat.node_tree.links.new(bsdf.outputs["BSDF"], output.inputs["Surface"])
             mat.diffuse_color = (*_linear_rgb(color), 1.0)
@@ -488,8 +580,10 @@ def apply_product_cmf(args):
             obj.data = obj.data.copy()  # 共享 Mesh 不能让一个部件的材质覆盖其他实例
         obj.data.materials.clear()
         obj.data.materials.append(mat)
-    log("CMF 真材质：%d 网格 / %d 种 Principled 材质 / %d 个指定部件" %
-        (len(meshes), len(material_cache), len(assignments)))
+    log("CMF 真材质：%d 网格 / %d 种 Principled 材质 / %d 个指定部件 / %d 种带表面纹理" %
+        (len(meshes), len(material_cache), len(assignments), len(textured)))
+    for _key, _desc in sorted(textured.items()):
+        log("  表面纹理 %s：%s" % (_key[0], _desc))
 
 
 def render_product_base(args, center, size, prepared=False):
@@ -690,6 +784,37 @@ def setup_compositor(outdir, do_demorm=True):
         tree.links.new(id_scale.outputs[0], png_node.inputs[2])
 
     return tree
+
+
+def visible_object_ids(png_path, step=2):
+    """从已写出的 objectid.png 反解「本机位**实际可见**的部件号」。
+
+    ★ 为什么需要它：`objectid_map` 覆盖的是**整个网格列表**（本项目 2530 项），
+      而一个机位只渲染得到其中少数几个。于是「方案把材质分配给了一个在本机位
+      根本不出现的部件」这种情况，**只校验名字是发现不了的** ——
+      实测 `AI渲染1` 的 4 个分配部件在 10 个机位里全部不可见，而校验一路放行、
+      出图时分区静默失效。
+
+    存储时 ID 被除以 65535 压进 16 位 PNG（见上方注释），所以读回乘 65535 还原。
+    抽样 step 个像素即可判定"是否出现"，不必全图扫描。
+    """
+    try:
+        img = bpy.data.images.load(png_path)
+        img.colorspace_settings.name = "Non-Color"
+        width, height = img.size
+        pixels = list(img.pixels)          # RGBA float，行优先
+        seen = set()
+        for y in range(0, height, step):
+            base = y * width * 4
+            for x in range(0, width, step):
+                value = pixels[base + x * 4]
+                if value > 0.0:
+                    seen.add(int(round(value * 65535.0)))
+        bpy.data.images.remove(img)
+        return sorted(seen)
+    except Exception as exc:                # 反解失败不该让整张图失败
+        log("警告：无法反解 objectid 可见部件号：%s" % exc)
+        return []
 
 
 def normal_to_png(exr_path, png_path):
@@ -916,6 +1041,10 @@ def main():
         "renderer": f"Cycles/{bpy.context.scene.cycles.device}",
         "color_management": "view_transform=Standard / film_transparent=True",
         "objectid_map": mapping,
+        # ★ 本机位实际可见的部件号（从 objectid.png 反解）。
+        #   校验端据此判断"方案分配的部件在这一面到底出没出现"，
+        #   否则名字齐全会让不可见的分配静默通过（AI渲染1 实测）。
+        "visible_object_ids": visible_object_ids(os.path.join(outdir, "objectid.png")),
         "passes": final,
         "blender": bpy.app.version_string,
     }

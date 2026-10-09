@@ -23,7 +23,7 @@ import qwen_ab_experiment as A  # noqa: E402
 
 def diff_fields(x, y):
     """返回两个 arm 之间**不同**的字段名集合。"""
-    return {k for k in ("variant", "cfg", "guard", "negative", "clip", "shift", "cache", "unet", "steps")
+    return {k for k in ("variant", "cfg", "guard", "negative", "clip", "shift", "cache", "unet", "steps", "lora")
             if getattr(x, k) != getattr(y, k)}
 
 
@@ -163,7 +163,7 @@ class ArmComparabilityTest(unittest.TestCase):
             self.assertIsNone(a.cache)
 
     def test_all_presets_have_unique_keys(self):
-        for name in ("prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "viggle"):
+        for name in ("prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "viggle", "lora"):
             keys = [a.key for a in A.preset_arms(name)]
             self.assertEqual(len(keys), len(set(keys)), "预设 %s 的臂代号必须唯一" % name)
 

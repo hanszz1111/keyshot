@@ -129,7 +129,7 @@ class Arm(object):
     """一条实验臂 = 一组完全确定的参数。"""
 
     def __init__(self, key, label, variant, cfg, guard, negative, clip=None,
-                 shift=None, cache=None, input_kind=None, unet=None, steps=None):
+                 shift=None, cache=None, input_kind=None, unet=None, steps=None, lora=None):
         self.key = key
         self.label = label
         self.variant = variant      # "legacy" | "new"
@@ -142,6 +142,7 @@ class Arm(object):
         self.input_kind = input_kind  # P1 用：None = 跟随命令行；否则该臂单独指定
         self.unet = unet            # None = 用生产默认主模型；否则换主模型
         self.steps = steps          # None = 跟随命令行；否则该臂单独指定步数
+        self.lora = lora            # None = 不加 LoRA；(文件名, 强度) 则在 UNETLoader 后插 LoraLoaderModelOnly
 
     def to_dict(self):
         return {"key": self.key, "label": self.label, "variant": self.variant,
@@ -151,7 +152,8 @@ class Arm(object):
                 "cache": list(self.cache) if self.cache else "（不插节点）",
                 "input_kind": self.input_kind or "（跟随命令行）",
                 "unet": self.unet or "（生产默认）",
-                "steps": self.steps if self.steps is not None else "（跟随命令行）"}
+                "steps": self.steps if self.steps is not None else "（跟随命令行）",
+                "lora": ("%s @ %.2f" % (self.lora[0], self.lora[1])) if self.lora else "（不加）"}
 
 
 def _patch_classes(arm):
@@ -161,6 +163,8 @@ def _patch_classes(arm):
         out.append("ModelSamplingAuraFlow")
     if getattr(arm, "cache", None):
         out.append("QwenImage21Cache")
+    if getattr(arm, "lora", None):
+        out.append("LoraLoaderModelOnly")
     return out
 
 
@@ -193,6 +197,22 @@ def preset_arms(name):
                 unet="Qwen-Image-2.1-viggle-turbo-v0.3-6step-int8_convrot.safetensors", steps=6),
             Arm("V-viggle25", "Viggle 模型 · 25 步（诊断：分离「换模型」与「减步数」）", "new", 1.0, guard=False, negative=True,
                 unet="Qwen-Image-2.1-viggle-turbo-v0.3-6step-int8_convrot.safetensors", steps=25),
+        ]
+    if name == "lora":
+        # 工业/材质类 LoRA 的可用性验证。
+        # ★ 背景：4 个候选里有 3 个是为 **Qwen-Image-Edit-2511** 训练的，而我们的基座是
+        #   **Qwen-Image-2.1** —— 跨代 LoRA 未必兼容，所以必须实测，不能只看名字。
+        # 另一条已知风险：本项目 UNET 是 **int8**，而 LoraLoaderModelOnly 会把 LoRA
+        #   **合并进权重**；社区结论是「int8 上合并会引入约 4 倍于更新量的噪声」。
+        #   若本预设里 LoRA 臂出现明显噪点，就是这条被复现了。
+        return [
+            Arm("L-none", "无 LoRA（基线）", "new", 1.0, guard=False, negative=True),
+            Arm("L-exposure", "自然曝光（为 2.1 训练，基座匹配）", "new", 1.0, guard=False, negative=True,
+                lora=("qwen21-natural-exposure.safetensors", 1.0)),
+            Arm("L-material", "材质预览（为 2511 训练，基座跨代）", "new", 1.0, guard=False, negative=True,
+                lora=("qwen-material-preview-2511.safetensors", 1.0)),
+            Arm("L-angles", "多角度（为 2511 训练，基座跨代）", "new", 1.0, guard=False, negative=True,
+                lora=("qwen-multiple-angles-2511.safetensors", 1.0)),
         ]
     if name == "input":
         # P1（方案 §四 P1）：输入图决定上限。
@@ -370,6 +390,9 @@ def insert_model_patches(wf, arm):
       这样每次实验的工作流都在事实卡里留了插入记录，生产链路一行没动。
     """
     patches = []
+    if getattr(arm, "lora", None):
+        patches.append(("LoraLoaderModelOnly",
+                        {"lora_name": arm.lora[0], "strength_model": float(arm.lora[1])}))
     if getattr(arm, "shift", None) is not None:
         patches.append(("ModelSamplingAuraFlow",
                         {"shift": float(arm.shift), "sampling": "flow"}))
@@ -734,7 +757,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="qwen_ab_experiment.py",
                                  description="千问 A/B 受控实验批处理（不写生产任务库）")
     ap.add_argument("--preset", default="prompt",
-                    choices=["prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "input", "viggle", "smoke"])
+                    choices=["prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "input", "viggle", "lora", "smoke"])
     ap.add_argument("--sku", default="AI渲染1")
     ap.add_argument("--views", default="", help="逗号分隔；默认按预设（prompt*/cfg=front,3q4_left；smoke=front）")
     ap.add_argument("--seeds", default="", help="逗号分隔；smoke 默认 43")

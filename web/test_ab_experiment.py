@@ -163,7 +163,7 @@ class ArmComparabilityTest(unittest.TestCase):
             self.assertIsNone(a.cache)
 
     def test_all_presets_have_unique_keys(self):
-        for name in ("prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "viggle", "lora"):
+        for name in ("prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "viggle", "lora", "design"):
             keys = [a.key for a in A.preset_arms(name)]
             self.assertEqual(len(keys), len(set(keys)), "预设 %s 的臂代号必须唯一" % name)
 

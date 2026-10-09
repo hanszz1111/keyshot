@@ -100,6 +100,58 @@ PROMPT_VARIANTS = {
             "material to another part."
         ),
     },
+    "design": {
+        # 参考一份 FLUX.dev 工业电器设计 LoRA 的模型页提示词写法（触发词 GYJ，
+        # 推荐 CFG 3.5 / 30 步 / Euler / 权重 0.8）。它的风格是**描述性设计语言**：
+        # "High resolution photos of classic black and silver film cameras with textured
+        #  black grips that feature a 50mm lens. The camera body has a smooth metal top
+        #  plate and a small viewfinder. The background is a light grey surface that
+        #  emphasizes the stylish vintage design."
+        # ★ 与我们现有写法的差别：我们堆「不许改什么」（约束），它堆「它看起来是什么」（意象）。
+        #   注意它的推荐 CFG 是 3.5 —— 而本项目 CFG=1，已实测「提示词几乎不起作用」。
+        #   所以这个变体要和 CFG 一起测，否则可能得出「换了写法也没用」的错误结论。
+        "origin": "外部模型页样例（2026-10-09）",
+        "lead": "High resolution photo of {sku}, a modern industrial measuring instrument, {view_en}.",
+        "linked": (
+            "<image1> is the same product and the same camera angle. <image2> shows it from "
+            "another angle, for identity only — keep <image1>'s view and shape."
+        ),
+        "anchor": "<image1> is the same product and the same camera angle.",
+        "identity": (
+            "Matte black housing with brushed silver detailing and a textured dark grip; "
+            "exact body colour {color}. The body has a smooth anodized top plate and a small "
+            "recessed display window."
+        ),
+        "tail_clay": (
+            "The background is a soft light-grey gradient surface that emphasizes the stylish "
+            "minimal design of the device."
+        ),
+        "tail_pbr": (
+            "The background is a soft light-grey gradient surface that emphasizes the stylish "
+            "minimal design of the device."
+        ),
+    },
+    "design_raw": {
+        # 与 design 同风格，但**完全去掉保形语句** —— 用来分离
+        # 「换写法有没有用」与「去掉约束会不会把几何弄丢」。
+        "origin": "外部模型页样例（2026-10-09）· 去约束版",
+        "lead": "High resolution photo of {sku}, a modern industrial measuring instrument, {view_en}.",
+        "linked": "<image2> shows the same product from another angle.",
+        "anchor": "",
+        "identity": (
+            "Matte black housing with brushed silver detailing and a textured dark grip; "
+            "exact body colour {color}. The body has a smooth anodized top plate and a small "
+            "recessed display window."
+        ),
+        "tail_clay": (
+            "The background is a soft light-grey gradient surface that emphasizes the stylish "
+            "minimal design of the device."
+        ),
+        "tail_pbr": (
+            "The background is a soft light-grey gradient surface that emphasizes the stylish "
+            "minimal design of the device."
+        ),
+    },
     "new": {
         "origin": "c5998a2 (v3.29 起)",
         "lead": "Edit <image1> into a high-quality product photograph of {sku}, {view_en}.",
@@ -197,6 +249,19 @@ def preset_arms(name):
                 unet="Qwen-Image-2.1-viggle-turbo-v0.3-6step-int8_convrot.safetensors", steps=6),
             Arm("V-viggle25", "Viggle 模型 · 25 步（诊断：分离「换模型」与「减步数」）", "new", 1.0, guard=False, negative=True,
                 unet="Qwen-Image-2.1-viggle-turbo-v0.3-6step-int8_convrot.safetensors", steps=25),
+        ]
+    if name == "design":
+        # 参照外部 FLUX 工业设计 LoRA 的**提示词风格**（描述性设计语言）做对照。
+        # 关键：那个模型的推荐 CFG 是 **3.5**，而本项目默认 CFG=1；
+        # 我们已实测 CFG=1 时提示词几乎不起作用，所以必须把「换写法」与「提高 CFG」分开看，
+        # 否则容易得出「换写法没用」的错误结论。
+        base = dict(cfg=1.0, guard=False, negative=True)
+        return [
+            Arm("G-current", "现有写法（基线，CFG=1）", "new", **base),
+            Arm("G-design", "设计语言写法（CFG=1，只换写法）", "design", **base),
+            Arm("G-raw", "设计语言写法·去掉保形语句（CFG=1）", "design_raw", **base),
+            Arm("G-design35", "设计语言写法 + CFG 3.5 + 30 步（照它推荐）", "design",
+                cfg=3.5, guard=False, negative=True, steps=30),
         ]
     if name == "lora":
         # 工业/材质类 LoRA 的可用性验证。
@@ -757,7 +822,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="qwen_ab_experiment.py",
                                  description="千问 A/B 受控实验批处理（不写生产任务库）")
     ap.add_argument("--preset", default="prompt",
-                    choices=["prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "input", "viggle", "lora", "smoke"])
+                    choices=["prompt", "prompt2", "cfg", "clip", "shift", "shiftx", "cache", "input", "viggle", "lora", "design", "smoke"])
     ap.add_argument("--sku", default="AI渲染1")
     ap.add_argument("--views", default="", help="逗号分隔；默认按预设（prompt*/cfg=front,3q4_left；smoke=front）")
     ap.add_argument("--seeds", default="", help="逗号分隔；smoke 默认 43")

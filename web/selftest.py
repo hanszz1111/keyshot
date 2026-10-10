@@ -122,11 +122,33 @@ def main():
     for view, front_id, grip_id in (("front", "1", "2"), ("side", "7", "3")):
         folder = os.path.join(S.PASSES_DIR, CMF_TEST_SKU, view)
         os.makedirs(folder, exist_ok=True)
+        # ★ 夹具要写成**现代清单**：`source_signature`（同源核对用）与
+        #   `visible_object_stats` / `visible_object_ids`（可见性核对用）都是
+        #   `validate_cmf_pass_contract()` 的必需项 —— 缺了会被正当地拒绝，
+        #   那属于"夹具过时"，不是"校验太严"（S1 明确要求旧清单不能静默放行）。
+        preset = S.view_preset(view) or {}
+        st_model = os.stat(model_path)
         with open(os.path.join(folder, "pass_manifest.json"), "w", encoding="utf-8") as f:
             json.dump({"pass_format_version": S.PASS_FORMAT_VERSION,
                        "depth_encoding": {"encoding": "near_white_far_dark_bg_black_v2",
                                           "background": 0.0, "foreground_pixels": 4, "pixels": 16},
-                       "objectid_map": {front_id: "FrontShell", grip_id: "Grip"}}, f)
+                       "camera": {"azimuth": preset.get("azimuth", 0.0),
+                                  "elevation": preset.get("elevation", 8.0),
+                                  "fit": 1.18},
+                       "resolution": [1232, 752],
+                       "source_signature": {"rel": "%s/part.obj" % CMF_TEST_SKU,
+                                            "size": st_model.st_size,
+                                            "mtime_ns": st_model.st_mtime_ns,
+                                            "view": [preset.get("azimuth", 0.0),
+                                                     preset.get("elevation", 8.0)]},
+                       "objectid_map": {front_id: "FrontShell", grip_id: "Grip"},
+                       "visible_object_ids": [int(front_id), int(grip_id)],
+                       "visible_object_stats": {"encoding_version": 1, "status": "ok",
+                                                "total_pixels": 16, "foreground_pixels": 12,
+                                                "counts": {front_id: 10, grip_id: 2},
+                                                "min_editable_pixels": 1,
+                                                "editable_ids": [int(front_id), int(grip_id)],
+                                                "message": ""}}, f)
         with open(os.path.join(folder, "objectid.png"), "wb") as f:
             f.write(b"selftest-placeholder; guide image decoding is tested separately")
     st, body = req("GET", "/api/cmf/scheme?sku=" + CMF_TEST_SKU)

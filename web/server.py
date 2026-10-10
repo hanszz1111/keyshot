@@ -2665,8 +2665,36 @@ def parts_index(sku, view=""):
 
 # 跨机位 CMF：用模型文件内容和 Blender 网格名锚定分配，机位内的 object ID 只用来投影。
 CMF_SCHEME_DIR = os.path.join(DATA, "cmf_schemes")
-CMF_SCHEME_LOCK = threading.Lock()
+CMF_SCHEME_LOCK = threading.RLock()
 _MODEL_HASH_CACHE = {}
+
+
+def _hash_model_file(path):
+    """投放区内某个文件的**内容** SHA-256（带缓存）。★ 单一实现，`_cmf_model()` 与
+    同源校验共用 —— 两处各写一份迟早会漂移。路径非法或读不到返回空串。"""
+    try:
+        real = os.path.realpath(path)
+        if os.path.commonpath((os.path.realpath(MODELS_DIR), real)) != os.path.realpath(MODELS_DIR):
+            return ""
+        if not os.path.isfile(real):
+            return ""
+        st = os.stat(real)
+        key = (real, st.st_size, st.st_mtime_ns)
+        with CMF_SCHEME_LOCK:
+            digest = _MODEL_HASH_CACHE.get(key)
+        if digest:
+            return digest
+        h = hashlib.sha256()
+        with open(real, "rb") as f:
+            for block in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(block)
+        digest = h.hexdigest()
+        with CMF_SCHEME_LOCK:
+            _MODEL_HASH_CACHE.clear()
+            _MODEL_HASH_CACHE[key] = digest
+        return digest
+    except (OSError, ValueError):
+        return ""
 
 
 def _cmf_model(sku):
@@ -2676,17 +2704,9 @@ def _cmf_model(sku):
     path = os.path.abspath(model["path"])
     if os.path.commonpath((os.path.realpath(MODELS_DIR), os.path.realpath(path))) != os.path.realpath(MODELS_DIR):
         raise ValueError("模型路径不在白模投放区内")
-    st = os.stat(path)
-    key = (path, st.st_size, st.st_mtime_ns)
-    digest = _MODEL_HASH_CACHE.get(key)
+    digest = _hash_model_file(path)
     if not digest:
-        h = hashlib.sha256()
-        with open(path, "rb") as f:
-            for block in iter(lambda: f.read(1024 * 1024), b""):
-                h.update(block)
-        digest = h.hexdigest()
-        _MODEL_HASH_CACHE.clear()
-        _MODEL_HASH_CACHE[key] = digest
+        raise ValueError("无法读取该产品的源白模内容，不能保存跨机位材质方案")
     return model, digest
 
 
@@ -2806,6 +2826,116 @@ def remove_cmf_assignment(sku, view, part_id):
         return {**result, "stale": False}
 
 
+def _model_content_hash(rel):
+    """投放区内某相对路径白模的**内容** SHA-256（走共用的 `_hash_model_file`）。"""
+    return _hash_model_file(os.path.join(MODELS_DIR, rel or ""))
+
+
+def validate_cmf_pass_contract(sku, view, scheme, manifest_path=None):
+    """CMF 与结构图「同源 + 部件真实可见」的**共用**校验（S1）。
+
+    ★ 为什么要抽成共用函数：早先 AI 任务提交（`validate_cmf_task`）与 PBR 底图生成
+      （`product_base_spec`）各查各的 —— 一条拒绝错图、另一条照样渲染。实测 `AI渲染1`
+      的 CMF 方案指向 rev30/32，而各机位 pass 是 rev22–28，**4 个分配部件在 10 个机位里
+      一个都不可见**，两条入口却都没拦住。
+
+    校验顺序（对齐《材质真实感更新审核纠正》S1 §2）：
+      ① 当前机位 pass / ID 图存在且格式有效
+      ② 清单记录的源模型与方案的 `model` **内容指纹一致**（不是"文件还在"就算同源）
+      ③ 相机与尺寸对该机位成立
+      ④ 分配部件名能映射到 objectid_map
+      ⑤ 可见性元数据**确实可用**（旧清单缺字段 → 拒绝，不再当 `None` 放行）
+      ⑥ 当前机位**至少有一个**分配部件可见
+
+    通过返回 dict（含 visible 统计）；不通过抛 `RuntimeError`，消息面向用户可理解。
+    """
+    manifest_path = manifest_path or os.path.join(PASSES_DIR, sku, view, "pass_manifest.json")
+    if not os.path.isfile(manifest_path):
+        raise RuntimeError("当前机位还没有结构图清单，请先生成结构图")
+    if not os.path.isfile(os.path.join(PASSES_DIR, sku, view, "objectid.png")):
+        raise RuntimeError("当前机位缺少对象 ID 图，无法定位材质部位；请补齐结构图")
+    issue = _pass_manifest_issue(os.path.join(PASSES_DIR, sku, view))
+    if issue:
+        raise RuntimeError(issue)
+    try:
+        with open(manifest_path, "r", encoding="utf-8", errors="replace") as stream:
+            manifest = json.load(stream)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("结构图清单读取失败：%s" % exc)
+
+    # ② 同源：源模型**内容指纹**必须与方案一致。
+    #    ★ 不能只比"文件还在"——清单里的 source_signature 原本只有 size/mtime，
+    #      换了内容但大小时间没变（或反过来）就会漏判；所以这里实算 SHA-256。
+    sig = manifest.get("source_signature") or {}
+    rel = sig.get("rel") or ""
+    wanted = str(scheme.get("fingerprint") or "")
+    if not wanted:
+        raise RuntimeError("材质方案缺少模型指纹，无法核对同源；请重新保存方案")
+    if not rel:
+        raise RuntimeError("当前机位结构图没有记录源模型来源，无法核对与材质方案同源；请重新生成结构图")
+    actual = _model_content_hash(rel)
+    if not actual:
+        raise RuntimeError("结构图对应的源模型读不到（%s），请重新导入并生成结构图" % rel)
+    if actual != wanted:
+        raise RuntimeError(
+            "当前机位结构图与材质方案**不是同一份模型**：结构图用的是 %s，而材质方案锚定的是另一份"
+            "（指纹 %s…）。分区会静默失效。请用方案锚定的那份模型重出该机位结构图，或重建方案。"
+            % (os.path.basename(rel), wanted[:16]))
+
+    # ③ 相机与尺寸
+    preset = view_preset(view)
+    camera = manifest.get("camera") or {}
+    if preset and [camera.get("azimuth"), camera.get("elevation")] != [preset["azimuth"], preset["elevation"]]:
+        raise RuntimeError("机位参数已更新，当前结构图过期，请重新生成")
+    dims = manifest.get("resolution") or []
+    if len(dims) != 2 or not all(isinstance(v, int) and 256 <= v <= 4096 for v in dims):
+        raise RuntimeError("结构图清单缺少有效尺寸，请重新生成当前机位")
+
+    # ④ 部件名 → objectid_map
+    parts = manifest.get("objectid_map") or {}
+    names = set(parts.values())
+    assigned = set(scheme.get("assignments") or {})
+    if not assigned:
+        raise RuntimeError("材质方案为空，请先指派部件材质")
+    missing = assigned - names
+    if missing:
+        raise RuntimeError("当前机位无法映射 %d 个材质部位，请补齐结构图并重新核对方案" % len(missing))
+
+    # ⑤ 可见性元数据必须**确实可用**。
+    #    ★ 旧自动清单没有这个字段。以前返回 None 就"不判死"放行了 ——
+    #      结果是「方案分配给了一个本机位根本不出现的部件」这类问题一路通过。
+    #      S1 明确要求：缺字段就拒绝，让用户重建当前机位。
+    stats = manifest.get("visible_object_stats")
+    raw_ids = manifest.get("visible_object_ids")
+    if not isinstance(stats, dict) and not isinstance(raw_ids, list):
+        raise RuntimeError(
+            "此结构图缺少部件可见性信息（旧版清单），无法确认材质分区是否真的生效；"
+            "请重建当前机位结构图。")
+    if isinstance(stats, dict):
+        status = stats.get("status")
+        if status == "read_failed":
+            raise RuntimeError("当前机位的部件可见性反解失败（%s），请重建结构图" % stats.get("message", ""))
+        if status == "no_foreground":
+            raise RuntimeError("当前机位 objectid 图前景为空，结构图无效，请重建")
+        visible = set(int(k) for k in (stats.get("counts") or {}))
+    else:
+        visible = set(int(x) for x in raw_ids)
+
+    # ⑥ 本机位至少一个分配部件可见
+    assigned_ids = {int(k) for k, name in parts.items() if name in assigned}
+    shown = assigned_ids & visible
+    if not shown:
+        raise RuntimeError(
+            "当前机位“%s”看不到材质方案里的任何一个部位（方案 %d 个部件，本机位可见 %d 个），"
+            "分区会静默失效。请核对方案与结构图是否来自同一个模型版本。" % (view, len(assigned_ids), len(visible)))
+    return {"manifest": manifest, "visible": visible, "assigned_ids": assigned_ids,
+            "shown_ids": shown, "not_visible": sorted(index_part_name(parts, i) for i in (assigned_ids - visible))}
+
+
+def index_part_name(parts, oid):
+    return parts.get(str(oid), "id%s" % oid)
+
+
 def validate_cmf_task(task, payload):
     """提交时验证任务快照；不让旧方案或错机位偷偷生效。"""
     meta = payload.get("_meta") or {}
@@ -2833,24 +2963,13 @@ def validate_cmf_task(task, payload):
     if not os.path.isfile(os.path.join(PASSES_DIR, sku, view, "objectid.png")):
         raise RuntimeError("当前机位缺少对象 ID 图，无法准确定位材质部位；请补齐结构图")
 
-    # ★ 可见性校验：**名字在映射表里 ≠ 该部位在本机位真的出现**。
-    #   `objectid_map` 覆盖整个网格列表（本机最多 4699 项），而一个机位只渲染得到其中少数几个
-    #   （实测 渲染3/back 只有 26 个）。若方案分配的部件一个都没出现，出图时分区会**静默失效**
-    #   —— 实测 AI渲染1 的 4 个分配部件在 10 个机位里全部不可见，而校验一路放行。
-    #   规则（《材质真实感提升》P0）：至少要有一个分配部件在本机位可见；
-    #   全部不可见 → 报错；部分不可见 → 不判死，但写进元数据供审计。
-    _visible = index.get("visible")
-    if _visible is not None:
-        _assigned_ids = {int(k) for k, name in index["parts"].items()
-                         if name in set(scheme["assignments"])}
-        if _assigned_ids and not (_assigned_ids & _visible):
-            raise RuntimeError(
-                "当前机位“%s”看不到材质方案里的任何一个部位（方案 %d 个部件，本机位可见 %d 个），"
-                "分区会静默失效。请先核对方案与结构图是否来自同一个模型版本。"
-                % (view, len(_assigned_ids), len(_visible)))
-        if _assigned_ids - _visible:
-            meta["cmf_parts_not_visible"] = sorted(
-                index["parts"][str(i)] for i in (_assigned_ids - _visible))
+    # ★ 同源 + 可见性：**抽成共用契约**，AI 任务提交与 PBR 底图生成两条入口都调它，
+    #   避免一条拒绝错图、另一条照样渲染（这正是 AI渲染1 出问题时的情形）。
+    #   契约内部依次核对：清单格式 → 源模型**内容指纹**是否等于方案 fingerprint →
+    #   相机/尺寸 → 部件名可映射 → 可见性元数据可用（旧清单直接拒绝）→ 至少一个部件可见。
+    _contract = validate_cmf_pass_contract(sku, view, scheme)
+    if _contract["not_visible"]:
+        meta["cmf_parts_not_visible"] = _contract["not_visible"]
     presets = {p["id"]: p for p in load_cmf_presets()["presets"]}
     groups = {}
     for value in scheme["assignments"].values():

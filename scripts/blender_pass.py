@@ -36,6 +36,7 @@ import os
 import sys
 
 import bpy
+import numpy as np
 import mathutils
 
 # ---------------------------------------------------------------- 常量
@@ -56,6 +57,15 @@ STEPPER_MODULES = ("STEPper",)
 # Rhino .3dm 导入器的模块名。Blender 4.2+ 把扩展装到带命名空间的
 # bl_ext.<repo>.<id> 下，所以扩展形式要排前面（实测裸名 import_3dm 找不到）。
 THREEDM_MODULES = ("bl_ext.user_default.import_3dm", "import_3dm")
+
+# ── 可见部件反解（S2）────────────────────────────────────────────────────────
+# encoding_version 随「编码方式或判定规则改变」而递增；清单里记下它，
+# 才能把「旧清单缺字段 / 版本不同」与「确实没有部件」区分开。
+_VISIBLE_ENCODING_VERSION = 1
+# 「出现过」与「足够大可做材质选区」的分界（真值像素数）。
+# ★ 取保守小值：宁可放进细按钮/边缘件，也不要因为阈值过高把它们判成不可见。
+#   在真实样张校准之前，这个值只用于提示，不作为拒绝依据。
+_VISIBLE_MIN_EDITABLE_PIXELS = 24
 
 # 机位别名（与 web/index.html 的机位词表保持一致）
 VIEW_ALIAS = {
@@ -786,8 +796,8 @@ def setup_compositor(outdir, do_demorm=True):
     return tree
 
 
-def visible_object_ids(png_path, step=2):
-    """从已写出的 objectid.png 反解「本机位**实际可见**的部件号」。
+def visible_object_id_stats(png_path, min_editable=_VISIBLE_MIN_EDITABLE_PIXELS):
+    """从已写出的 objectid.png 反解「本机位**实际可见**的部件号」及每个的真值像素数。
 
     ★ 为什么需要它：`objectid_map` 覆盖的是**整个网格列表**（本项目 2530 项），
       而一个机位只渲染得到其中少数几个。于是「方案把材质分配给了一个在本机位
@@ -795,26 +805,70 @@ def visible_object_ids(png_path, step=2):
       实测 `AI渲染1` 的 4 个分配部件在 10 个机位里全部不可见，而校验一路放行、
       出图时分区静默失效。
 
+    ★ 三个关键的实现要求（《材质真实感更新审核纠正》S2）：
+
+    1. **必须全像素扫描，不能抽样。** 早先的 `step=2` 版本会**漏掉只落在奇数行/列的
+       细部件**（细按钮、边缘件）。而且抽样并不省内存 —— `list(img.pixels)` 已经把整图
+       读进来了。这里改用 `foreach_get` 直读进 numpy 连续数组，**既省内存又不漏检**。
+    2. **读取失败必须返回明确状态，不能返回 `[]`。** 把"解码失败"和"确实没有前景"
+       混为一谈，会让失败被当成正常，静默放行。
+       `status` 取 `ok` / `no_foreground` / `read_failed`；`[]` 只属于 `no_foreground`，
+       而那种 pass 本身应当判为失败。
+    3. **"出现过"与"足够大可做材质选区"要分开。** 一个噪声像素也能算"出现"，
+       但不能拿它做选区。`counts` 记真实计数，`editable_ids` 按 `min_editable` 过滤；
+       阈值取保守小值，避免把细按钮/边缘件排除掉。
+
     存储时 ID 被除以 65535 压进 16 位 PNG（见上方注释），所以读回乘 65535 还原。
-    抽样 step 个像素即可判定"是否出现"，不必全图扫描。
     """
+    stats = {"encoding_version": _VISIBLE_ENCODING_VERSION, "status": "read_failed",
+             "total_pixels": 0, "foreground_pixels": 0, "counts": {},
+             "min_editable_pixels": int(min_editable), "editable_ids": [], "message": ""}
+    img = None
     try:
         img = bpy.data.images.load(png_path)
         img.colorspace_settings.name = "Non-Color"
         width, height = img.size
-        pixels = list(img.pixels)          # RGBA float，行优先
-        seen = set()
-        for y in range(0, height, step):
-            base = y * width * 4
-            for x in range(0, width, step):
-                value = pixels[base + x * 4]
-                if value > 0.0:
-                    seen.add(int(round(value * 65535.0)))
-        bpy.data.images.remove(img)
-        return sorted(seen)
-    except Exception as exc:                # 反解失败不该让整张图失败
-        log("警告：无法反解 objectid 可见部件号：%s" % exc)
-        return []
+        if width <= 0 or height <= 0:
+            stats["message"] = "图像尺寸无效：%sx%s" % (width, height)
+            return stats
+        buf = np.empty(width * height * 4, dtype=np.float32)
+        img.pixels.foreach_get(buf)                     # ★ 直读进连续数组，不建 Python 浮点列表
+        ids = np.rint(buf[0::4] * 65535.0).astype(np.int32)
+        stats["total_pixels"] = int(ids.size)
+        foreground = ids[ids > 0]
+        stats["foreground_pixels"] = int(foreground.size)
+        if foreground.size == 0:
+            stats["status"] = "no_foreground"
+            stats["message"] = "该机位 objectid 图没有非零像素（前景为空，pass 应判失败）"
+            return stats
+        uniq, counts = np.unique(foreground, return_counts=True)
+        stats["counts"] = {int(k): int(v) for k, v in zip(uniq.tolist(), counts.tolist())}
+        stats["editable_ids"] = sorted(int(k) for k, v in zip(uniq.tolist(), counts.tolist())
+                                       if v >= int(min_editable))
+        stats["status"] = "ok"
+        return stats
+    except Exception as exc:
+        stats["message"] = "%s: %s" % (type(exc).__name__, exc)
+        return stats
+    finally:
+        if img is not None:
+            try:
+                bpy.data.images.remove(img)             # ★ 放 finally：异常时也别把图像留在会话里
+            except Exception:
+                pass
+
+
+def visible_object_ids(png_path):
+    """兼容入口：返回排序后的可见部件号；**读取失败返回 None（而不是 `[]`）**。
+
+    `[]` 只会在 `status == "no_foreground"`（确实没有前景）时出现，
+    调用方应把这种情况与 `None` 区别对待。
+    """
+    stats = visible_object_id_stats(png_path)
+    if stats["status"] == "read_failed":
+        log("警告：无法反解 objectid 可见部件号：%s" % stats["message"])
+        return None
+    return sorted(stats["counts"])
 
 
 def normal_to_png(exr_path, png_path):
@@ -1027,6 +1081,9 @@ def main():
             log("  ✅ normal.png")
 
     # 工件清单（本机 pass 级）
+    _oid_stats = visible_object_id_stats(os.path.join(outdir, "objectid.png"))
+    if _oid_stats["status"] != "ok":
+        log("警告：可见部件反解状态=%s（%s）" % (_oid_stats["status"], _oid_stats["message"]))
     meta = {
         "pass_format_version": 2,
         "depth_encoding": depth_stats,
@@ -1044,7 +1101,14 @@ def main():
         # ★ 本机位实际可见的部件号（从 objectid.png 反解）。
         #   校验端据此判断"方案分配的部件在这一面到底出没出现"，
         #   否则名字齐全会让不可见的分配静默通过（AI渲染1 实测）。
+        # ★ 本机位实际可见的部件号（从 objectid.png **全像素**反解）。
+        #   校验端据此判断「方案分配的部件在这一面到底出没出现」，
+        #   否则名字齐全会让不可见的分配静默通过（AI渲染1 实测）。
+        #   `visible_object_ids` 保持纯列表以兼容旧读取方；
+        #   `visible_object_stats` 带 status / 每 ID 像素数 / 编码版本 ——
+        #   用来区分「读取失败」与「确实没有部件」，S2 明确要求两者不能混。
         "visible_object_ids": visible_object_ids(os.path.join(outdir, "objectid.png")),
+        "visible_object_stats": _oid_stats,
         "passes": final,
         "blender": bpy.app.version_string,
     }

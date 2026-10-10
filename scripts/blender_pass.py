@@ -722,7 +722,15 @@ def get_node_tree():
 
 
 def add_file_output(tree, base, slots, fmt, color_depth, name):
-    """一个 File Output 节点只支持一种格式，所以按格式分节点。"""
+    """一个 File Output 节点只支持一种格式，所以按格式分节点。
+
+    ★ 顺手把**每个 slot 的 format** 也显式设一遍。
+    Blender 4.x 的 `CompositorNodeOutputFile` 给每个 `file_slots[i]` 都带了一份独立的
+    `format`；明写出来更稳（节点级那份有时被当成模板/回退）。
+    ⚠️ **更正**：我曾据此以为"节点级设置没生效、产出全是 8 位"——**那是误判**。
+    实测（读 IHDR）本机产出**本来就是 16 位**；之所以看着像 8 位，是因为
+    **PIL 读 16 位 RGBA 时会静默降成 8 位**。所以这不是 bug，只是把隐含行为写明。
+    """
     node = tree.nodes.new("CompositorNodeOutputFile")
     node.name = name
     node.label = name
@@ -730,7 +738,7 @@ def add_file_output(tree, base, slots, fmt, color_depth, name):
     node.format.file_format = fmt
     if color_depth:
         try:
-            node.format.color_depth = color_depth
+            node.format.color_depth = color_depth     # 节点级：保留，作为模板
         except Exception:
             pass
 
@@ -743,6 +751,15 @@ def add_file_output(tree, base, slots, fmt, color_depth, name):
         except Exception:
             node.file_slots.new()
         node.file_slots[-1].path = slot_name
+
+    # ★ 真正决定写盘位深的是 slot 级 format —— 逐个设一遍。
+    for slot in node.file_slots:
+        try:
+            slot.format.file_format = fmt
+            if color_depth:
+                slot.format.color_depth = color_depth
+        except Exception as exc:
+            log(f"警告：设置 {name} 槽位 {slot.path} 的输出格式失败：{exc}")
     return node
 
 

@@ -115,8 +115,12 @@ function viewInfo(){return selectedItem()?.views?.find(row=>row.view===selectedV
 function passUrl(rel){return "/api/assets/file?rel="+encodeURIComponent(rel);}
 function outputUrl(rel){return "/api/comfy/file?rel="+encodeURIComponent(rel.replace(/^outputs\//,""));}
 function outputRel(task){return (task.output||"").split(",").map(s=>s.trim()).find(s=>s.startsWith("outputs/"))||"";}
-function taskMode(task){try{return (typeof task.payload==="string"?JSON.parse(task.payload):task.payload)?._meta?.mode||"";}catch{return "";}}
-function taskSeries(task){try{return (typeof task.payload==="string"?JSON.parse(task.payload):task.payload)?._meta?.series||null;}catch{return null;}}
+function taskPayload(task){
+  try{return typeof task.payload==="string"?JSON.parse(task.payload):task.payload||{};}
+  catch{return {};}
+}
+function taskMode(task){return taskPayload(task)._meta?.mode||"";}
+function taskSeries(task){return taskPayload(task)._meta?.series||null;}
 function isUsablePass(rel){return !!rel && ACCEPT_PASS.has((rel.split(".").pop()||"").toLowerCase());}
 function viewHasPass(item,view,role){
   const row=item?.views?.find(v=>v.view===view);
@@ -929,6 +933,7 @@ function renderEngineHint(){
 /* 只有仍不支持的局部掩膜和结构约束模式锁住；张数/质量/尺寸都是真实参数。 */
 function applyEngineConstraints(){
   const experimental=isExperimentalEngine();
+  $("qwenAdvancedSettings").hidden=!experimental;
   const lock=(id,locked)=>{
     const el=$(id);if(!el)return;
     if(locked){if(el.dataset.engineLocked===undefined)el.dataset.engineLocked=el.disabled?"1":"0";el.disabled=true;}
@@ -1185,7 +1190,7 @@ function renderResults(){
     if(task.err)body.append(text("small",task.err.slice(0,90)));
     const actions=text("div","","result-actions");
     if(rel){const preview=text("button","查看大图");preview.type="button";preview.onclick=()=>showImageViewer(task,rel);actions.append(preview);
-      const payload=typeof task.payload==="string"?(()=>{try{return JSON.parse(task.payload);}catch{return {};}})():task.payload||{};
+      const payload=taskPayload(task);
       if(payload._meta?.input_kind==="product_base"&&/^_成品底图\/[^/]+\/[^/]+\/[0-9a-f]{16}_product\.png$/.test(payload.source_img||"")){
         const base=text("button","查看原模型保形图");base.type="button";base.onclick=()=>showImageViewer(task,payload.source_img,true);actions.append(base);
       }
@@ -1644,7 +1649,7 @@ async function generate(){
   finally{if(preparationTicker)clearInterval(preparationTicker);state.running=false;state.runCount=0;renderPreflight();await refreshTasks();}
 }
 async function executeTask(task){
-  const payload=typeof task.payload==="string"?JSON.parse(task.payload):(task.payload||{});
+  const payload=taskPayload(task);
   const mode=payload._meta?.mode;
   if(!["controlled","explore","image"].includes(mode))throw new Error("旧版任务请到旧控制台执行");
   if(mode==="image"&&(!payload.source_img||!(payload.source_img.startsWith("source/")||payload.source_img.endsWith("/clay.png")||/^_成品底图\/[^/]+\/[^/]+\/[0-9a-f]{16}_product\.png$/.test(payload.source_img))))throw new Error("图片改图任务缺少源图");

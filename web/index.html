@@ -76,7 +76,7 @@
           </div>
           <label for="designSelect" class="field-label" style="margin-top:14px">设计语言（布光与质感）</label>
           <select id="designSelect" name="design" autocomplete="off"><option value="">不指定（沿用默认影棚）</option></select>
-          <p class="field-help" id="designDescription">只调整布光、背景、反射与阴影的表达方式，<b>不会改变产品结构</b>。</p>
+          <p class="field-help" id="designDescription">调整布光、背景与表面质感；生成后需对照原模型检查结构。</p>
           <details class="details" id="fineDetails">
             <summary>细调材质和灯光</summary>
             <div class="details-body">
@@ -127,7 +127,7 @@
             <label class="mode-choice"><input type="radio" name="mode" value="controlled" checked><span><strong>结构约束出图</strong><small>使用深度图约束轮廓；细节仍需核对</small></span></label>
             <label class="mode-choice"><input type="radio" name="mode" value="explore"><span><strong>外观探索</strong><small>仅用文字生成概念图，形状可能变化</small></span></label>
           </fieldset>
-          <div class="image-settings" id="imageSettings" hidden><label for="imageStrength" class="field-label">改动幅度 <output id="imageStrengthValue" for="imageStrength">85%</output></label><input id="imageStrength" name="strength" type="range" min="55" max="95" step="5" value="85"><p class="field-help">白模/灰模截图建议 <b>85%</b>：低于 55% 在 8–12 步底模下几乎不生效（等于原样返回）。形状由原图边缘约束守住，因此可以放心用高幅度彻底换材质。</p></div>
+          <div class="image-settings" id="imageSettings" hidden><label for="imageStrength" class="field-label">改动幅度 <output id="imageStrengthValue" for="imageStrength">85%</output></label><input id="imageStrength" name="strength" type="range" min="55" max="95" step="5" value="85"><p class="field-help">幅度越高，换材质越明显，也越容易改变细节。先生成一张，对照原图检查孔位、轮廓和标识。</p></div>
           <div class="row-fields">
             <div id="viewField"><label for="viewSelect" class="field-label">预览视角</label><select id="viewSelect" name="view"><option value="front">正在读取机位…</option></select></div>
             <div><label for="countSelect" class="field-label">每视角候选张数</label><select id="countSelect" name="count"><option value="1">1 张</option><option value="2">2 张</option><option value="4" selected>4 张</option><option value="15">15 张</option><option value="30">30 张</option><option value="50">50 张</option></select></div>
@@ -237,9 +237,9 @@
       </details>
 
       <details class="drawer-section drawer-fold" id="foldIou">
-        <summary><h3>对齐校验 · 轮廓 IoU</h3><span class="fold-hint">门槛 ≥ 0.90</span></summary>
+        <summary><h3>轮廓对比</h3><span class="fold-hint">辅助检查</span></summary>
         <div class="fold-body">
-          <p>拿白模掩膜（alpha.png）与最新成图的剪影比对。低于门槛说明「不是一眼同一个产品」。</p>
+          <p>比较白模和最新成图的轮廓重合度。先检查背景分割是否正确，再查看叠图中的差异。</p>
           <div class="drawer-actions">
             <button type="button" class="line-button" id="iouRunButton">计算白模 × 最新成图</button>
             <label class="iou-thresh">背景容差<input id="iouThreshold" type="range" min="10" max="90" value="34" aria-label="背景容差"><span id="iouThresholdValue">34</span></label>

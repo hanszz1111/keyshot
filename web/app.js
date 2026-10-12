@@ -116,7 +116,10 @@ function passUrl(rel){return "/api/assets/file?rel="+encodeURIComponent(rel);}
 function outputUrl(rel){return "/api/comfy/file?rel="+encodeURIComponent(rel.replace(/^outputs\//,""));}
 function outputRel(task){return (task.output||"").split(",").map(s=>s.trim()).find(s=>s.startsWith("outputs/"))||"";}
 function taskPayload(task){
-  try{return typeof task.payload==="string"?JSON.parse(task.payload):task.payload||{};}
+  try{
+    const payload=typeof task.payload==="string"?JSON.parse(task.payload):task.payload;
+    return payload&&typeof payload==="object"&&!Array.isArray(payload)?payload:{};
+  }
   catch{return {};}
 }
 function taskMode(task){return taskPayload(task)._meta?.mode||"";}
@@ -639,7 +642,7 @@ function renderDesignInfo(){
   $("lightSelect").disabled=!!d;
   el.textContent=d
     ?`${d.summary} 已统一背景与成图灯光；手动灯光暂不参与 AI 出图，参考图只借用配色。保形底图仍用固定检查光。选不选都会压制臆造孔位/螺钉/分模线/标签。`
-    :"只调整布光、背景、反射与阴影的表达方式，不会改变产品结构。无论是否选择，都会统一压制 AI 臆造孔位、螺钉、分模线与文字标识。";
+    :"调整布光、背景、反射与阴影。生成后请核对孔位、分模线与文字标识；提示词不能保证结构完全不变。";
 }
 function updateBodyCmfInfo(){
   const preset=selectedCmf();if(!preset)return;
@@ -919,7 +922,7 @@ function renderEngineHint(){
   const e=engineInfo(currentEngine());
   if(!e){el.append(text("span","引擎列表读取失败，将按稳定模式处理。"));return;}
   if(e.id==="sdxl_controlled"){
-    el.append(text("span","现有链路：白模结构约束 + ControlNet 锁形；图片改图、局部重绘与批量都可用。"));
+    el.append(text("span","用白模结构图约束外形，支持图片改图、局部重绘和批量生成；关键结构需对照原模型检查。"));
     return;
   }
   el.append(text("span",e.available
@@ -1310,7 +1313,7 @@ function renderTasks(){
     if((task.status==="pending"||task.status==="failed")&&taskMode(task)){
       const button=text("button",task.status==="failed"?"重试":"运行");button.type="button";button.onclick=()=>runExisting(task);row.append(button);
     }else if((task.status==="pending"||task.status==="failed")&&!taskMode(task)){
-      row.append(text("small","旧版任务：请在旧控制台执行"));
+      row.append(text("small","任务参数已不兼容：请选择产品并重新建立任务。"));
     }else if(task.status==="running"){
       const button=text("button","更新结果");button.type="button";button.onclick=()=>pollOne(task.id);row.append(button);
     }
@@ -1651,7 +1654,7 @@ async function generate(){
 async function executeTask(task){
   const payload=taskPayload(task);
   const mode=payload._meta?.mode;
-  if(!["controlled","explore","image"].includes(mode))throw new Error("旧版任务请到旧控制台执行");
+  if(!["controlled","explore","image"].includes(mode))throw new Error("任务参数已不兼容，请选择产品并重新建立任务");
   if(mode==="image"&&(!payload.source_img||!(payload.source_img.startsWith("source/")||payload.source_img.endsWith("/clay.png")||/^_成品底图\/[^/]+\/[^/]+\/[0-9a-f]{16}_product\.png$/.test(payload.source_img))))throw new Error("图片改图任务缺少源图");
   if(mode==="controlled"){
     const assets=await api("/api/assets");const item=assets.items.find(x=>x.sku===task.sku);
@@ -2092,7 +2095,8 @@ function renderServiceBox(){
   box.append(text("p",`ComfyUI：${c.online?"在线":"离线"}${c.version?" · "+c.version:""}${c.url?" · "+c.url:""}`));
   if(c.device)box.append(text("p",`显卡：${c.device} · 显存 ${c.vram_free_gb??"—"}/${c.vram_total_gb??"—"} GB`));
   box.append(text("p",`底模：${(c.checkpoints||[]).join("  /  ")||"—"}`));
-  box.append(text("p",`首选底模：${c.preferred_checkpoint||"—"}${c.preferred_ok===false?"（不可用，将自动切 fallback）":"（可用）"}`));
+  const checkpointStatus=!c.online||!c.preferred_checkpoint?"未确认":c.preferred_ok===true?"可用":c.preferred_ok===false?"不可用，将检查备用模型":"未确认";
+  box.append(text("p",`首选底模：${c.preferred_checkpoint||"—"}（${checkpointStatus}）`));
   box.append(text("p",`ControlNet：${(c.controlnets||[]).join("  /  ")||"—"}`));
   box.append(text("p",`Blender：${ui.blender?"已找到 · "+ui.blender_path:"未找到（无法自动出结构图）"}`));
   box.append(text("p",`结构图脚本：${ui.blender_script?"已就位":"缺失 scripts/blender_pass.py"}`));
@@ -2237,12 +2241,12 @@ async function computeIoU(){
       if(a||b)union++;
     }
     const iou=union?inter/union:0;
-    const pass=iou>=0.90;
     clear(box);
     const line=text("p");
     line.append(text("strong",iou.toFixed(3)));
-    line.append(text("span",`  门槛 0.900 · ${pass?"通过":"未达标"}`,pass?"badge-ok":"badge-warn"));
+    line.append(text("span","  轮廓重合参考值"));
     box.append(line);
+    box.append(text("p","背景分割可能影响分数；请结合下方叠图检查。该数值不作为结构或材质验收结论。"));
     box.append(text("p",`白模面积 ${(aCount/(W*H)*100).toFixed(1)}% ｜ 成图剪影 ${(bCount/(W*H)*100).toFixed(1)}% ｜ 交集 ${(inter/(W*H)*100).toFixed(1)}%`));
     box.append(text("p",`任务 #${task.id} ｜ 背景容差 ${threshold}`));
     // 叠加预览：绿=只白模有，红=只成图有，黄=重合

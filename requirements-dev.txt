@@ -1,0 +1,3 @@
+# Offline regression only; the rendering environment is configured separately.
+numpy>=1.26,<3
+Pillow>=10,<13

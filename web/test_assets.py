@@ -78,8 +78,5 @@ P("  散落    : %d | 待归类: %d" % (len(rep["loose"]), len(rep["inbox"])))
 P("")
 P("结果: " + ("全部通过" if fails == 0 else "%d 项失败" % fails))
 
-out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_test_out_utf8.txt")
-with open(out, "w", encoding="utf-8") as f:
-    f.write("\n".join(LOG))
 print("\n".join(LOG))
-print("\n[written] " + out)
+sys.exit(1 if fails else 0)

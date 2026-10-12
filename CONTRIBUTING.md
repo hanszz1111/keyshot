@@ -10,6 +10,15 @@
 
 ## 修改后
 
+统一离线检查（Python 3.11、Node 20）：
+
+```sh
+python -m pip install -r requirements-dev.txt
+python scripts/check_project.py
+```
+
+GitHub 的 `Offline project checks` 在 Windows 和 Linux 上执行同一入口，任意子检查失败或超时都会失败。它不安装模型或调用 GPU 出图。测试依赖单独维护；不要把这些要求误作 ComfyUI 环境的安装指令。目录职责和归档规则见[项目管理说明](docs/项目管理.md)。
+
 - 代码或行为变化：更新对应的用户文档，并在过程文档“二、变更记录”追加一行，写明**已验证**与**待验证**。
 - 前端/后端改动：运行 `python web/selftest.py`；JS 修改可另做语法检查，Windows 上还需用真实模型和服务做端到端验证。与本轮提示词/掩膜相关的单测：
 

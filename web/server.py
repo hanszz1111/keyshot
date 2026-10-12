@@ -1848,7 +1848,7 @@ def _submit_qwen(tid, payload, engine_id):
         try:
             spec = product_base_spec(task_for_base["sku"], task_for_base["view"],
                                      meta.get("cmf_preset_id"), meta.get("body_color"), meta.get("style"))
-        except (ValueError, OSError) as exc:
+        except (ValueError, RuntimeError, OSError) as exc:
             raise RuntimeError("真材质底图已失效：%s" % exc) from exc
         if (rel != spec["rel"] or not product_base_fresh(spec) or
                 (meta.get("product_scene_id") and meta["product_scene_id"] != spec["scene_id"])):
@@ -2834,10 +2834,8 @@ def _model_content_hash(rel):
 def validate_cmf_pass_contract(sku, view, scheme, manifest_path=None):
     """CMF 与结构图「同源 + 部件真实可见」的**共用**校验（S1）。
 
-    ★ 为什么要抽成共用函数：早先 AI 任务提交（`validate_cmf_task`）与 PBR 底图生成
-      （`product_base_spec`）各查各的 —— 一条拒绝错图、另一条照样渲染。实测 `AI渲染1`
-      的 CMF 方案指向 rev30/32，而各机位 pass 是 rev22–28，**4 个分配部件在 10 个机位里
-      一个都不可见**，两条入口却都没拦住。
+    AI 任务提交与 PBR 底图生成都使用这里的同源和可见性判据。
+    早期对 `AI渲染1` 的版本错配/部件不可见判断已撤回；见 2026-10-10 更正记录。
 
     校验顺序（对齐《材质真实感更新审核纠正》S1 §2）：
       ① 当前机位 pass / ID 图存在且格式有效
@@ -2927,7 +2925,7 @@ def validate_cmf_pass_contract(sku, view, scheme, manifest_path=None):
     if not shown:
         raise RuntimeError(
             "当前机位“%s”看不到材质方案里的任何一个部位（方案 %d 个部件，本机位可见 %d 个），"
-            "分区会静默失效。请核对方案与结构图是否来自同一个模型版本。" % (view, len(assigned_ids), len(visible)))
+            "分区会静默失效。请检查当前机位的可见面与部位指派。" % (view, len(assigned_ids), len(visible)))
     return {"manifest": manifest, "visible": visible, "assigned_ids": assigned_ids,
             "shown_ids": shown, "not_visible": sorted(index_part_name(parts, i) for i in (assigned_ids - visible))}
 
@@ -3041,6 +3039,60 @@ def make_cmf_guide(sku, view, meta):
 # 只有明确选择「真材质底图」的千问任务才使用；旧任务行为不变。
 PRODUCT_BASE_DIR = os.path.join(ASSETS, "_成品底图")
 PRODUCT_BG = {"studio": "#F3F5F6", "white": "#FFFFFF", "dark": "#25292E"}
+PRODUCT_RENDER_ABI = "blender-cycles-cpu-v1"
+
+
+def product_renderer_signature():
+    """把实际渲染脚本与预设内容绑定到缓存；不声称已锁定 Blender 安装版本。"""
+    with open(BLENDER_SCRIPT, "rb") as stream:
+        script_sha = hashlib.sha256(stream.read()).hexdigest()
+    with open(CMF_PRESETS_PATH, "rb") as stream:
+        preset_sha = hashlib.sha256(stream.read()).hexdigest()
+    return {"abi": PRODUCT_RENDER_ABI, "blender_script_sha256": script_sha,
+            "cmf_presets_sha256": preset_sha, "lighting": "blender-pass-studio-v1",
+            "samples": 48, "device": "cpu"}
+
+
+def cmf_coverage(sku, view):
+    """当前机位显式指派面积；未指派像素按主体材质处理，不代表材质错误。"""
+    if not sku or safe_file(sku) != sku or view not in VIEW_KEYS:
+        raise ValueError("产品编号或机位无效")
+    path = os.path.join(PASSES_DIR, sku, view, "pass_manifest.json")
+    try:
+        with open(path, "r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
+    except (OSError, ValueError):
+        return {"available": False, "view": view, "reason": "当前机位没有可用的部件清单，请先补齐结构图"}
+    stats = manifest.get("visible_object_stats") or {}
+    if stats.get("status") != "ok" or not isinstance(stats.get("counts"), dict):
+        return {"available": False, "view": view, "reason": "当前机位缺少完整的部件面积数据，请重建结构图"}
+    scheme = load_cmf_scheme(sku)
+    assignments = (scheme.get("assignments") or {}) if not scheme.get("stale") else {}
+    names = manifest.get("objectid_map") or {}
+    editable = set(int(i) for i in stats.get("editable_ids") or [])
+    parts = []
+    for raw_id, raw_pixels in stats["counts"].items():
+        try:
+            part_id, pixels = int(raw_id), int(raw_pixels)
+        except (ValueError, TypeError):
+            continue
+        if part_id <= 0 or pixels <= 0:
+            continue
+        name = names.get(str(part_id)) or ""
+        parts.append({"id": part_id, "name": name, "pixels": pixels,
+                      "assigned": name in assignments, "editable": part_id in editable})
+    total = sum(part["pixels"] for part in parts)
+    if not total:
+        return {"available": False, "view": view, "reason": "当前机位没有可统计的前景部件，请重建结构图"}
+    explicit = sum(part["pixels"] for part in parts if part["assigned"])
+    unassigned = sorted((part for part in parts if not part["assigned"] and part["name"]),
+                        key=lambda part: (-part["pixels"], part["id"]))
+    return {"available": bool(total), "view": view, "stale": bool(scheme.get("stale")),
+            "foreground_pixels": total, "explicit_pixels": explicit,
+            "explicit_percent": round(100 * explicit / total, 2) if total else 0,
+            "default_pixels": total - explicit, "visible_parts": len(parts),
+            "unassigned": [{**part, "percent": round(100 * part["pixels"] / total, 2)}
+                           for part in unassigned[:20]]}
 
 
 def product_base_spec(sku, view, body_cmf, body_color, style):
@@ -3062,12 +3114,12 @@ def product_base_spec(sku, view, body_cmf, body_color, style):
     manifest_path = os.path.join(PASSES_DIR, sku, view, "pass_manifest.json")
     if not os.path.isfile(manifest_path):
         raise ValueError("真材质底图需要 Blender 自动生成的相机清单，请先重建该机位结构图")
-    with open(manifest_path, "r", encoding="utf-8") as stream:
-        manifest = json.load(stream)
-    names = set((manifest.get("objectid_map") or {}).values())
-    missing = set(scheme["assignments"]) - names
-    if missing:
-        raise ValueError("当前机位缺少 %d 个 CMF 网格映射，请重建结构图" % len(missing))
+    if scheme["assignments"]:
+        manifest = validate_cmf_pass_contract(sku, view, scheme, manifest_path)["manifest"]
+    else:
+        # 仅使用主体材质时没有部位分区；仍按现有结构图完整性规则验证。
+        with open(manifest_path, "r", encoding="utf-8") as stream:
+            manifest = json.load(stream)
     for item in scheme["assignments"].values():
         if item.get("cmf") not in presets or not re.fullmatch(r"#[0-9a-fA-F]{6}", str(item.get("color") or "")):
             raise ValueError("部位材质方案含无效预设或颜色")
@@ -3079,15 +3131,13 @@ def product_base_spec(sku, view, body_cmf, body_color, style):
         raise ValueError("结构图清单取景参数无效")
     if len(dimensions) != 2 or not all(isinstance(v, int) and 256 <= v <= 4096 for v in dimensions):
         raise ValueError("结构图清单缺少有效尺寸")
-    with open(CMF_PRESETS_PATH, "rb") as stream:
-        preset_hash = hashlib.sha256(stream.read()).hexdigest()
+    renderer_signature = product_renderer_signature()
     scene_signature = {
         "algorithm": "product-pbr-scene-v2", "sku": sku,
         "model": scheme["fingerprint"], "scheme_version": scheme["version"],
         "assignments": scheme["assignments"], "body_cmf": body_cmf,
         "body_color": body_color.upper(), "style": style,
-        "preset_sha256": preset_hash,
-        "lighting": "blender-pass-studio-v1", "samples": 48,
+        "renderer": renderer_signature,
     }
     scene_id = hashlib.sha256(json.dumps(scene_signature, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()[:16]
     signature = {
@@ -3099,7 +3149,7 @@ def product_base_spec(sku, view, body_cmf, body_color, style):
     rel = "_成品底图/%s/%s/%s_product.png" % (sku, view, digest)
     return {"rel": rel, "path": os.path.join(PRODUCT_BASE_DIR, sku, view, digest + "_product.png"),
             "camera": camera, "resolution": dimensions, "scheme": scheme,
-            "scene_id": scene_id,
+            "scene_id": scene_id, "renderer_signature": renderer_signature,
             "body_cmf": body_cmf, "body_color": body_color.upper(), "style": style,
             "background": PRODUCT_BG[style]}
 
@@ -3235,7 +3285,8 @@ def _write_product_scene_report(specs):
     path = os.path.join(PRODUCT_BASE_DIR, sku, scene_id + "_场景报告.json")
     report = {"schema_version": 2, "scene_id": scene_id, "sku": sku,
               "model_sha256": specs[0]["scheme"]["fingerprint"],
-              "cmf_version": specs[0]["scheme"]["version"], "lighting": "blender-pass-studio-v1",
+              "cmf_version": specs[0]["scheme"]["version"],
+              "renderer_signature": specs[0]["renderer_signature"],
               "body_cmf": specs[0]["body_cmf"], "body_color": specs[0]["body_color"],
               "style": specs[0]["style"],
               "checks": {"same_scene": len({s["scene_id"] for s in specs}) == 1,
@@ -3295,7 +3346,7 @@ def latest_product_scene(sku):
                             "body_cmf": report["body_cmf"], "body_color": report["body_color"],
                             "style": report["style"],
                             "report": "_成品底图/%s/%s_场景报告.json" % (sku, report["scene_id"])}
-        except (OSError, ValueError, TypeError, AttributeError):
+        except (OSError, ValueError, RuntimeError, TypeError, AttributeError):
             continue
     return {}
 
@@ -4320,6 +4371,12 @@ class Handler(SimpleHTTPRequestHandler):
             if p == "/api/model/parts":
                 return self.send_json(parts_index(q.get("sku", [""])[0],
                                                   q.get("view", [""])[0]))
+            if p == "/api/cmf/coverage":
+                try:
+                    return self.send_json(cmf_coverage(q.get("sku", [""])[0],
+                                                       q.get("view", [""])[0]))
+                except ValueError as exc:
+                    return self.send_json({"error": str(exc)}, 400)
             if p == "/api/model/partmask":
                 r = part_mask(q.get("sku", [""])[0], q.get("view", [""])[0],
                               q.get("part", [""])[0], q.get("dilate", ["4"])[0])

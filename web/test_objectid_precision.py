@@ -11,7 +11,7 @@
   ③ 解码结果与 **Blender 那条同源读取路径**一致（Blender 可用时才跑）。
 
 运行：
-    python web/test_objectid_precision.py          # 纯标准库（读侧解析）
+    python web/test_objectid_precision.py          # 需要 numpy；Pillow 检查为可选项
     # Blender 交叉验证由 scripts/_dump_visible.py 那类脚本外部执行
 """
 

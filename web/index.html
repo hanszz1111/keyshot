@@ -44,7 +44,7 @@
             <div id="modelSummary" class="model-summary">还没有选择产品。</div>
             <button type="button" class="line-button" id="chooseModelButton">导入白模文件</button>
             <input id="modelFile" type="file" accept=".blend,.glb,.gltf,.obj,.stl,.fbx,.ksp,.stp,.step,.3dm,.c4d,.max" hidden>
-            <p class="field-help">GLB/GLTF、OBJ、STL、FBX、BLEND 可直接生成结构图；STEP/STP 走 Blender 的 STEPper 插件（无需 FreeCAD），Rhino .3dm 走 import_3dm 扩展，装上后会自动识别。导入成功会自动生成一张预览图；其他格式请先导出 GLB/OBJ。</p>
+            <p class="field-help">支持 GLB、OBJ、STL、FBX、BLEND。STEP/STP 和 Rhino 3DM 需要相应导入扩展；导入后会生成预览。</p>
           </div>
           <div id="imageSourcePanel" hidden>
             <div id="imageSummary" class="model-summary">上传一张产品照片或已有渲染图。</div>
@@ -71,11 +71,12 @@
             <p class="field-help">先设主体材质，再逐个覆盖握持区、按键等部位。以下分配会用于所有机位；AI 成图仍需核对材质边界。</p>
             <div id="cmfSchemeList" class="cmf-scheme-list" aria-live="polite">选择白模后可设置。</div>
             <p class="field-help" id="cmfSchemeStatus"></p>
+            <details class="cmf-coverage" id="cmfCoveragePanel"><summary>查看本机位未指定材质的大部件</summary><p class="field-help" id="cmfCoverageSummary">选择机位后统计。</p><div id="cmfCoverageList" class="cmf-coverage-list"></div></details>
             <button type="button" class="mini-button" id="cmfResetButton" hidden>旧方案已失效，重新建立</button>
           </div>
           <label for="designSelect" class="field-label" style="margin-top:14px">设计语言（布光与质感）</label>
           <select id="designSelect" name="design" autocomplete="off"><option value="">不指定（沿用默认影棚）</option></select>
-          <p class="field-help" id="designDescription">只调整布光、背景、反射与阴影的表达方式，<b>不会改变产品结构</b>。</p>
+          <p class="field-help" id="designDescription">调整布光、背景与表面质感；生成后需对照原模型检查结构。</p>
           <details class="details" id="fineDetails">
             <summary>细调材质和灯光</summary>
             <div class="details-body">
@@ -86,7 +87,7 @@
             </div>
           </details>
 
-          <div class="ref-block">
+          <details class="advanced-settings"><summary>参考图（可选）</summary><div class="ref-block">
             <div class="ref-head">
               <span class="field-label">参考图</span>
               <button type="button" class="quiet-button" id="chooseRefButton">上传参考图</button>
@@ -111,7 +112,7 @@
                 <p class="field-help" id="refNote">上传参考图后会自动提取调色板。</p>
               </div>
             </div>
-          </div>
+          </div></details>
         </div>
 
         <div class="step final-step" id="renderStep">
@@ -126,7 +127,7 @@
             <label class="mode-choice"><input type="radio" name="mode" value="controlled" checked><span><strong>结构约束出图</strong><small>使用深度图约束轮廓；细节仍需核对</small></span></label>
             <label class="mode-choice"><input type="radio" name="mode" value="explore"><span><strong>外观探索</strong><small>仅用文字生成概念图，形状可能变化</small></span></label>
           </fieldset>
-          <div class="image-settings" id="imageSettings" hidden><label for="imageStrength" class="field-label">改动幅度 <output id="imageStrengthValue" for="imageStrength">85%</output></label><input id="imageStrength" name="strength" type="range" min="55" max="95" step="5" value="85"><p class="field-help">白模/灰模截图建议 <b>85%</b>：低于 55% 在 8–12 步底模下几乎不生效（等于原样返回）。形状由原图边缘约束守住，因此可以放心用高幅度彻底换材质。</p></div>
+          <div class="image-settings" id="imageSettings" hidden><label for="imageStrength" class="field-label">改动幅度 <output id="imageStrengthValue" for="imageStrength">85%</output></label><input id="imageStrength" name="strength" type="range" min="55" max="95" step="5" value="85"><p class="field-help">幅度越高，换材质越明显，也越容易改变细节。先生成一张，对照原图检查孔位、轮廓和标识。</p></div>
           <div class="row-fields">
             <div id="viewField"><label for="viewSelect" class="field-label">预览视角</label><select id="viewSelect" name="view"><option value="front">正在读取机位…</option></select></div>
             <div><label for="countSelect" class="field-label">每视角候选张数</label><select id="countSelect" name="count"><option value="1">1 张</option><option value="2">2 张</option><option value="4" selected>4 张</option><option value="15">15 张</option><option value="30">30 张</option><option value="50">50 张</option></select></div>
@@ -140,7 +141,7 @@
             <input id="sizeCustom" name="sizeCustom" type="text" placeholder="例如 1232x752" autocomplete="off">
           </div>
           <p class="field-help" id="sizeHint">跟随结构图的实际比例，避免拉伸产品。</p>
-          <div id="qwenBaseField" hidden>
+          <details class="advanced-settings" id="qwenAdvancedSettings" hidden><summary>千问高级设置：底图与固定种子</summary><div class="advanced-settings-body"><div id="qwenBaseField" hidden>
             <label for="qwenBaseSelect" class="field-label">千问的产品底图</label>
             <select id="qwenBaseSelect" name="qwenBase"><option value="guide" selected>配色引导图 · 快速</option><option value="product">真材质底图 · 更贴近原模型</option></select>
             <p class="field-help">真材质底图先按当前模型、部件材质和机位由 Blender 渲染，再交给千问增强；首次生成每个机位会多花一些时间。</p>
@@ -149,11 +150,12 @@
             <label for="qwenSeed" class="field-label">固定种子（可选，对照画质用）</label>
             <input id="qwenSeed" name="qwenSeed" type="number" min="1" max="2147483500" step="1" inputmode="numeric" placeholder="留空则每次自动生成">
             <p class="field-help">比较 35 / 50 步时填同一个数字；多视角会使用同一候选系列的种子，方便核对同一产品。</p>
-          </div>
+          </div></div></details>
           <div class="batch-field" id="batchField">
-            <div class="batch-head"><span class="field-label">出图视角（可多选）</span><span class="batch-actions"><button type="button" class="mini-button" id="viewPickPreview">仅预览视角</button><button type="button" class="mini-button" id="viewPickStandard">4 标准</button><button type="button" class="mini-button" id="viewPickCommon">8 常用（含 3/4）</button><button type="button" class="mini-button" id="viewPickAll">全选</button><button type="button" class="mini-button" id="viewPickNone">清空</button><button type="button" class="mini-button" id="passSelectedButton">补齐所选视角结构图</button><button type="button" class="mini-button" id="passSixButton">出六视图结构图</button></span></div>
+            <div class="batch-head"><span class="field-label">出图视角（可多选）</span><span class="batch-actions"><button type="button" class="mini-button" id="viewPickPreview">仅预览视角</button><button type="button" class="mini-button" id="viewPickStandard">4 标准</button><button type="button" class="mini-button" id="viewPickCommon">8 常用（含 3/4）</button><button type="button" class="mini-button" id="viewPickAll">全选</button><button type="button" class="mini-button" id="viewPickNone">清空</button></span></div>
             <div class="view-checks" id="viewChecks"></div>
-            <p class="field-help" id="batchHint">“8 常用”包含六视图与左右前 3/4。两套引擎都按所选张数出图；千问按候选系列先出主视图，其余机位引用同一主视图的外观作为第二参考。缺失结构图会先补齐。</p>
+            <p class="field-help" id="batchHint">“8 常用”包含六视图与左右前 3/4；生成时会补齐缺失的结构图。</p>
+            <details class="advanced-settings"><summary>结构图工具</summary><div class="batch-actions advanced-settings-body"><button type="button" class="mini-button" id="passSelectedButton">补齐所选视角结构图</button><button type="button" class="mini-button" id="passSixButton">出六视图结构图</button></div></details>
           </div>
           <div id="preflight" class="preflight" role="status" aria-live="polite">正在检查白模、结构图与渲染服务…</div>
           <button type="button" class="primary-button" id="generateButton" disabled>开始生成 4 张</button>
@@ -235,9 +237,9 @@
       </details>
 
       <details class="drawer-section drawer-fold" id="foldIou">
-        <summary><h3>对齐校验 · 轮廓 IoU</h3><span class="fold-hint">门槛 ≥ 0.90</span></summary>
+        <summary><h3>轮廓对比</h3><span class="fold-hint">辅助检查</span></summary>
         <div class="fold-body">
-          <p>拿白模掩膜（alpha.png）与最新成图的剪影比对。低于门槛说明「不是一眼同一个产品」。</p>
+          <p>比较白模和最新成图的轮廓重合度。先检查背景分割是否正确，再查看叠图中的差异。</p>
           <div class="drawer-actions">
             <button type="button" class="line-button" id="iouRunButton">计算白模 × 最新成图</button>
             <label class="iou-thresh">背景容差<input id="iouThreshold" type="range" min="10" max="90" value="34" aria-label="背景容差"><span id="iouThresholdValue">34</span></label>

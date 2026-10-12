@@ -57,7 +57,7 @@ const STANDARD_VIEWS = ["front","3q4_left","3q4_right","side"];
 const COMMON_VIEWS = [...SIX_VIEWS,"3q4_left","3q4_right"];
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-let state = {assets:{items:[],models:[]},tasks:[],comfy:{online:false},ui:{blender:false},passJob:null,sku:"",sourceType:"model",cmfScheme:null,productScene:null,modelCount:"4",imageCount:"1",qwenCount:"1",stableSize:"auto",qwenSize:"qwen:768",engineLoaded:false,engineManuallySelected:false,lastEngine:"",sourceRelLoaded:"",sourceSize:null,sourceProbe:null,style:"studio",preview:"clay",running:false,runCount:0,selectedTask:null,ref:{rel:"",palette:[],strength:"L2_material"},renderers:[],engineDefault:"sdxl_controlled"};
+let state = {assets:{items:[],models:[]},tasks:[],comfy:{online:false},ui:{blender:false},passJob:null,sku:"",sourceType:"model",cmfScheme:null,cmfCoverage:null,productScene:null,modelCount:"4",imageCount:"1",qwenCount:"1",stableSize:"auto",qwenSize:"qwen:768",engineLoaded:false,engineManuallySelected:false,lastEngine:"",sourceRelLoaded:"",sourceSize:null,sourceProbe:null,style:"studio",preview:"clay",running:false,runCount:0,selectedTask:null,ref:{rel:"",palette:[],strength:"L2_material"},renderers:[],engineDefault:"sdxl_controlled"};
 let renderers=[];
 let lastFocus = null;
 
@@ -115,8 +115,15 @@ function viewInfo(){return selectedItem()?.views?.find(row=>row.view===selectedV
 function passUrl(rel){return "/api/assets/file?rel="+encodeURIComponent(rel);}
 function outputUrl(rel){return "/api/comfy/file?rel="+encodeURIComponent(rel.replace(/^outputs\//,""));}
 function outputRel(task){return (task.output||"").split(",").map(s=>s.trim()).find(s=>s.startsWith("outputs/"))||"";}
-function taskMode(task){try{return (typeof task.payload==="string"?JSON.parse(task.payload):task.payload)?._meta?.mode||"";}catch{return "";}}
-function taskSeries(task){try{return (typeof task.payload==="string"?JSON.parse(task.payload):task.payload)?._meta?.series||null;}catch{return null;}}
+function taskPayload(task){
+  try{
+    const payload=typeof task.payload==="string"?JSON.parse(task.payload):task.payload;
+    return payload&&typeof payload==="object"&&!Array.isArray(payload)?payload:{};
+  }
+  catch{return {};}
+}
+function taskMode(task){return taskPayload(task)._meta?.mode||"";}
+function taskSeries(task){return taskPayload(task)._meta?.series||null;}
 function isUsablePass(rel){return !!rel && ACCEPT_PASS.has((rel.split(".").pop()||"").toLowerCase());}
 function viewHasPass(item,view,role){
   const row=item?.views?.find(v=>v.view===view);
@@ -405,6 +412,51 @@ async function loadPartsIndex(sku, view){
    三维预览只改**选中网格**的材质副本 —— GLB 里多个部件常共用同一个 material
    实例，直接改颜色会把整机一起染色，所以必须先 clone。 */
 let partCmfTable={};
+function renderCmfCoverage(){
+  const summary=$("cmfCoverageSummary"),list=$("cmfCoverageList"),data=state.cmfCoverage;
+  clear(list);
+  if(!data||data.view!==selectedView()){
+    summary.textContent="正在统计当前机位的可见部件…";return;
+  }
+  if(!data.available){summary.textContent=data.reason||"暂无可用部件面积数据。";return;}
+  summary.textContent=`本机位显式指定材质 ${data.explicit_percent}%；其余沿用主体材质。这不代表材质错误。`+
+    (data.stale?"当前方案已过期，请先核对模型。":"")+
+    ` 可见部件 ${data.visible_parts} 个；以下列出面积最大的未指定部件。`;
+  for(const part of data.unassigned||[]){
+    const button=text("button","","cmf-coverage-part");button.type="button";
+    button.title=`在 3D 预览中定位部件 #${part.id}`;
+    button.append(text("span",`${part.name||"未命名"} · #${part.id}`),
+                  text("small",`${part.percent}%${part.editable?"":" · 小部件"}`));
+    button.addEventListener("click",()=>focusCmfCoveragePart(part));list.append(button);
+  }
+  if(!data.unassigned?.length)list.append(text("span","当前机位没有可列出的未指定部件。","cmf-scheme-empty"));
+}
+async function loadCmfCoverage(sku=state.sku,view=selectedView()){
+  state.cmfCoverage=null;renderCmfCoverage();
+  if(!sku||state.sourceType!=="model")return;
+  try{
+    const data=await api(`/api/cmf/coverage?sku=${encodeURIComponent(sku)}&view=${encodeURIComponent(view)}`);
+    if(state.sku===sku&&selectedView()===view){state.cmfCoverage=data;renderCmfCoverage();}
+  }catch(error){
+    if(state.sku===sku&&selectedView()===view){state.cmfCoverage={view,available:false,reason:"部件面积读取失败："+errorMessage(error)};renderCmfCoverage();}
+  }
+}
+async function focusCmfCoveragePart(part){
+  const sku=state.sku,view=selectedView();
+  setPreview("model3d");$("hero").scrollIntoView({behavior:"smooth",block:"center"});
+  for(let attempt=0;attempt<50&&hero3d.sku!==sku;attempt++){
+    await new Promise(resolve=>setTimeout(resolve,100));
+    if(state.sku!==sku||selectedView()!==view)return;
+  }
+  if(hero3d.sku!==sku||!hero3d.model)return announce("3D 预览尚未就绪，请稍后再点这个部件。");
+  if(hero3d.partsView!==view)await loadPartsIndex(sku,view);
+  let target=null;
+  hero3d.model.traverse(mesh=>{
+    if(mesh.isMesh&&!target&&hero3d.nameToIndex?.[normPartName(mesh.name)]===part.id)target=mesh;
+  });
+  if(target){setPickedPart(target);announce(`已定位部件 #${part.id}。确认它需要不同材料后，点击“应用材质”。`);}
+  else announce(`未能在 3D 预览中自动定位部件 #${part.id}，请按编号在模型中手动选择。`);
+}
 function renderCmfScheme(){
   const panel=$("cmfSchemePanel"),list=$("cmfSchemeList"),status=$("cmfSchemeStatus");
   panel.hidden=state.sourceType!=="model"||!state.sku;
@@ -423,13 +475,14 @@ function renderCmfScheme(){
   status.textContent=scheme.stale
     ?"源模型已改变：旧材质分配不会用于新任务。请先核对并重新建立方案。"
     :entries.length?`已保存 ${entries.length} 个模型部件 · 方案版本 ${scheme.version}。跨视角按同名网格映射；AI 成图需逐张检查。`:"旧的按机位局部记录不会自动并入整机方案，请逐个部位重新确认。";
+  renderCmfCoverage();
 }
 async function loadCmfScheme(sku){
   if(!sku||state.sourceType!=="model"){state.cmfScheme=null;renderCmfScheme();return null;}
   try{
     const scheme=await api(`/api/cmf/scheme?sku=${encodeURIComponent(sku)}`);
     if(state.sku!==sku)return null;
-    state.cmfScheme=scheme;renderCmfScheme();applyCmfSchemeToModel();return scheme;
+    state.cmfScheme=scheme;renderCmfScheme();applyCmfSchemeToModel();loadCmfCoverage(sku).catch(()=>{});return scheme;
   }catch(error){
     if(state.sku===sku){state.cmfScheme=null;renderCmfScheme();$("cmfSchemeStatus").textContent="材质方案未读取："+errorMessage(error);}
     throw error;
@@ -589,7 +642,7 @@ function renderDesignInfo(){
   $("lightSelect").disabled=!!d;
   el.textContent=d
     ?`${d.summary} 已统一背景与成图灯光；手动灯光暂不参与 AI 出图，参考图只借用配色。保形底图仍用固定检查光。选不选都会压制臆造孔位/螺钉/分模线/标签。`
-    :"只调整布光、背景、反射与阴影的表达方式，不会改变产品结构。无论是否选择，都会统一压制 AI 臆造孔位、螺钉、分模线与文字标识。";
+    :"调整布光、背景、反射与阴影。生成后请核对孔位、分模线与文字标识；提示词不能保证结构完全不变。";
 }
 function updateBodyCmfInfo(){
   const preset=selectedCmf();if(!preset)return;
@@ -869,7 +922,7 @@ function renderEngineHint(){
   const e=engineInfo(currentEngine());
   if(!e){el.append(text("span","引擎列表读取失败，将按稳定模式处理。"));return;}
   if(e.id==="sdxl_controlled"){
-    el.append(text("span","现有链路：白模结构约束 + ControlNet 锁形；图片改图、局部重绘与批量都可用。"));
+    el.append(text("span","用白模结构图约束外形，支持图片改图、局部重绘和批量生成；关键结构需对照原模型检查。"));
     return;
   }
   el.append(text("span",e.available
@@ -883,6 +936,7 @@ function renderEngineHint(){
 /* 只有仍不支持的局部掩膜和结构约束模式锁住；张数/质量/尺寸都是真实参数。 */
 function applyEngineConstraints(){
   const experimental=isExperimentalEngine();
+  $("qwenAdvancedSettings").hidden=!experimental;
   const lock=(id,locked)=>{
     const el=$(id);if(!el)return;
     if(locked){if(el.dataset.engineLocked===undefined)el.dataset.engineLocked=el.disabled?"1":"0";el.disabled=true;}
@@ -1139,7 +1193,7 @@ function renderResults(){
     if(task.err)body.append(text("small",task.err.slice(0,90)));
     const actions=text("div","","result-actions");
     if(rel){const preview=text("button","查看大图");preview.type="button";preview.onclick=()=>showImageViewer(task,rel);actions.append(preview);
-      const payload=typeof task.payload==="string"?(()=>{try{return JSON.parse(task.payload);}catch{return {};}})():task.payload||{};
+      const payload=taskPayload(task);
       if(payload._meta?.input_kind==="product_base"&&/^_成品底图\/[^/]+\/[^/]+\/[0-9a-f]{16}_product\.png$/.test(payload.source_img||"")){
         const base=text("button","查看原模型保形图");base.type="button";base.onclick=()=>showImageViewer(task,payload.source_img,true);actions.append(base);
       }
@@ -1259,7 +1313,7 @@ function renderTasks(){
     if((task.status==="pending"||task.status==="failed")&&taskMode(task)){
       const button=text("button",task.status==="failed"?"重试":"运行");button.type="button";button.onclick=()=>runExisting(task);row.append(button);
     }else if((task.status==="pending"||task.status==="failed")&&!taskMode(task)){
-      row.append(text("small","旧版任务：请在旧控制台执行"));
+      row.append(text("small","任务参数已不兼容：请选择产品并重新建立任务。"));
     }else if(task.status==="running"){
       const button=text("button","更新结果");button.type="button";button.onclick=()=>pollOne(task.id);row.append(button);
     }
@@ -1598,9 +1652,9 @@ async function generate(){
   finally{if(preparationTicker)clearInterval(preparationTicker);state.running=false;state.runCount=0;renderPreflight();await refreshTasks();}
 }
 async function executeTask(task){
-  const payload=typeof task.payload==="string"?JSON.parse(task.payload):(task.payload||{});
+  const payload=taskPayload(task);
   const mode=payload._meta?.mode;
-  if(!["controlled","explore","image"].includes(mode))throw new Error("旧版任务请到旧控制台执行");
+  if(!["controlled","explore","image"].includes(mode))throw new Error("任务参数已不兼容，请选择产品并重新建立任务");
   if(mode==="image"&&(!payload.source_img||!(payload.source_img.startsWith("source/")||payload.source_img.endsWith("/clay.png")||/^_成品底图\/[^/]+\/[^/]+\/[0-9a-f]{16}_product\.png$/.test(payload.source_img))))throw new Error("图片改图任务缺少源图");
   if(mode==="controlled"){
     const assets=await api("/api/assets");const item=assets.items.find(x=>x.sku===task.sku);
@@ -1802,6 +1856,7 @@ $("viewSelect").addEventListener("change",()=>{
   state.selectedTask=null;
   if(state.preview==="model3d"&&hero3d.camera)setCameraToView(selectedView());
   renderPassReadiness();renderPreflight();renderResults();renderHero();
+  if(state.sku&&state.sourceType==="model")loadCmfCoverage().catch(()=>{});
 });
 $("countSelect").addEventListener("change",()=>{
   if(isExperimentalEngine())state.qwenCount=$("countSelect").value;
@@ -1917,7 +1972,7 @@ $("partClear").addEventListener("click",()=>setPickedPart(null));
 $("cmfPickPart").addEventListener("click",()=>{setPreview("model3d");$("hero").scrollIntoView({behavior:"smooth",block:"center"});announce("在 3D 模型上点击要换材质的部件。");});
 $("cmfResetButton").addEventListener("click",async()=>{
   if(!state.sku||!confirm("源模型已经变化。将旧部位材质方案备份后重新建立，原有分配不再用于新任务。继续吗？"))return;
-  try{state.cmfScheme=await post("/api/cmf/scheme",{sku:state.sku,action:"reset"});renderCmfScheme();applyCmfSchemeToModel();announce("旧方案已备份。请在 3D 视图重新点选部件并指定材质。");}
+  try{state.cmfScheme=await post("/api/cmf/scheme",{sku:state.sku,action:"reset"});renderCmfScheme();applyCmfSchemeToModel();loadCmfCoverage().catch(()=>{});announce("旧方案已备份。请在 3D 视图重新点选部件并指定材质。");}
   catch(error){announce("重建方案失败："+errorMessage(error));}
 });
 window.addEventListener("resize",()=>{if(state.preview==="model3d")resize3D();});
@@ -1942,7 +1997,7 @@ $("savePartCmfButton").addEventListener("click",async()=>{
   try{
     const scheme=await post("/api/cmf/scheme",{sku:ps.sku,view:ps.view,action:"assign_many",parts,
       cmf:preset.id,color:$("partColorInput").value});
-    state.cmfScheme=scheme;state.productScene=null;renderProductScene();renderCmfScheme();applyCmfSchemeToModel();applyPartCmfPreview();updateSelectionVisuals();
+    state.cmfScheme=scheme;state.productScene=null;renderProductScene();renderCmfScheme();applyCmfSchemeToModel();applyPartCmfPreview();updateSelectionVisuals();loadCmfCoverage().catch(()=>{});
     announce(`已将 ${parts.length} 个部件设为${preset.name}，所有机位会沿用此方案。${preset.ai_editable===false?"该材质仅适合真渲染，AI 出图仍需人工核对。":""}`);
   }catch(error){announce("保存部位材质失败："+errorMessage(error));}
   finally{setBusy(button,false,"应用材质到选中部件");}
@@ -1952,7 +2007,7 @@ $("removePartCmfButton").addEventListener("click",async()=>{
   if(!ps||ps.partId==null)return announce("请先在 3D 模型上点选一个部件。");
   try{
     state.cmfScheme=await post("/api/cmf/scheme",{sku:ps.sku,view:ps.view,part:ps.partId,action:"remove"});
-    state.productScene=null;renderProductScene();renderCmfScheme();applyCmfSchemeToModel();setPickedPart(hero3d.pickedMesh);
+    state.productScene=null;renderProductScene();renderCmfScheme();applyCmfSchemeToModel();setPickedPart(hero3d.pickedMesh);loadCmfCoverage().catch(()=>{});
     announce("已移除这个部件的单独材质，将沿用主体材质。");
   }catch(error){announce("恢复主体材质失败："+errorMessage(error));}
 });
@@ -2040,7 +2095,8 @@ function renderServiceBox(){
   box.append(text("p",`ComfyUI：${c.online?"在线":"离线"}${c.version?" · "+c.version:""}${c.url?" · "+c.url:""}`));
   if(c.device)box.append(text("p",`显卡：${c.device} · 显存 ${c.vram_free_gb??"—"}/${c.vram_total_gb??"—"} GB`));
   box.append(text("p",`底模：${(c.checkpoints||[]).join("  /  ")||"—"}`));
-  box.append(text("p",`首选底模：${c.preferred_checkpoint||"—"}${c.preferred_ok===false?"（不可用，将自动切 fallback）":"（可用）"}`));
+  const checkpointStatus=!c.online||!c.preferred_checkpoint?"未确认":c.preferred_ok===true?"可用":c.preferred_ok===false?"不可用，将检查备用模型":"未确认";
+  box.append(text("p",`首选底模：${c.preferred_checkpoint||"—"}（${checkpointStatus}）`));
   box.append(text("p",`ControlNet：${(c.controlnets||[]).join("  /  ")||"—"}`));
   box.append(text("p",`Blender：${ui.blender?"已找到 · "+ui.blender_path:"未找到（无法自动出结构图）"}`));
   box.append(text("p",`结构图脚本：${ui.blender_script?"已就位":"缺失 scripts/blender_pass.py"}`));
@@ -2185,12 +2241,12 @@ async function computeIoU(){
       if(a||b)union++;
     }
     const iou=union?inter/union:0;
-    const pass=iou>=0.90;
     clear(box);
     const line=text("p");
     line.append(text("strong",iou.toFixed(3)));
-    line.append(text("span",`  门槛 0.900 · ${pass?"通过":"未达标"}`,pass?"badge-ok":"badge-warn"));
+    line.append(text("span","  轮廓重合参考值"));
     box.append(line);
+    box.append(text("p","背景分割可能影响分数；请结合下方叠图检查。该数值不作为结构或材质验收结论。"));
     box.append(text("p",`白模面积 ${(aCount/(W*H)*100).toFixed(1)}% ｜ 成图剪影 ${(bCount/(W*H)*100).toFixed(1)}% ｜ 交集 ${(inter/(W*H)*100).toFixed(1)}%`));
     box.append(text("p",`任务 #${task.id} ｜ 背景容差 ${threshold}`));
     // 叠加预览：绿=只白模有，红=只成图有，黄=重合

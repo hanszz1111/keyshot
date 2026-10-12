@@ -26,7 +26,6 @@ import sys
 import zlib
 
 import numpy as np
-from PIL import Image
 
 ID_SCALE = 65535.0          # 与 blender_pass.py 的 DIVIDE 常量一致
 
@@ -180,6 +179,7 @@ def main(argv=None):
           % (target, names.get(str(target), "?"), int(mask.sum()),
              100.0 * mask.sum() / total, xs.min(), xs.max(), ys.min(), ys.max()))
     if args.out:
+        from PIL import Image
         Image.fromarray(out, mode="L").save(args.out)
         print("已写出掩膜：%s" % args.out)
     else:

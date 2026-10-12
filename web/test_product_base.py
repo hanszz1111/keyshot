@@ -22,8 +22,12 @@ class ProductBaseSpecTest(unittest.TestCase):
         os.makedirs(folder)
         with open(os.path.join(folder, "pass_manifest.json"), "w", encoding="utf-8") as stream:
             json.dump({"objectid_map": {"1": "shell", "2": "grip"},
+                       "source_signature": {"rel": "Demo.glb"},
+                       "visible_object_stats": {"status": "ok", "counts": {"1": 100, "2": 50}},
                        "resolution": [1232, 752],
                        "camera": {"azimuth": 0, "elevation": 8, "fit": 1.18, "ortho": False}}, stream)
+        with open(os.path.join(folder, "objectid.png"), "wb") as stream:
+            stream.write(b"fixture")
         self.presets = os.path.join(self.tmp.name, "cmf_presets.json")
         with open(self.presets, "w", encoding="utf-8") as stream:
             json.dump({"presets": [{"id": "plastic_fine_matte"}, {"id": "rubber_matte"}]}, stream)
@@ -39,7 +43,9 @@ class ProductBaseSpecTest(unittest.TestCase):
         for name, value in (("load_cmf_scheme", lambda sku: self.scheme),
                             ("load_cmf_presets", lambda: {"presets": [
                                 {"id": "plastic_fine_matte"}, {"id": "rubber_matte"}]}),
-                            ("verify_pass_outputs", lambda sku, view: (True, ""))):
+                            ("verify_pass_outputs", lambda sku, view: (True, "")),
+                            ("_pass_manifest_issue", lambda folder: ""),
+                            ("_model_content_hash", lambda rel: "model-sha")):
             patcher = patch.object(S, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -58,7 +64,7 @@ class ProductBaseSpecTest(unittest.TestCase):
         spec = S.product_base_spec("Demo", "front", "plastic_fine_matte", "#AABBCC", "studio")
         self.assertFalse(S.product_base_fresh(spec))
         self.scheme = {**self.scheme, "assignments": {"not_in_model": {"cmf": "rubber_matte", "color": "#222222"}}}
-        with self.assertRaisesRegex(ValueError, "网格映射"):
+        with self.assertRaisesRegex(RuntimeError, "映射"):
             S.product_base_spec("Demo", "front", "plastic_fine_matte", "#AABBCC", "studio")
 
     def test_cached_png_must_match_camera_resolution(self):
@@ -111,10 +117,99 @@ class ProductBaseSpecTest(unittest.TestCase):
         os.makedirs(folder, exist_ok=True)
         with open(os.path.join(folder, "pass_manifest.json"), "w", encoding="utf-8") as stream:
             json.dump({"objectid_map": {"1": "shell", "2": "grip"},
+                       "source_signature": {"rel": "Demo.glb"},
+                       "visible_object_stats": {"status": "ok", "counts": {"1": 100, "2": 50}},
                        "resolution": [1232, 752],
                        "camera": {"azimuth": 180, "elevation": 8, "fit": 1.18, "ortho": False}}, stream)
+        with open(os.path.join(folder, "objectid.png"), "wb") as stream:
+            stream.write(b"fixture")
         return [S.product_base_spec("Demo", view, "plastic_fine_matte", "#AABBCC", "studio")
                 for view in ("front", "back")]
+
+    def test_renderer_script_change_creates_new_cache_path(self):
+        first = S.product_base_spec("Demo", "front", "plastic_fine_matte", "#AABBCC", "studio")
+        script_path = os.path.join(self.tmp.name, "blender_pass.py")
+        with open(script_path, "w", encoding="utf-8") as stream:
+            stream.write("# revised material shader\n")
+        with patch.object(S, "BLENDER_SCRIPT", script_path):
+            changed = S.product_base_spec("Demo", "front", "plastic_fine_matte", "#AABBCC", "studio")
+        self.assertNotEqual(first["scene_id"], changed["scene_id"])
+        self.assertNotEqual(first["path"], changed["path"])
+
+    def test_part_contract_is_shared_with_product_base(self):
+        path = os.path.join(self.passes, "Demo", "front", "pass_manifest.json")
+        with open(path, encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        manifest["visible_object_stats"]["counts"] = {"1": 100}
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream)
+        with self.assertRaisesRegex(RuntimeError, "看不到材质方案"):
+            S.product_base_spec("Demo", "front", "plastic_fine_matte", "#AABBCC", "studio")
+
+    def test_body_only_render_does_not_require_part_assignment(self):
+        self.scheme = {**self.scheme, "assignments": {}}
+        spec = S.product_base_spec("Demo", "front", "plastic_fine_matte", "#AABBCC", "studio")
+        self.assertTrue(spec["rel"].endswith("_product.png"))
+
+    def test_coverage_distinguishes_explicit_assignment_from_body_material(self):
+        coverage = S.cmf_coverage("Demo", "front")
+        self.assertTrue(coverage["available"])
+        self.assertEqual(coverage["foreground_pixels"], 150)
+        self.assertEqual(coverage["explicit_pixels"], 50)
+        self.assertEqual(coverage["default_pixels"], 100)
+        self.assertEqual(coverage["unassigned"][0]["name"], "shell")
+        self.assertEqual(coverage["unassigned"][0]["percent"], 66.67)
+
+    def test_coverage_rejects_invalid_view_and_old_manifest(self):
+        with self.assertRaisesRegex(ValueError, "无效"):
+            S.cmf_coverage("Demo", "../front")
+        path = os.path.join(self.passes, "Demo", "front", "pass_manifest.json")
+        with open(path, encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        del manifest["visible_object_stats"]
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream)
+        self.assertFalse(S.cmf_coverage("Demo", "front")["available"])
+
+    def test_assigned_render_rejects_different_model_content(self):
+        with patch.object(S, "_model_content_hash", return_value="different-model"):
+            with self.assertRaisesRegex(RuntimeError, "不是同一份模型"):
+                S.product_base_spec("Demo", "front", "plastic_fine_matte", "#AABBCC", "studio")
+
+    def test_assigned_render_rejects_old_visibility_manifest(self):
+        path = os.path.join(self.passes, "Demo", "front", "pass_manifest.json")
+        with open(path, encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        del manifest["visible_object_stats"]
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream)
+        with self.assertRaisesRegex(RuntimeError, "缺少部件可见性信息"):
+            S.product_base_spec("Demo", "front", "plastic_fine_matte", "#AABBCC", "studio")
+
+    def test_assigned_render_rejects_failed_visibility_decode(self):
+        path = os.path.join(self.passes, "Demo", "front", "pass_manifest.json")
+        with open(path, encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        manifest["visible_object_stats"] = {"status": "read_failed", "message": "decode failed"}
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream)
+        with self.assertRaisesRegex(RuntimeError, "反解失败"):
+            S.product_base_spec("Demo", "front", "plastic_fine_matte", "#AABBCC", "studio")
+
+    def test_assigned_render_rejects_missing_object_id_image(self):
+        os.remove(os.path.join(self.passes, "Demo", "front", "objectid.png"))
+        with self.assertRaisesRegex(RuntimeError, "缺少对象 ID 图"):
+            S.product_base_spec("Demo", "front", "plastic_fine_matte", "#AABBCC", "studio")
+
+    def test_assigned_render_rejects_wrong_camera(self):
+        path = os.path.join(self.passes, "Demo", "front", "pass_manifest.json")
+        with open(path, encoding="utf-8") as stream:
+            manifest = json.load(stream)
+        manifest["camera"]["azimuth"] = 45
+        with open(path, "w", encoding="utf-8") as stream:
+            json.dump(manifest, stream)
+        with self.assertRaisesRegex(RuntimeError, "机位参数已更新"):
+            S.product_base_spec("Demo", "front", "plastic_fine_matte", "#AABBCC", "studio")
 
     def test_two_views_share_scene_and_one_blender_process(self):
         specs = self._two_specs()
@@ -149,6 +244,7 @@ class ProductBaseSpecTest(unittest.TestCase):
         with open(os.path.join(self.assets, *rel.split("/")), encoding="utf-8") as stream:
             report = json.load(stream)
         self.assertEqual(report["schema_version"], 2)
+        self.assertEqual(report["renderer_signature"], specs[0]["renderer_signature"])
         self.assertEqual(report["views"]["front"]["sha256"], S.product_base_digest(specs[0]["path"]))
         self.scheme = {**self.scheme, "version": 4}
         self.assertEqual(S.latest_product_scene("Demo"), {})

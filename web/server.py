@@ -4562,18 +4562,20 @@ class Handler(SimpleHTTPRequestHandler):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="产品渲染工作台")
+    parser.add_argument("--port", type=int, default=PORT)
+    parser.add_argument("--no-browser", action="store_true", help="由启动器统一打开网页")
+    options = parser.parse_args()
+    port = options.port
+    try:
+        httpd = HTTPServer(("127.0.0.1", port), Handler)
+    except OSError as exc:
+        print(f"工作台端口 {port} 无法使用，请复用已有页面或停止占用服务：{exc}")
+        raise SystemExit(1)
+    # Bind first: a duplicate launch must not reset an active instance's tasks.
     init_db()
     n = reset_running()
-    port = PORT
-    for _ in range(20):
-        try:
-            httpd = HTTPServer(("127.0.0.1", port), Handler)
-            break
-        except OSError:
-            port += 1
-    else:
-        print("找不到可用端口，退出。")
-        return
 
     url = f"http://127.0.0.1:{port}/"
     print("=" * 62)
@@ -4595,7 +4597,7 @@ def main():
     print("=" * 62)
     print("  Ctrl+C 停止服务")
 
-    if os.environ.get("RENDERER_NO_BROWSER") != "1":
+    if not options.no_browser and os.environ.get("RENDERER_NO_BROWSER") != "1":
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
         httpd.serve_forever()

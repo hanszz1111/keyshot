@@ -71,17 +71,14 @@ function Test-PortOpen([int]$port) {
 }
 
 function Get-RendererPort {
-    for ($port = 8765; $port -le 8785; $port++) {
-        $health = Get-JsonOrNull "http://127.0.0.1:$port/api/health"
-        if ($health -and $health.root -and
-            [string]::Equals([string]$health.root, $projectRoot, [StringComparison]::OrdinalIgnoreCase)) {
-            return @{ Port = $port; Existing = $true }
-        }
+    $port = 8765
+    $health = Get-JsonOrNull "http://127.0.0.1:$port/api/health"
+    if ($health -and $health.root -and
+        [string]::Equals([string]$health.root, $projectRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        return @{ Port = $port; Existing = $true }
     }
-    for ($port = 8765; $port -le 8785; $port++) {
-        if (-not (Test-PortOpen $port)) { return @{ Port = $port; Existing = $false } }
-    }
-    throw 'No free renderer port in 8765-8785.'
+    if (-not (Test-PortOpen $port)) { return @{ Port = $port; Existing = $false } }
+    throw 'Port 8765 is occupied by another service or project. Stop that service before starting this workbench.'
 }
 
 function Get-WebPython {
@@ -97,17 +94,18 @@ function Get-WebPython {
 
 if (-not (Test-Path $webScript)) { throw "Renderer web server missing: $webScript" }
 Write-Host "Project: $projectRoot"
+$renderer = Get-RendererPort
 
 $comfyOnline = [bool](Get-JsonOrNull 'http://127.0.0.1:8188/system_stats')
 if ($comfyOnline) {
     Write-Host 'ComfyUI: already running.'
 } elseif (Test-Path $comfyPython) {
     Write-Host "Starting ComfyUI from $comfyRoot"
-    $comfyArgs = '-s ComfyUI\main.py --windows-standalone-build --lowvram'
+    $comfyArgs = '-s ComfyUI\main.py --windows-standalone-build --lowvram --disable-auto-launch'
     $usedTask = Start-PersistentTask -TaskName $taskComfyName -Exe $comfyPython -ArgLine $comfyArgs -WorkDir $comfyRoot
     if (-not $usedTask) {
         Start-Process -FilePath $comfyPython -WorkingDirectory $comfyRoot `
-            -ArgumentList @('-s', 'ComfyUI\main.py', '--windows-standalone-build', '--lowvram') | Out-Null
+            -ArgumentList @('-s', 'ComfyUI\main.py', '--windows-standalone-build', '--lowvram', '--disable-auto-launch') | Out-Null
     } else {
         Write-Host "ComfyUI: launched via scheduled task '$taskComfyName' (survives closing this window)."
     }
@@ -124,11 +122,11 @@ if (-not $qwenEnabled) {
     Write-Host "Qwen experimental engine: already running on $qwenPort."
 } elseif (Test-Path $qwenPython) {
     Write-Host "Starting Qwen-Image-2.1 experimental instance from $qwenRoot"
-    $qwenArgs = '-s ComfyUI\main.py --windows-standalone-build --lowvram --port ' + [string]$qwenPort
+    $qwenArgs = '-s ComfyUI\main.py --windows-standalone-build --lowvram --disable-auto-launch --port ' + [string]$qwenPort
     $usedTask = Start-PersistentTask -TaskName $taskQwenName -Exe $qwenPython -ArgLine $qwenArgs -WorkDir $qwenRoot
     if (-not $usedTask) {
         Start-Process -FilePath $qwenPython -WorkingDirectory $qwenRoot `
-            -ArgumentList @('-s', 'ComfyUI\main.py', '--windows-standalone-build', '--lowvram', '--port', [string]$qwenPort) | Out-Null
+            -ArgumentList @('-s', 'ComfyUI\main.py', '--windows-standalone-build', '--lowvram', '--disable-auto-launch', '--port', [string]$qwenPort) | Out-Null
     } else {
         Write-Host "Qwen experimental engine: launched via scheduled task '$taskQwenName' (survives closing this window)."
     }
@@ -138,7 +136,6 @@ if (-not $qwenEnabled) {
     Write-Warning 'The stable SDXL pipeline is unaffected.'
 }
 
-$renderer = Get-RendererPort
 $webPort = [int]$renderer.Port
 if ($renderer.Existing) {
     Write-Host "Web UI: already running on $webPort."
@@ -147,12 +144,13 @@ if ($renderer.Existing) {
     $env:RENDERER_PORT = [string]$webPort
     $env:RENDERER_NO_BROWSER = '1'
     Write-Host "Starting web UI on $webPort"
-    $webArgLine = 'web\server.py --port ' + [string]$webPort
+    $webArgLine = (($python.Prefix + @('web\server.py', '--port', [string]$webPort, '--no-browser')) -join ' ')
     $usedTask = Start-PersistentTask -TaskName $taskWebName -Exe $python.Exe -ArgLine $webArgLine -WorkDir $projectRoot
     if (-not $usedTask) {
         $webArgs = @()
         $webArgs += $python.Prefix
         $webArgs += '"' + $webScript + '"'
+        $webArgs += @('--port', [string]$webPort, '--no-browser')
         Start-Process -FilePath $python.Exe -WorkingDirectory $webRoot -ArgumentList $webArgs | Out-Null
     } else {
         Write-Host "Web UI: launched via scheduled task '$taskWebName' (survives closing this window)."
@@ -172,7 +170,12 @@ for ($i = 0; $i -lt 40; $i++) {
 }
 if (-not $ready) { throw "Web UI did not become ready. Check the server window: $webUrl" }
 
-Start-Process $webUrl | Out-Null
+if ($env:AI_RENDER_OPEN_BROWSER -ne '0' -and
+    (-not $renderer.Existing -or $env:AI_RENDER_OPEN_BROWSER -eq '1')) {
+    Start-Process $webUrl | Out-Null
+} else {
+    Write-Host 'Web UI is ready. Reuse the existing browser tab, or open the address below.'
+}
 Write-Host "Web UI: $webUrl"
 if (-not $comfyOnline -and (Test-Path $comfyPython)) {
     for ($i = 0; $i -lt 60; $i++) {

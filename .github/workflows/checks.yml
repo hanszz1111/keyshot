@@ -25,3 +25,11 @@ jobs:
           node-version: '20'
       - run: python -m pip install -r requirements-dev.txt
       - run: python scripts/check_project.py
+      - name: Validate Windows launcher syntax
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $parseTokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'scripts/start_all.ps1'), [ref]$parseTokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count) { $parseErrors | ForEach-Object { Write-Error $_ }; exit 1 }

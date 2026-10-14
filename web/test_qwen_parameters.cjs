@@ -1,0 +1,27 @@
+"use strict";
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const vm = require("node:vm");
+
+const source = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
+const start = source.indexOf("function qwenAdvancedParams(){");
+const end = source.indexOf("function onEngineChange(){", start);
+assert.ok(start >= 0 && end > start);
+const controls = { qwenSteps: { value: "" }, qwenCfg: { value: "1" }, qwenAnchor: { value: "on" } };
+const parse = vm.runInNewContext(`${source.slice(start, end)}; qwenAdvancedParams`, { $: id => controls[id] });
+assert.equal(parse().steps, null);
+assert.equal(parse().cfg, 1);
+assert.equal(parse().anchor, true);
+controls.qwenSteps.value = "40";
+controls.qwenCfg.value = "1.5";
+controls.qwenAnchor.value = "off";
+assert.equal(parse().steps, 40);
+assert.equal(parse().cfg, 1.5);
+assert.equal(parse().anchor, false);
+controls.qwenSteps.value = "51";
+assert.throws(() => parse(), /8–50/);
+const build = source.slice(source.indexOf("function buildPayload("), source.indexOf("async function ensureRequiredPasses("));
+assert.match(build, /if\(isExperimentalEngine\(\)\)\{\s*const advanced=qwenAdvancedParams\(\)/);
+assert.match(build, /steps:advanced\.steps\|\|QWEN_STEPS\[qualityKey\]\|\|25,cfg:advanced\.cfg/);
+console.log("千问高级参数界面：9/9 通过");

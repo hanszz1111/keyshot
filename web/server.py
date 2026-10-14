@@ -1818,6 +1818,20 @@ def qwen_series_anchor(task, meta):
     raise RuntimeError("同组主视图尚未完成；请先完成主视图，再继续其他机位")
 
 
+def qwen_sampling_params(payload, qcfg):
+    raw_steps = payload.get("steps", qcfg.get("steps", 25))
+    try:
+        steps = int(raw_steps)
+        cfg_value = float(payload.get("cfg", qcfg.get("cfg", 1.0)))
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise RuntimeError("千问步数或引导强度无效") from exc
+    if str(raw_steps) != str(steps) or not 8 <= steps <= 50:
+        raise RuntimeError("千问质量步数须为 8–50 的整数")
+    if cfg_value not in (1.0, 1.5):
+        raise RuntimeError("千问引导强度仅开放 1.0 或 1.5；1.5 仅供画质对照实验")
+    return steps, cfg_value
+
+
 def _submit_qwen(tid, payload, engine_id):
     """实验引擎提交：Qwen-Image-2.1 图片精修（单张）。
 
@@ -1879,14 +1893,13 @@ def _submit_qwen(tid, payload, engine_id):
         raise RuntimeError("精修分辨率（总像素预算）须在 %d–%d 之间。" % (rmin, rmax))
     if res % 32:
         raise RuntimeError("精修分辨率须为 32 的倍数。")
-    steps = int(payload.get("steps") or qcfg.get("steps", 25))
-    if not 8 <= steps <= 50:
-        raise RuntimeError("千问质量步数须在 8–50 之间")
+    steps, cfg_value = qwen_sampling_params(payload, qcfg)
 
     payload = dict(payload)
     payload["source_img"] = comfy_upload(rel, host)   # 必须传到 8190，不能传到 8188
     payload["resolution"] = res
     payload["steps"] = steps
+    payload["cfg"] = cfg_value
     if not payload.get("seed"):
         payload["seed"] = int(qcfg.get("seed_default", 43))
 
